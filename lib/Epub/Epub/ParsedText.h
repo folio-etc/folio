@@ -49,7 +49,7 @@ class ParsedText {
   bool isEmpty() const { return words.empty(); }
   const std::vector<uint8_t>& getWordBackgrounds() const { return wordBackgrounds; }
   void setWordBackgrounds(std::vector<uint8_t> backgrounds) {
-    assert(backgrounds.size() == words.size());
+    if (backgrounds.size() != words.size()) return;
     wordBackgrounds = std::move(backgrounds);
   }
   void layoutAndExtractLines(const GfxRenderer& renderer, int fontId, uint16_t viewportWidth,
