@@ -77,6 +77,15 @@ std::string_view stripTrailingImportant(std::string_view value) {
   return value;
 }
 
+// Shared helper: convert RGB components to 8-bit grayscale using the same
+// luminance formula used for hex/rgb inputs.
+static uint8_t rgbToGrayscale(int r, int g, int b) {
+  const int luminance = (19595 * r + 38470 * g + 7471 * b) >> 16;
+  uint8_t result = static_cast<uint8_t>(((255 - luminance) * 16 + 127) / 255);
+  if (result > 16) result = 16;
+  return result;
+}
+
 // Convert CSS color value to GfxRenderer::Color enum value (8-bit grayscale)
 // Supports hex colors (#000, #000000), named colors (black, white, gray),
 // and rgb/rgba values.
@@ -90,27 +99,35 @@ static std::optional<uint8_t> tryInterpretColor(const std::string& val) {
   for (size_t i = 0; i < normalized.size(); ++i) {
     normalized[i] = static_cast<char>(std::tolower(static_cast<unsigned char>(normalized[i])));
   }
+
+  if (normalized == "transparent" || normalized == "none")
+    return 0;
+
+  // Named colors — resolve to RGB then go through the shared grayscale helper
+  int r = -1, g = -1, b = -1;
+  if (normalized == "black")
+    { r = 0;   g = 0;   b = 0;   }
+  else if (normalized == "white")
+    { r = 255; g = 255; b = 255; }
+  else if (normalized == "gray" || normalized == "grey")
+    { r = 128; g = 128; b = 128; }
+  else if (normalized == "lightgray")
+    { r = 211; g = 211; b = 211; }
+  else if (normalized == "darkgray")
+    { r = 169; g = 169; b = 169; }
+  else if (normalized == "red")
+    { r = 255; g = 0;   b = 0;   }
+  else if (normalized == "green")
+    { r = 0;   g = 255; b = 0;   }
+  else if (normalized == "blue")
+    { r = 0;   g = 0;   b = 255; }
+
+  if (r >= 0 && g >= 0 && b >= 0) {
+    return rgbToGrayscale(r, g, b);
+  }
+
   uint8_t result = 0;
-  if (normalized == "black" || normalized == "#000" || normalized == "#000000")
-    result = 16;
-  else if (normalized == "white" || normalized == "#fff" || normalized == "#ffffff")
-    result = 0;
-  else if (normalized == "gray" || normalized == "grey" || normalized == "#808080")
-    result = 10;
-  else if (normalized == "lightgray" || normalized == "#d3d3d3")
-    result = 5;
-  else if (normalized == "darkgray" || normalized == "#a9a9a9")
-    result = 8;
-  else if (normalized == "red" || normalized == "#f00" || normalized == "#ff0000")
-    result = 10;
-  else if (normalized == "blue" || normalized == "#00f" || normalized == "#0000ff")
-    result = 10;
-  else if (normalized == "green" || normalized == "#0f0" || normalized == "#00ff00")
-    result = 10;
-  else if (normalized == "transparent" || normalized == "none")
-    result = 0;
-  else if (normalized.size() >= 4 && normalized[0] == '#') {
-    int r = 0, g = 0, b = 0;
+  if (normalized.size() >= 4 && normalized[0] == '#') {
     auto parseHexComponent = [](const std::string& s, size_t pos, size_t len) -> int {
       char* endPtr = nullptr;
       // Copy the hex component to a buffer to ensure null termination
@@ -152,15 +169,12 @@ static std::optional<uint8_t> tryInterpretColor(const std::string& val) {
       return std::nullopt;
     }
 
-    const int luminance = (19595 * r + 38470 * g + 7471 * b) >> 16;
-    result = static_cast<uint8_t>(((255 - luminance) * 16 + 127) / 255);
-    if (result > 16) result = 16;
+    result = rgbToGrayscale(r, g, b);
   } else if (normalized.size() >= 4 && normalized.substr(0, 3) == "rgb") {
     size_t start = normalized.find('(');
     size_t end = normalized.find(')');
     if (start != std::string::npos && end != std::string::npos) {
       std::string rgbPart = normalized.substr(start + 1, end - start - 1);
-      int r = 0, g = 0, b = 0;
       size_t comma1 = rgbPart.find(',');
       if (comma1 != std::string::npos) {
         size_t comma2 = rgbPart.find(',', comma1 + 1);
@@ -195,9 +209,7 @@ static std::optional<uint8_t> tryInterpretColor(const std::string& val) {
             b = 0;
           else if (b > 255)
             b = 255;
-          const int luminance = (19595 * r + 38470 * g + 7471 * b) >> 16;
-          result = static_cast<uint8_t>(((255 - luminance) * 16 + 127) / 255);
-          if (result > 16) result = 16;
+          result = rgbToGrayscale(r, g, b);
         }
       }
     }
