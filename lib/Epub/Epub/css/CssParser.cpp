@@ -93,8 +93,10 @@ static uint8_t rgbToGrayscale(int r, int g, int b) {
 static std::optional<uint8_t> tryInterpretColor(const std::string& val) {
   std::string_view sv = stripTrailingImportant(val);
   if (sv.empty()) return std::nullopt;
+
   while (!sv.empty() && isCssWhitespace(sv.front())) sv.remove_prefix(1);
   while (!sv.empty() && isCssWhitespace(sv.back())) sv.remove_suffix(1);
+
   std::string normalized(sv);
   for (size_t i = 0; i < normalized.size(); ++i) {
     normalized[i] = static_cast<char>(std::tolower(static_cast<unsigned char>(normalized[i])));
@@ -102,47 +104,27 @@ static std::optional<uint8_t> tryInterpretColor(const std::string& val) {
 
   if (normalized == "transparent" || normalized == "none") return 0;
 
-  // Named colors — resolve to RGB then go through the shared grayscale helper
+  // Named color path 
   int r = -1, g = -1, b = -1;
   if (normalized == "black") {
-    r = 0;
-    g = 0;
-    b = 0;
+    return rgbToGrayscale(0, 0, 0);
   } else if (normalized == "white") {
-    r = 255;
-    g = 255;
-    b = 255;
+    return rgbToGrayscale(255, 255, 255);
   } else if (normalized == "gray" || normalized == "grey") {
-    r = 128;
-    g = 128;
-    b = 128;
+    return rgbToGrayscale(128, 128, 128);
   } else if (normalized == "lightgray") {
-    r = 211;
-    g = 211;
-    b = 211;
+    return rgbToGrayscale(211, 211, 211);
   } else if (normalized == "darkgray") {
-    r = 169;
-    g = 169;
-    b = 169;
+    return rgbToGrayscale(169, 169, 169);
   } else if (normalized == "red") {
-    r = 255;
-    g = 0;
-    b = 0;
+    return rgbToGrayscale(255, 0, 0);
   } else if (normalized == "green") {
-    r = 0;
-    g = 255;
-    b = 0;
+    return rgbToGrayscale(0, 255, 0);
   } else if (normalized == "blue") {
-    r = 0;
-    g = 0;
-    b = 255;
+    return rgbToGrayscale(0, 0, 255);
   }
 
-  if (r >= 0 && g >= 0 && b >= 0) {
-    return rgbToGrayscale(r, g, b);
-  }
-
-  uint8_t result = 0;
+  // Hex parsing path (#000)
   if (normalized.size() >= 4 && normalized[0] == '#') {
     auto parseHexComponent = [](const std::string& s, size_t pos, size_t len) -> int {
       char* endPtr = nullptr;
@@ -156,11 +138,14 @@ static std::optional<uint8_t> tryInterpretColor(const std::string& val) {
         buffer[0] = s[pos];
         buffer[1] = s[pos + 1];
       }
+
       errno = 0;
       long val = std::strtol(buffer, &endPtr, 16);
+
       if (*endPtr != '\0' || errno == ERANGE) {
         return -1;  // Parse failure
       }
+
       return static_cast<int>(val);
     };
 
@@ -185,54 +170,72 @@ static std::optional<uint8_t> tryInterpretColor(const std::string& val) {
       return std::nullopt;
     }
 
-    result = rgbToGrayscale(r, g, b);
-  } else if (normalized.size() >= 4 && normalized.substr(0, 3) == "rgb") {
+    return rgbToGrayscale(r, g, b);
+  } 
+  
+  // rgb parsing path (rgb(0, 0, 0), rgba(0, 0, 0))
+  if (normalized.size() >= 4 && normalized.substr(0, 3) == "rgb") {
     size_t start = normalized.find('(');
     size_t end = normalized.find(')');
-    if (start != std::string::npos && end != std::string::npos) {
-      std::string rgbPart = normalized.substr(start + 1, end - start - 1);
-      size_t comma1 = rgbPart.find(',');
-      if (comma1 != std::string::npos) {
-        size_t comma2 = rgbPart.find(',', comma1 + 1);
-        if (comma2 != std::string::npos) {
-          auto parseInt = [](const std::string& s) -> int {
-            const char* str = s.c_str();
-            while (*str && isCssWhitespace(*str)) ++str;
-            bool neg = false;
-            if (*str == '-') {
-              neg = true;
-              ++str;
-            }
-            int val = 0;
-            while (*str >= '0' && *str <= '9') {
-              val = val * 10 + (*str - '0');
-              ++str;
-            }
-            return neg ? -val : val;
-          };
-          r = parseInt(rgbPart.substr(0, comma1));
-          g = parseInt(rgbPart.substr(comma1 + 1, comma2 - comma1 - 1));
-          b = parseInt(rgbPart.substr(comma2 + 1));
-          if (r < 0)
-            r = 0;
-          else if (r > 255)
-            r = 255;
-          if (g < 0)
-            g = 0;
-          else if (g > 255)
-            g = 255;
-          if (b < 0)
-            b = 0;
-          else if (b > 255)
-            b = 255;
-          result = rgbToGrayscale(r, g, b);
-        }
-      }
+    
+    if (start == std::string::npos || end == std::string::npos || end < start) {
+      return std::nullopt;
     }
-  } else {
-    return std::nullopt;
+
+    std::string rgbPart = normalized.substr(start + 1, end - start - 1);
+
+    size_t comma1 = rgbPart.find(',');
+    if(comma1 == std::string::npos) {
+      return std::nullopt;
+    }
+
+    size_t comma2 = rgbPart.find(',', comma1 + 1);
+    if(comma2 == std::string::npos) {
+      return std::nullopt;
+    }
+
+    auto parseInt = [](const std::string& s) -> int {
+      const char* str = s.c_str();
+      while (*str && isCssWhitespace(*str)) ++str;
+
+      bool neg = false;
+      if (*str == '-') {
+        neg = true;
+        ++str;
+      }
+
+      int val = 0;
+      while (*str >= '0' && *str <= '9') {
+        val = val * 10 + (*str - '0');
+        ++str;
+      }
+
+      return neg ? -val : val;
+    };
+
+    r = parseInt(rgbPart.substr(0, comma1));
+    g = parseInt(rgbPart.substr(comma1 + 1, comma2 - comma1 - 1));
+    b = parseInt(rgbPart.substr(comma2 + 1));
+
+    if (r < 0)
+      r = 0;
+    else if (r > 255)
+      r = 255;
+
+    if (g < 0)
+      g = 0;
+    else if (g > 255)
+      g = 255;
+
+    if (b < 0)
+      b = 0;
+    else if (b > 255)
+      b = 255;
+
+    return rgbToGrayscale(r, g, b);
   }
-  return result;
+
+  return std::nullopt;
 }
 
 }  // anonymous namespace
