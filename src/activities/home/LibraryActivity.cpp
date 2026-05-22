@@ -450,7 +450,9 @@ void LibraryActivity::renderLibraryShelf() {
     renderBookTile(slot, *book, selected);
     if (selected) {
       const Rect content = tileContentRect(*book, cell);
-      FolioTheme::drawSelectionFrame(renderer, Rect{content.x - 2, content.y - 2, content.width + 4, content.height + 4});
+      // 3-px inset gives the layered border (outer 2px + 1px gap + inner 2px)
+      // room to sit fully outside the content without clipping it.
+      FolioTheme::drawSelectionFrame(renderer, Rect{content.x - 3, content.y - 3, content.width + 6, content.height + 6});
     }
   }
 }
@@ -482,7 +484,14 @@ Rect LibraryActivity::tileContentRect(const LibraryBook& book, const Rect& cell)
     bottom += TILE_AUTHOR_MARGIN_TOP + captionLineH;
   }
   if (book.hasProgress()) {
-    bottom += TILE_PROGRESS_MARGIN_TOP + TILE_PROGRESS_HEIGHT + 2;
+    // Progress bar is fixed-positioned (see renderBookTile) at the worst-case
+    // content Y. Extend the frame to that fixed bottom so a 1-line-title +
+    // progress book gets the same frame extent as a 2-line-title book, and
+    // the bar sits inside the frame instead of being orphaned below it.
+    const int fixedBarBottom = coverY + COVER_H + TILE_TITLE_MARGIN_TOP + 2 * captionLineH +
+                               TILE_AUTHOR_MARGIN_TOP + captionLineH + TILE_PROGRESS_MARGIN_TOP +
+                               TILE_PROGRESS_HEIGHT + 2;
+    bottom = std::max(bottom, fixedBarBottom);
   }
 
   // Frame the area that visibly contains content: cell-wide horizontally
@@ -626,8 +635,14 @@ void LibraryActivity::renderBookTile(int slotIndex, const LibraryBook& book, boo
   }
 
   // ---- Progress bar -----------------------------------------------------
+  // Anchored at a constant Y relative to the cell — sized for the worst-case
+  // content height (2-line title + author + progress) — so all bars line up
+  // horizontally across a row regardless of how each individual book's title
+  // wrapped or whether it has an author. One-line titles or unread books get
+  // whitespace above the bar instead of pushing it up.
   if (book.hasProgress()) {
-    const int barY = authorY + (book.author.empty() ? 0 : captionLineH) + TILE_PROGRESS_MARGIN_TOP;
+    const int barY = coverY + COVER_H + TILE_TITLE_MARGIN_TOP + 2 * captionLineH + TILE_AUTHOR_MARGIN_TOP +
+                     captionLineH + TILE_PROGRESS_MARGIN_TOP;
     const int barX = cell.x + (cell.width - COVER_W) / 2;
     renderer.drawRect(barX, barY, COVER_W, TILE_PROGRESS_HEIGHT + 2);
     const int fillW = (COVER_W - 4) * book.progressPercent() / 100;
@@ -635,6 +650,7 @@ void LibraryActivity::renderBookTile(int slotIndex, const LibraryBook& book, boo
       renderer.fillRect(barX + 2, barY + 2, fillW, TILE_PROGRESS_HEIGHT - 2);
     }
   }
+  (void)authorY;  // kept above for the author render; progress no longer derives from it
 }
 
 void LibraryActivity::renderPageRail() {

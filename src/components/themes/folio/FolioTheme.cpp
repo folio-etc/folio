@@ -99,10 +99,24 @@ void FolioTheme::drawCornerBrackets(const GfxRenderer& renderer, Rect rect, int 
 }
 
 void FolioTheme::drawSelectionFrame(const GfxRenderer& renderer, Rect rect) {
-  // 1-bit e-ink can't reproduce the prototype's 5% opacity diagonal hatch
-  // legibly — even at sparse spacing it reads as rough shading. Outline +
-  // corner brackets carry the selection on their own.
-  renderer.drawRect(rect.x, rect.y, rect.width, rect.height);
+  // Matches the prototype's layered selection treatment:
+  //   - 2px outer ink outline
+  //   - 1px white gap
+  //   - 2px inner ink band
+  // …plus corner brackets layered on top to anchor the look. The hatch
+  // background the CSS uses can't be reproduced legibly on 1-bit so it's
+  // dropped. Caller is expected to inset the rect by 3px from the content
+  // it's framing (so the outer outline sits 3px outside the content, leaving
+  // room for gap + inner band before the content begins).
+  renderer.drawRect(rect.x, rect.y, rect.width, rect.height, 2, true);
+  if (rect.width > 4 && rect.height > 4) {
+    // Explicit white 1px band between outer and inner — keeps the gap crisp
+    // even when something dark sits beneath the frame.
+    renderer.drawRect(rect.x + 2, rect.y + 2, rect.width - 4, rect.height - 4, 1, false);
+  }
+  if (rect.width > 6 && rect.height > 6) {
+    renderer.drawRect(rect.x + 3, rect.y + 3, rect.width - 6, rect.height - 6, 2, true);
+  }
   drawCornerBrackets(renderer, rect);
 }
 
