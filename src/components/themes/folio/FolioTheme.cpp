@@ -84,16 +84,23 @@ void FolioTheme::drawCornerBrackets(const GfxRenderer& renderer, Rect rect, int 
   const int rw = rect.width;
   const int rh = rect.height;
 
-  // Top-left
-  renderer.fillRect(rx, ry, armPx, strokePx);
-  renderer.fillRect(rx, ry, strokePx, armPx);
-  // Top-right
-  renderer.fillRect(rx + rw - armPx, ry, armPx, strokePx);
-  renderer.fillRect(rx + rw - strokePx, ry, strokePx, armPx);
-  // Bottom-left
-  renderer.fillRect(rx, ry + rh - strokePx, armPx, strokePx);
-  renderer.fillRect(rx, ry + rh - armPx, strokePx, armPx);
-  // Bottom-right
+  // Prototype uses only TL + BR brackets (`.book.selected::before` /
+  // `::after`) — the diagonal asymmetry implies a light source and gives
+  // the selection a directional "lift" feel. Four-corner brackets flatten
+  // that out.
+  //
+  // Both brackets are positioned so their inner edge lands on the white
+  // band of drawSelectionFrame's layered border (outer 2px ink, 1px white,
+  // inner 2px ink). Without this offset the TL bracket would sit entirely
+  // inside the outer 2px outline — drawing black-on-black, invisible. The
+  // BR bracket already happens to overlap the white band's bottom + right
+  // edges; the TL +1 offset gives it the same overwrite behavior at the
+  // band's top + left edges.
+
+  // Top-left — shifted +1 to overlap the white band at row ry+2 and col rx+2.
+  renderer.fillRect(rx + 1, ry + 1, armPx, strokePx);
+  renderer.fillRect(rx + 1, ry + 1, strokePx, armPx);
+  // Bottom-right — already overlaps the white band naturally.
   renderer.fillRect(rx + rw - armPx, ry + rh - strokePx, armPx, strokePx);
   renderer.fillRect(rx + rw - strokePx, ry + rh - armPx, strokePx, armPx);
 }

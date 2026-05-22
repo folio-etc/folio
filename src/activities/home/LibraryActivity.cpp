@@ -36,18 +36,22 @@ constexpr int CONTENT_PAD_Y = 8;
 constexpr int RAIL_WIDTH = 18;
 constexpr int RAIL_GAP = 10;
 
-// Book tile geometry. Cover sized so that the 209-px row track holds the cover
-// + 2-line NOTOSERIF_10 title + 1-line NOTOSERIF_10 italic author + 4-px
-// progress bar without overflow. NOTOSERIF_10 (smallest embedded serif) is
-// taller per line than the prototype's CSS 11–13 px, so the cover gives up
-// some height to make room.
+// Book tile geometry. Tile height is fixed (not adaptive to content) so the
+// selection frame, drop shadow, and inter-tile spacing read the same for
+// every book — whether the title fits on one line or two, whether the
+// author is set, whether the book has progress, etc. Title + author are
+// then centered vertically inside the reserved text area.
 constexpr int COVER_W = 80;
 constexpr int COVER_H = 120;
 constexpr int CELL_GAP = 14;
-constexpr int TILE_TITLE_MARGIN_TOP = 4;
-constexpr int TILE_AUTHOR_MARGIN_TOP = 1;
+constexpr int TILE_PAD_TOP = 4;
+constexpr int TILE_TEXT_AREA_H = 60;             // reserved for title + author, regardless of content
+constexpr int TILE_TITLE_AUTHOR_GAP = 1;         // gap between title's last line and author
 constexpr int TILE_PROGRESS_MARGIN_TOP = 3;
-constexpr int TILE_PROGRESS_HEIGHT = 4;
+constexpr int TILE_PROGRESS_HEIGHT = 4;          // inner fill height
+constexpr int TILE_PROGRESS_TOTAL_H = TILE_PROGRESS_HEIGHT + 2;  // + 2 for 1-px border each side
+// Total fixed tile content height — same for every book.
+constexpr int TILE_CONTENT_H = COVER_H + TILE_TEXT_AREA_H + TILE_PROGRESS_MARGIN_TOP + TILE_PROGRESS_TOTAL_H;
 
 // Page rail tick geometry.
 constexpr int RAIL_TICK = 9;
@@ -248,17 +252,32 @@ void LibraryActivity::moveDown() {
   }
   const int row = currentRow();
   const int col = currentCol();
+
+  // Target the row below on the current page; if we're on the last row,
+  // advance to row 0 of the next page (if any).
+  int targetPage = libraryPage;
+  int targetRow;
   if (row < ROWS - 1) {
-    const int candidate = (row + 1) * COLS + col;
-    // If next row is partial (empty cells), only move if there's a book there.
-    if (LIBRARY_INDEX.getAt(libraryPage, candidate, PER_PAGE) != nullptr) {
-      librarySelected = candidate;
-      requestUpdate();
-    }
+    targetRow = row + 1;
   } else if (libraryPage < totalPages() - 1) {
-    libraryPage++;
-    librarySelected = col;
-    requestUpdate();
+    targetPage = libraryPage + 1;
+    targetRow = 0;
+  } else {
+    return;
+  }
+
+  // Clamp left until we find a filled slot. The last page may be partial,
+  // so col can land on an empty cell — without this clamp the selection
+  // ends up pointing at a hole (visually nothing selected).
+  for (int c = col; c >= 0; --c) {
+    if (LIBRARY_INDEX.getAt(targetPage, targetRow * COLS + c, PER_PAGE) != nullptr) {
+      if (targetPage != libraryPage) {
+        libraryPage = targetPage;
+      }
+      librarySelected = targetRow * COLS + c;
+      requestUpdate();
+      return;
+    }
   }
 }
 
@@ -450,53 +469,27 @@ void LibraryActivity::renderLibraryShelf() {
     renderBookTile(slot, *book, selected);
     if (selected) {
       const Rect content = tileContentRect(*book, cell);
-      // 3-px inset gives the layered border (outer 2px + 1px gap + inner 2px)
-      // room to sit fully outside the content without clipping it.
-      FolioTheme::drawSelectionFrame(renderer, Rect{content.x - 3, content.y - 3, content.width + 6, content.height + 6});
+      // Horizontal inset hugs the content (3 px clears the layered outer +
+      // gap + inner stroke). Vertical inset is deliberately larger so the
+      // frame "lifts" the tile with breathing room above and below instead
+      // of clinging tightly to the cover/text bounds.
+      constexpr int kFrameInsetX = 3;
+      constexpr int kFrameInsetY = 8;
+      FolioTheme::drawSelectionFrame(
+          renderer,
+          Rect{content.x - kFrameInsetX, content.y - kFrameInsetY,
+               content.width + kFrameInsetX * 2, content.height + kFrameInsetY * 2});
     }
   }
 }
 
-Rect LibraryActivity::tileContentRect(const LibraryBook& book, const Rect& cell) const {
-  // Mirror the layout math in renderBookTile so the frame and the rendered
-  // tile agree on where the content ends. wrappedText is a pure measurement
-  // call (no draw); the font caches are warm at this point so it's cheap.
-  const int captionFont = FolioTheme::resolveFontRole(FontRole::Caption);
-  const int captionLineH = renderer.getLineHeight(captionFont);
-
-  const int coverX = cell.x + (cell.width - COVER_W) / 2;
-  const int coverY = cell.y + 4;
-
-  const int progressArea = book.hasProgress() ? (TILE_PROGRESS_HEIGHT + 2 + TILE_PROGRESS_MARGIN_TOP) : 0;
-  const int textBudget = cell.height - (coverY - cell.y) - COVER_H - 2 /*pad-bottom*/ - progressArea;
-  const int titleSpace =
-      textBudget - TILE_TITLE_MARGIN_TOP - (book.author.empty() ? 0 : (captionLineH + TILE_AUTHOR_MARGIN_TOP));
-  const int maxTitleLines = std::max(1, titleSpace / captionLineH);
-
-  const int titleLineCount = static_cast<int>(std::min<size_t>(
-      2, renderer.wrappedText(captionFont, book.title.c_str(), cell.width - 8, std::min(maxTitleLines, 2),
-                              EpdFontFamily::BOLD)
-             .size()));
-
-  const int titleY = coverY + COVER_H + TILE_TITLE_MARGIN_TOP;
-  int bottom = titleY + titleLineCount * captionLineH;
-  if (!book.author.empty()) {
-    bottom += TILE_AUTHOR_MARGIN_TOP + captionLineH;
-  }
-  if (book.hasProgress()) {
-    // Progress bar is fixed-positioned (see renderBookTile) at the worst-case
-    // content Y. Extend the frame to that fixed bottom so a 1-line-title +
-    // progress book gets the same frame extent as a 2-line-title book, and
-    // the bar sits inside the frame instead of being orphaned below it.
-    const int fixedBarBottom = coverY + COVER_H + TILE_TITLE_MARGIN_TOP + 2 * captionLineH +
-                               TILE_AUTHOR_MARGIN_TOP + captionLineH + TILE_PROGRESS_MARGIN_TOP +
-                               TILE_PROGRESS_HEIGHT + 2;
-    bottom = std::max(bottom, fixedBarBottom);
-  }
-
-  // Frame the area that visibly contains content: cell-wide horizontally
-  // (text is centered within), starting at the cover's top edge.
-  return Rect{cell.x, coverY, cell.width, bottom - coverY};
+Rect LibraryActivity::tileContentRect(const LibraryBook& /*book*/, const Rect& cell) const {
+  // Fixed-height tile: every card occupies the same vertical extent
+  // regardless of title length, presence of author, or read state. Makes
+  // the selection frame and inter-tile spacing read uniformly across the
+  // shelf. Title + author get centered vertically inside the reserved
+  // text area in renderBookTile.
+  return Rect{cell.x, cell.y + TILE_PAD_TOP, cell.width, TILE_CONTENT_H};
 }
 
 void LibraryActivity::renderBookTile(int slotIndex, const LibraryBook& book, bool /*selected*/) {
@@ -525,26 +518,35 @@ void LibraryActivity::renderBookTile(int slotIndex, const LibraryBook& book, boo
   // COVER_H — one pixel outside the cover proper) live inside the cached
   // region. Without that, cache hits restore the cover correctly but lose
   // the shadow lines, which clearScreen has wiped.
-  const int coverX = cell.x + (cell.width - COVER_W) / 2;
-  const int coverY = cell.y + 4;
-  constexpr int CAPTURE_W = COVER_W + 1;
-  constexpr int CAPTURE_H = COVER_H + 1;
+  // The "cover area" is now the full cell width × COVER_H rather than a
+  // fixed 80-px-wide slot. Lets wider thumbnails (e.g. square or near-
+  // square sources) keep their natural size instead of being downscaled
+  // by the old width limit — they fill more of the available horizontal
+  // space while still respecting COVER_H as the vertical ceiling.
+  const int coverAreaX = cell.x;
+  const int coverAreaW = cell.width;
+  const int coverY = cell.y + TILE_PAD_TOP;
+  const int captureW = coverAreaW + 1;
+  const int captureH = COVER_H + 1;
   CoverCache& slotCache = coverCache[slotIndex];
   const bool cacheHit = (cachedCoverPage == libraryPage && slotCache.valid);
 
   if (cacheHit) {
-    renderer.copyBufferToRegion(coverX, coverY, CAPTURE_W, CAPTURE_H, slotCache.buf.get(), slotCache.size);
+    renderer.copyBufferToRegion(coverAreaX, coverY, captureW, captureH, slotCache.buf.get(), slotCache.size);
   } else {
     // Clear the cover area to white before drawing — drawBitmap only writes
     // black pixels, so without this the previous frame's hatch (or anything
     // else underneath) bleeds through the cover's white regions.
-    renderer.fillRect(coverX, coverY, COVER_W, COVER_H, false);
+    renderer.fillRect(coverAreaX, coverY, coverAreaW, COVER_H, false);
 
-    // Frame rect for the border + drop shadow. Defaults to the full slot
-    // (for the title-only fallback) and shrinks to the bitmap's actual
-    // drawn dimensions when we have a real cover — so the border hugs the
-    // art instead of floating around a centered image with padding.
-    int frameX = coverX, frameY = coverY, frameW = COVER_W, frameH = COVER_H;
+    // Frame rect for the border + drop shadow. Defaults to the legacy
+    // COVER_W × COVER_H slot (centered, for the title-only fallback) and
+    // shrinks to the bitmap's actual drawn dimensions when we have a real
+    // cover.
+    int frameX = cell.x + (cell.width - COVER_W) / 2;
+    int frameY = coverY;
+    int frameW = COVER_W;
+    int frameH = COVER_H;
 
     bool drewCover = false;
     const std::string thumbPath =
@@ -553,34 +555,38 @@ void LibraryActivity::renderBookTile(int slotIndex, const LibraryBook& book, boo
     if (Storage.openFileForRead(LOG_TAG, thumbPath.c_str(), file)) {
       Bitmap bitmap(file);
       if (bitmap.parseHeaders() == BmpReaderError::Ok) {
-        // generateThumbBmp targets a 0.6-aspect box (height*0.6 wide, height
-        // tall) and fits the source cover into it preserving the source's
-        // own aspect — meaning thumbs can be narrower OR shorter than our
-        // 2:3 slot depending on the original cover. drawBitmap1Bit only
-        // downscales, so we replicate the math here to compute the final
-        // size, center the bitmap, and frame the border around it.
+        // Fit-to-box against (cell.width × COVER_H). drawBitmap1Bit only
+        // downscales, so this is bounded above by the bitmap's natural
+        // size — but the wider horizontal limit means square / wider
+        // source covers stop getting unnecessarily shrunk down to fit an
+        // 80-px slot they don't need to.
         const int bmpW = bitmap.getWidth();
         const int bmpH = bitmap.getHeight();
         float scale = 1.0f;
-        if (bmpW > COVER_W) scale = static_cast<float>(COVER_W) / static_cast<float>(bmpW);
+        if (bmpW > coverAreaW) scale = static_cast<float>(coverAreaW) / static_cast<float>(bmpW);
         if (bmpH > COVER_H) scale = std::min(scale, static_cast<float>(COVER_H) / static_cast<float>(bmpH));
         const int drawnW = static_cast<int>(bmpW * scale);
         const int drawnH = static_cast<int>(bmpH * scale);
-        frameX = coverX + (COVER_W - drawnW) / 2;
+        // Center within the cell horizontally and within the cover height
+        // vertically — taller covers naturally bottom-align since drawnH
+        // hits COVER_H first.
+        frameX = coverAreaX + (coverAreaW - drawnW) / 2;
         frameY = coverY + (COVER_H - drawnH) / 2;
         frameW = drawnW;
         frameH = drawnH;
-        renderer.drawBitmap(bitmap, frameX, frameY, COVER_W, COVER_H);
+        renderer.drawBitmap(bitmap, frameX, frameY, coverAreaW, COVER_H);
         drewCover = true;
       }
     }
     if (!drewCover) {
       // Fallback: title-only "cover" — outlined rectangle with the first
-      // line of the title centered inside. Uses the full slot.
+      // line of the title centered inside. Stays at the legacy COVER_W
+      // slot — this is the placeholder so the typical 2:3 size makes
+      // sense as the visual stand-in.
       const std::string trunc =
           renderer.truncatedText(captionFont, book.title.c_str(), COVER_W - 12, EpdFontFamily::BOLD);
       const int tw = renderer.getTextWidth(captionFont, trunc.c_str(), EpdFontFamily::BOLD);
-      renderer.drawText(captionFont, coverX + (COVER_W - tw) / 2, coverY + (COVER_H - captionLineH) / 2,
+      renderer.drawText(captionFont, frameX + (COVER_W - tw) / 2, frameY + (COVER_H - captionLineH) / 2,
                         trunc.c_str(), true, EpdFontFamily::BOLD);
     }
     // 1px outer border + 1px offset drop shadow on the cover (Folio motif).
@@ -589,44 +595,60 @@ void LibraryActivity::renderBookTile(int slotIndex, const LibraryBook& book, boo
     renderer.drawLine(frameX + 1, frameY + frameH, frameX + frameW, frameY + frameH);
     renderer.drawLine(frameX + frameW, frameY + 1, frameX + frameW, frameY + frameH);
 
-    // Capture the finished cover region (cover + border + drop shadow) so
-    // the next render on this page can skip everything above.
-    const size_t need = renderer.getRegionByteSize(coverX, coverY, CAPTURE_W, CAPTURE_H);
+    // Capture the finished cover area (cover + border + drop shadow) so
+    // the next render on this page can skip everything above. Width is
+    // cell-wide now, so wider covers' edges stay inside the cached region.
+    const size_t need = renderer.getRegionByteSize(coverAreaX, coverY, captureW, captureH);
     if (need > 0 && slotCache.size != need) {
       slotCache.buf = makeUniqueNoThrow<uint8_t[]>(need);
       slotCache.size = slotCache.buf ? need : 0;
     }
     if (slotCache.buf &&
-        renderer.copyRegionToBuffer(coverX, coverY, CAPTURE_W, CAPTURE_H, slotCache.buf.get(), slotCache.size)) {
+        renderer.copyRegionToBuffer(coverAreaX, coverY, captureW, captureH, slotCache.buf.get(), slotCache.size)) {
       slotCache.valid = true;
     } else {
       slotCache.valid = false;
     }
   }
 
-  // ---- Adaptive layout for text below the cover -------------------------
-  // The cell budget below the cover is the row track minus the cover, the
-  // tile padding, and the progress bar's own area. We then divide by the
-  // caption font's actual line height to decide how many title lines fit.
-  const int progressArea = book.hasProgress() ? (TILE_PROGRESS_HEIGHT + 2 + TILE_PROGRESS_MARGIN_TOP) : 0;
-  const int textBudget = cell.height - (coverY - cell.y) - COVER_H - 2 /*pad-bottom*/ - progressArea;
-  const int titleSpace = textBudget - TILE_TITLE_MARGIN_TOP - (book.author.empty() ? 0 : (captionLineH + TILE_AUTHOR_MARGIN_TOP));
-  const int maxTitleLines = std::max(1, titleSpace / captionLineH);
+  // ---- Text area (fixed-height, title + author centered vertically) -----
+  // Card height is fixed (see TILE_CONTENT_H), so the title + author block
+  // gets centered inside the reserved space immediately below the cover.
+  // Books with single-line titles or no author still occupy the same total
+  // vertical extent — the leftover space becomes balanced padding above
+  // and below the block.
+  //
+  // When the book has no progress bar, the reserved progress area (margin
+  // + bar) becomes part of the centering range — otherwise unread books
+  // look top-heavy with the progress slot sitting empty below.
+  const int textAreaY = coverY + COVER_H;
+  const int centeringH = book.hasProgress()
+                             ? TILE_TEXT_AREA_H
+                             : (TILE_TEXT_AREA_H + TILE_PROGRESS_MARGIN_TOP + TILE_PROGRESS_TOTAL_H);
 
-  // ---- Title (caption font, bold, up to maxTitleLines, centered) -------
-  const int titleY = coverY + COVER_H + TILE_TITLE_MARGIN_TOP;
-  std::vector<std::string> titleLines = renderer.wrappedText(captionFont, book.title.c_str(), cell.width - 8,
-                                                              std::min(maxTitleLines, 2), EpdFontFamily::BOLD);
+  // Decide how many title lines fit. Author always reserves its line of
+  // space when present, so the title gets whatever's left.
+  const int authorReserved = book.author.empty() ? 0 : (TILE_TITLE_AUTHOR_GAP + captionLineH);
+  const int titleBudget = centeringH - authorReserved;
+  const int maxTitleLines = std::min(2, std::max(1, titleBudget / captionLineH));
+  std::vector<std::string> titleLines =
+      renderer.wrappedText(captionFont, book.title.c_str(), cell.width - 8, maxTitleLines, EpdFontFamily::BOLD);
+  const int titleLineCount = std::max(1, static_cast<int>(titleLines.size()));
+
+  const int titleH = titleLineCount * captionLineH;
+  const int blockH = titleH + authorReserved;
+  const int blockTop = textAreaY + (centeringH - blockH) / 2;
+
+  // Title — centered horizontally per line, stacked vertically from blockTop.
   for (size_t i = 0; i < titleLines.size(); ++i) {
     const int lineW = renderer.getTextWidth(captionFont, titleLines[i].c_str(), EpdFontFamily::BOLD);
     renderer.drawText(captionFont, cell.x + (cell.width - lineW) / 2,
-                      titleY + static_cast<int>(i) * captionLineH, titleLines[i].c_str(), true, EpdFontFamily::BOLD);
+                      blockTop + static_cast<int>(i) * captionLineH, titleLines[i].c_str(), true, EpdFontFamily::BOLD);
   }
 
-  // ---- Author (caption font, italic, 1 line) ----------------------------
-  const int authorY =
-      titleY + static_cast<int>(titleLines.size()) * captionLineH + TILE_AUTHOR_MARGIN_TOP;
+  // Author — italic, single line, directly below the title's last line.
   if (!book.author.empty()) {
+    const int authorY = blockTop + titleH + TILE_TITLE_AUTHOR_GAP;
     const std::string author =
         renderer.truncatedText(captionFont, book.author.c_str(), cell.width - 8, EpdFontFamily::ITALIC);
     const int aw = renderer.getTextWidth(captionFont, author.c_str(), EpdFontFamily::ITALIC);
@@ -634,23 +656,19 @@ void LibraryActivity::renderBookTile(int slotIndex, const LibraryBook& book, boo
                       EpdFontFamily::ITALIC);
   }
 
-  // ---- Progress bar -----------------------------------------------------
-  // Anchored at a constant Y relative to the cell — sized for the worst-case
-  // content height (2-line title + author + progress) — so all bars line up
-  // horizontally across a row regardless of how each individual book's title
-  // wrapped or whether it has an author. One-line titles or unread books get
-  // whitespace above the bar instead of pushing it up.
+  // ---- Progress bar (fixed position, only drawn when book has progress) -
+  // Bar Y is anchored at the end of the reserved text area, so every row's
+  // bars align horizontally regardless of how each title wrapped. Unread
+  // books just leave this area blank — preserving fixed card height.
   if (book.hasProgress()) {
-    const int barY = coverY + COVER_H + TILE_TITLE_MARGIN_TOP + 2 * captionLineH + TILE_AUTHOR_MARGIN_TOP +
-                     captionLineH + TILE_PROGRESS_MARGIN_TOP;
+    const int barY = textAreaY + TILE_TEXT_AREA_H + TILE_PROGRESS_MARGIN_TOP;
     const int barX = cell.x + (cell.width - COVER_W) / 2;
-    renderer.drawRect(barX, barY, COVER_W, TILE_PROGRESS_HEIGHT + 2);
+    renderer.drawRect(barX, barY, COVER_W, TILE_PROGRESS_TOTAL_H);
     const int fillW = (COVER_W - 4) * book.progressPercent() / 100;
     if (fillW > 0) {
       renderer.fillRect(barX + 2, barY + 2, fillW, TILE_PROGRESS_HEIGHT - 2);
     }
   }
-  (void)authorY;  // kept above for the author render; progress no longer derives from it
 }
 
 void LibraryActivity::renderPageRail() {
