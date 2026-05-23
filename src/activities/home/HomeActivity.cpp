@@ -114,7 +114,7 @@ void HomeActivity::onEnter() {
   hasOpdsServers = OPDS_STORE.hasServers();
 
   const auto& metrics = UITheme::getInstance().getMetrics();
-  loadRecentBooks(metrics.homeRecentBooksCount);
+  loadRecentBooks(metrics.home.recentBooksCount);
 
   const auto base = static_cast<int>(recentBooks.size());
   selectorIndex = initialMenuItem == HomeMenuItem::NONE ? 0 : base + menuItemToIndex(initialMenuItem, hasOpdsServers);
@@ -218,18 +218,18 @@ void HomeActivity::render(RenderLock&&) {
   renderer.clearScreen();
   bool bufferRestored = coverBufferStored && restoreCoverBuffer();
 
-  GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.homeTopPadding},
-                 metrics.homeContinueReadingInMenu && !recentBooks.empty() ? recentBooks[0].title.c_str() : nullptr);
+  GUI.drawHeader(renderer, Rect{0, metrics.layout.topPadding, pageWidth, metrics.home.topPadding},
+                 metrics.home.continueReadingInMenu && !recentBooks.empty() ? recentBooks[0].title.c_str() : nullptr);
 
   // Record the tile rect so storeCoverBuffer (called from the theme) knows
   // which sub-region of the framebuffer to snapshot. ~16 KB in Portrait
   // instead of the 48 KB full framebuffer the previous bind captured.
   coverRectX = 0;
-  coverRectY = metrics.homeTopPadding;
+  coverRectY = metrics.home.topPadding;
   coverRectW = pageWidth;
-  coverRectH = metrics.homeCoverTileHeight;
+  coverRectH = metrics.home.coverTileHeight;
 
-  GUI.drawRecentBookCover(renderer, Rect{0, metrics.homeTopPadding, pageWidth, metrics.homeCoverTileHeight},
+  GUI.drawRecentBookCover(renderer, Rect{0, metrics.home.topPadding, pageWidth, metrics.home.coverTileHeight},
                           recentBooks, selectorIndex, coverRendered, coverBufferStored, bufferRestored,
                           std::bind(&HomeActivity::storeCoverBuffer, this));
 
@@ -247,7 +247,7 @@ void HomeActivity::render(RenderLock&&) {
     menuIcons.insert(menuIcons.begin() + 3, Library);
   }
 
-  if (metrics.homeContinueReadingInMenu && !recentBooks.empty()) {
+  if (metrics.home.continueReadingInMenu && !recentBooks.empty()) {
     // Insert Continue Reading at the top if enabled in theme
     menuItems.insert(menuItems.begin(), tr(STR_CONTINUE_READING));
     menuIcons.insert(menuIcons.begin(), Book);
@@ -255,11 +255,11 @@ void HomeActivity::render(RenderLock&&) {
 
   GUI.drawButtonMenu(
       renderer,
-      Rect{0, metrics.homeTopPadding + metrics.homeCoverTileHeight + metrics.homeMenuTopOffset, pageWidth,
-           pageHeight - (metrics.headerHeight + metrics.homeTopPadding + metrics.verticalSpacing +
-                         metrics.homeMenuTopOffset + metrics.buttonHintsHeight)},
+      Rect{0, metrics.home.topPadding + metrics.home.coverTileHeight + metrics.home.menuTopOffset, pageWidth,
+           pageHeight - (metrics.header.height + metrics.home.topPadding + metrics.layout.verticalSpacing +
+                         metrics.home.menuTopOffset + metrics.buttonHints.height)},
       static_cast<int>(menuItems.size()),
-      metrics.homeContinueReadingInMenu ? selectorIndex : selectorIndex - recentBooks.size(),
+      metrics.home.continueReadingInMenu ? selectorIndex : selectorIndex - recentBooks.size(),
       [&menuItems](int index) { return std::string(menuItems[index]); },
       [&menuIcons](int index) { return menuIcons[index]; });
 
@@ -273,7 +273,7 @@ void HomeActivity::render(RenderLock&&) {
     requestUpdate();
   } else if (!recentsLoaded && !recentsLoading) {
     recentsLoading = true;
-    loadRecentCovers(metrics.homeCoverHeight);
+    loadRecentCovers(metrics.home.coverHeight);
   }
 }
 

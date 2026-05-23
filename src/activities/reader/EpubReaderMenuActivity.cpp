@@ -90,7 +90,7 @@ void EpubReaderMenuActivity::render(RenderLock&&) {
   auto metrics = UITheme::getInstance().getMetrics();
   Rect screen = UITheme::getInstance().getScreenSafeArea(renderer, true, false);
 
-  GUI.drawHeader(renderer, Rect{screen.x, screen.y + metrics.topPadding, screen.width, metrics.headerHeight},
+  GUI.drawHeader(renderer, Rect{screen.x, screen.y + metrics.layout.topPadding, screen.width, metrics.header.height},
                  title.c_str());
 
   // Progress summary
@@ -102,12 +102,12 @@ void EpubReaderMenuActivity::render(RenderLock&&) {
   progressLine += std::string(tr(STR_BOOK_PREFIX)) + std::to_string(bookProgressPercent) + "%";
   GUI.drawSubHeader(
       renderer,
-      Rect{screen.x, screen.y + metrics.topPadding + metrics.headerHeight, screen.width, metrics.tabBarHeight},
+      Rect{screen.x, screen.y + metrics.layout.topPadding + metrics.header.height, screen.width, metrics.tabBar.height},
       progressLine.c_str());
 
   const int contentTop =
-      screen.y + metrics.topPadding + metrics.headerHeight + metrics.tabBarHeight + metrics.verticalSpacing;
-  const int contentHeight = screen.height - contentTop - metrics.verticalSpacing;
+      screen.y + metrics.layout.topPadding + metrics.header.height + metrics.tabBar.height + metrics.layout.verticalSpacing;
+  const int contentHeight = screen.height - contentTop - metrics.layout.verticalSpacing;
 
   GUI.drawList(
       renderer, Rect{screen.x, contentTop, screen.width, contentHeight}, menuItems.size(), selectedIndex,

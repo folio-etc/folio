@@ -129,17 +129,23 @@ void SdCardFont::freeAll() {
   }
   styleCount_ = 0;
   contentHash_ = 0;
+  lastPrewarmHash_ = 0;
   loaded_ = false;
 }
 
 void SdCardFont::clearOverflow() {
-  for (uint32_t i = 0; i < overflowCount_; i++) {
+  // Walk the full array, not just [0, overflowCount_) — LRU eviction means
+  // entries can hold valid bitmap pointers at any index up to OVERFLOW_CAPACITY.
+  for (uint32_t i = 0; i < OVERFLOW_CAPACITY; i++) {
     delete[] overflow_[i].bitmap;
     overflow_[i].bitmap = nullptr;
     overflow_[i].codepoint = 0;
+    overflow_[i].styleIdx = 0;
+    overflow_[i].lastUsedTick = 0;
+    overflow_[i].glyph = {};
   }
   overflowCount_ = 0;
-  overflowNext_ = 0;
+  nextLruTick_ = 1;
 }
 
 // --- Per-style kern/ligature ---
@@ -710,6 +716,40 @@ int SdCardFont::prewarm(const char* utf8Text, uint8_t styleMask, bool metadataOn
   // Sort codepoints for ordered interval building
   std::sort(codepoints.get(), codepoints.get() + cpCount);
 
+  // Idempotent short-circuit: if the requested (sorted-codepoints, styleMask,
+  // metadataOnly) tuple matches the last successful prewarm, the mini cache
+  // already holds exactly this content. Skip the destructive rebuild (which
+  // would re-issue every per-glyph SD read for no gain). Critical for UI
+  // activities that re-prewarm on every render with stable text.
+  {
+    static constexpr uint32_t FNV_OFFSET = 2166136261u;
+    static constexpr uint32_t FNV_PRIME = 16777619u;
+    uint32_t hash = FNV_OFFSET;
+    for (uint32_t i = 0; i < cpCount; i++) {
+      const uint32_t cp = codepoints[i];
+      hash ^= (cp & 0xFF);
+      hash *= FNV_PRIME;
+      hash ^= ((cp >> 8) & 0xFF);
+      hash *= FNV_PRIME;
+      hash ^= ((cp >> 16) & 0xFF);
+      hash *= FNV_PRIME;
+      hash ^= ((cp >> 24) & 0xFF);
+      hash *= FNV_PRIME;
+    }
+    hash ^= styleMask;
+    hash *= FNV_PRIME;
+    hash ^= (metadataOnly ? 1u : 0u);
+    hash *= FNV_PRIME;
+    // Sentinel 0 = "no prewarm yet" — wrap a legitimate-zero hash to 1 so
+    // the first prewarm with this hash doesn't get treated as not-yet-warmed.
+    if (hash == 0) hash = 1;
+    if (hash == lastPrewarmHash_) {
+      stats_.prewarmTotalMs = millis() - startMs;
+      return 0;
+    }
+    lastPrewarmHash_ = hash;
+  }
+
   // Prewarm each requested style
   int totalMissed = 0;
   for (uint8_t si = 0; si < MAX_STYLES; si++) {
@@ -956,6 +996,9 @@ void SdCardFont::clearCache() {
     freeStyleMiniData(styles_[i]);
     applyGlyphMissCallback(i);
   }
+  // Drop the prewarm fingerprint so the next prewarm rebuilds, since we
+  // just freed all the mini data the fingerprint was vouching for.
+  lastPrewarmHash_ = 0;
 }
 
 // --- Advance table ---
@@ -1259,22 +1302,40 @@ const EpdGlyph* SdCardFont::onGlyphMiss(void* ctx, uint32_t codepoint) {
   const auto& s = self->styles_[styleIdx];
   if (!s.fullIntervals) return nullptr;
 
-  // Check overflow cache first (matching both codepoint and style)
-  for (uint32_t i = 0; i < self->overflowCount_; i++) {
-    if (self->overflow_[i].codepoint == codepoint && self->overflow_[i].styleIdx == styleIdx) {
-      return &self->overflow_[i].glyph;
+  // LRU lookup — scan the cache for a (codepoint, styleIdx) match. On hit,
+  // bump lastUsedTick so this entry survives the next eviction.
+  for (uint32_t i = 0; i < OVERFLOW_CAPACITY; i++) {
+    auto& e = self->overflow_[i];
+    if (e.lastUsedTick != 0 && e.codepoint == codepoint && e.styleIdx == styleIdx) {
+      e.lastUsedTick = self->nextLruTick_++;
+      return &e.glyph;
     }
   }
 
-  // Look up global glyph index via full intervals
-  int32_t globalIdx = self->findGlobalGlyphIndex(s, codepoint);
+  // Miss — need to load from SD. Look up the global glyph index first; if
+  // the codepoint isn't in this font's coverage, bail before touching SD.
+  const int32_t globalIdx = self->findGlobalGlyphIndex(s, codepoint);
   if (globalIdx < 0) return nullptr;
 
-  // Pick overflow slot (ring buffer). Read into temporaries first so the
-  // existing slot stays valid if SD I/O fails. Bookkeeping (count/next)
-  // is deferred until after all I/O succeeds to avoid inconsistent state.
-  uint32_t slot = self->overflowNext_;
-  bool wasAtCapacity = (self->overflowCount_ == OVERFLOW_CAPACITY);
+  // Pick the victim slot. Prefer an empty slot (lastUsedTick == 0); if the
+  // cache is full, evict the entry with the lowest tick. Reading into
+  // temporaries first means the existing slot stays valid until all SD I/O
+  // succeeds, so a mid-load failure doesn't leave the cache inconsistent.
+  uint32_t slot = 0;
+  bool foundEmpty = false;
+  uint32_t lowestTick = UINT32_MAX;
+  for (uint32_t i = 0; i < OVERFLOW_CAPACITY; i++) {
+    const uint32_t tick = self->overflow_[i].lastUsedTick;
+    if (tick == 0) {
+      slot = i;
+      foundEmpty = true;
+      break;
+    }
+    if (tick < lowestTick) {
+      lowestTick = tick;
+      slot = i;
+    }
+  }
 
   // Read glyph metadata into temporary
   FsFile file;
@@ -1284,10 +1345,9 @@ const EpdGlyph* SdCardFont::onGlyphMiss(void* ctx, uint32_t codepoint) {
   }
 
   EpdGlyph tempGlyph = {};
-  uint32_t glyphFileOff = s.glyphsFileOffset + static_cast<uint32_t>(globalIdx) * sizeof(EpdGlyph);
+  const uint32_t glyphFileOff = s.glyphsFileOffset + static_cast<uint32_t>(globalIdx) * sizeof(EpdGlyph);
   if (!file.seekSet(glyphFileOff)) {
     LOG_ERR("SDCF", "Overflow: failed to seek to glyph for U+%04X style %u", codepoint, styleIdx);
-    file.close();
     return nullptr;
   }
   if (file.read(reinterpret_cast<uint8_t*>(&tempGlyph), sizeof(EpdGlyph)) != sizeof(EpdGlyph)) {
@@ -1306,7 +1366,6 @@ const EpdGlyph* SdCardFont::onGlyphMiss(void* ctx, uint32_t codepoint) {
     if (!file.seekSet(s.bitmapFileOffset + tempGlyph.dataOffset)) {
       LOG_ERR("SDCF", "Overflow: failed to seek to bitmap for U+%04X", codepoint);
       delete[] tempBitmap;
-      file.close();
       return nullptr;
     }
     if (file.read(tempBitmap, tempGlyph.dataLength) != static_cast<int>(tempGlyph.dataLength)) {
@@ -1316,20 +1375,17 @@ const EpdGlyph* SdCardFont::onGlyphMiss(void* ctx, uint32_t codepoint) {
     }
   }
 
-  // All reads succeeded — commit to slot and advance ring buffer
-  if (wasAtCapacity) {
+  // All reads succeeded — commit. Evict old bitmap if we're reusing a slot.
+  if (!foundEmpty) {
     delete[] self->overflow_[slot].bitmap;
   } else {
     self->overflowCount_++;
   }
-  self->overflowNext_ = (slot + 1) % OVERFLOW_CAPACITY;
   self->overflow_[slot].glyph = tempGlyph;
   self->overflow_[slot].bitmap = tempBitmap;
   self->overflow_[slot].codepoint = codepoint;
   self->overflow_[slot].styleIdx = styleIdx;
-
-  LOG_DBG("SDCF", "Overflow: loaded U+%04X style %u on demand (slot %u/%u)", codepoint, styleIdx, slot,
-          OVERFLOW_CAPACITY);
+  self->overflow_[slot].lastUsedTick = self->nextLruTick_++;
 
   return &self->overflow_[slot].glyph;
 }

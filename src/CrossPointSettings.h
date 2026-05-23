@@ -148,8 +148,9 @@ class CrossPointSettings {
     LONG_PRESS_BUTTON_BEHAVIOR_COUNT
   };
 
-  // UI Theme
-  enum UI_THEME { CLASSIC = 0, LYRA = 1, LYRA_3_COVERS = 2, ROUNDEDRAFF = 3, FOLIO = 4 };
+  // UI Theme. Slot 2 was previously LYRA_3_COVERS (now removed). Persisted
+  // values >= UI_THEME_COUNT are treated as CLASSIC.
+  enum UI_THEME { CLASSIC = 0, LYRA = 1, ROUNDEDRAFF = 2, FOLIO = 3, UI_THEME_COUNT };
 
   // Image rendering in EPUB reader
   enum IMAGE_RENDERING { IMAGES_DISPLAY = 0, IMAGES_PLACEHOLDER = 1, IMAGES_SUPPRESS = 2, IMAGE_RENDERING_COUNT };

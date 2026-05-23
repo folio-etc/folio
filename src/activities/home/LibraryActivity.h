@@ -38,19 +38,10 @@ class LibraryActivity final : public Activity {
   // not also trigger an open-book (typical when launched from a parent menu).
   bool lockNextConfirmRelease = false;
 
-  // Per-slot framebuffer-region cache for cover bitmaps. Cover pixels don't
-  // depend on selection state (the selection hatch lives outside the cover
-  // rect, and we fillRect-clear the cover area before drawing the BMP), so
-  // we can capture each cover once per page and memcpy it back on every
-  // subsequent render instead of re-opening + re-decoding the .bmp file
-  // from SD. Modeled on HomeActivity's coverBuffer pattern.
-  struct CoverCache {
-    std::unique_ptr<uint8_t[]> buf;
-    size_t size = 0;
-    bool valid = false;
-  };
-  CoverCache coverCache[PER_PAGE];
-  int cachedCoverPage = -1;
+  // No per-slot cover cache here — the renderer owns a path-keyed image
+  // cache (see GfxRenderer::drawCachedBitmap). Library just calls
+  // drawCachedBitmap for each visible thumb; the renderer hides the
+  // SD-I/O / decode cost and LRU-evicts under its own budget.
 
   // ---- Navigation helpers -------------------------------------------------
   int currentRow() const { return librarySelected / COLS; }
@@ -66,11 +57,6 @@ class LibraryActivity final : public Activity {
   void openMenuOption(int idx);
 
   // ---- Rendering helpers --------------------------------------------------
-  // Batch-prewarms every SD-loaded role font with the exact text it'll
-  // render this frame. Without this, the first draw of each glyph faults
-  // it from the SD card one byte at a time (~14 s per selection change for
-  // a 9-book grid). Called from render() before any draw operations.
-  void prewarmFonts();
   // Body of the render: header + library shelf or menu + footer hints.
   // Split out from render() so the prewarming and clear/display bookends
   // stay tidy.
@@ -89,9 +75,6 @@ class LibraryActivity final : public Activity {
   // prototype's CSS outline does.
   Rect tileContentRect(const LibraryBook& book, const Rect& cell) const;
 
-  // Cover-cache helpers. invalidateCoverCache() drops all slot buffers and
-  // marks cachedCoverPage stale; called on page change and onExit.
-  void invalidateCoverCache();
 
   // Bounding rect of the (row, col) cell inside the shelf area. Pure geometry,
   // marked static so the renderer code keeps direct access to COLS/ROWS without
@@ -106,4 +89,5 @@ class LibraryActivity final : public Activity {
   void onExit() override;
   void loop() override;
   void render(RenderLock&&) override;
+  void declareText(TextCollector& tc) override;
 };

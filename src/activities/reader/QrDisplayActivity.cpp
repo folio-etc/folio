@@ -29,11 +29,11 @@ void QrDisplayActivity::render(RenderLock&&) {
   const auto pageWidth = renderer.getScreenWidth();
   const auto pageHeight = renderer.getScreenHeight();
 
-  GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, tr(STR_DISPLAY_QR), nullptr);
+  GUI.drawHeader(renderer, Rect{0, metrics.layout.topPadding, pageWidth, metrics.header.height}, tr(STR_DISPLAY_QR), nullptr);
 
   const int availableWidth = pageWidth - 40;
-  const int availableHeight = pageHeight - metrics.topPadding - metrics.headerHeight - metrics.verticalSpacing * 2 - 40;
-  const int startY = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
+  const int availableHeight = pageHeight - metrics.layout.topPadding - metrics.header.height - metrics.layout.verticalSpacing * 2 - 40;
+  const int startY = metrics.layout.topPadding + metrics.header.height + metrics.layout.verticalSpacing;
 
   const Rect qrBounds(20, startY, availableWidth, availableHeight);
   QrUtils::drawQrCode(renderer, qrBounds, textPayload);

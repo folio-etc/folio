@@ -16,11 +16,18 @@
 #include "MappedInputManager.h"
 #include "ThemeFontRegistry.h"
 #include "components/UITheme.h"
-#include "components/themes/folio/FolioTheme.h"
+#include "components/themes/BaseTheme.h"
+#include "components/themes/ThemeData.h"
 #include "fontIds.h"
 
 namespace {
 constexpr char LOG_TAG[] = "LIBA";
+
+// Resolve font roles against the currently-active theme so Library follows
+// whichever theme the user has selected. Each theme provides its own role
+// mapping (and SD-installed face, if any) via ThemeData; Library now picks
+// up sans-serif Lyra fonts under Lyra, Folio serif under Folio, etc.
+int libFont(FontRole role) { return GUI.getFontForRole(role); }
 
 // Long-press threshold for Back-to-Home, matching the firmware convention.
 constexpr unsigned long GO_HOME_MS = 1000;
@@ -59,30 +66,6 @@ constexpr int RAIL_TICK_GAP = 10;
 constexpr int RAIL_PAD_TOP = 8;
 constexpr int RAIL_TICK_COUNT = 6;   // visual cap on the rail (extras roll off)
 
-// Footer button hints — match Folio's geometry exactly so the labels line up
-// with the physical front buttons regardless of which theme is active.
-constexpr int BTN_W = 106;
-constexpr int BTN_H = 40;
-constexpr int X4_BTN_POS[] = {25, 130, 245, 350};
-constexpr int X3_BTN_POS[] = {38, 154, 268, 384};
-
-// Characters we prewarm into every SD-loaded role font on each render.
-// Covers printable ASCII, Latin-1 Supplement, and the typography
-// punctuation that book metadata commonly uses (smart quotes, em-dash,
-// ellipsis, middle dot). Anything outside this set (e.g. CJK in a book
-// title) still works — it just faults that glyph on first draw rather
-// than being preloaded with the alphabet.
-//
-// ~230 codepoints, well under SdCardFont::MAX_PAGE_GLYPHS (512). Cost is
-// a single batched SD read per font per style.
-constexpr const char* COMMON_ALPHABET =
-    " !\"#$%&'()*+,-./0123456789:;<=>?@"
-    "ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`"
-    "abcdefghijklmnopqrstuvwxyz{|}~"
-    "·"  // middle dot — header subtitle separator
-    "ÀÁÂÃÄÅÆÇÈÉÊËÌÍÎÏÐÑÒÓÔÕÖØÙÚÛÜÝÞß"
-    "àáâãäåæçèéêëìíîïðñòóôõöøùúûüýþÿ"
-    "–—‘’“”…";  // en/em-dash, smart quotes, ellipsis
 }  // namespace
 
 Rect LibraryActivity::cellRect(int row, int col, int shelfX, int shelfY, int shelfW, int shelfH) {
@@ -103,10 +86,12 @@ void LibraryActivity::onEnter() {
   view = View::Library;
   menuSelected = 0;
 
-  // SD role fonts were unloaded on the previous onExit() to free RAM for
-  // the reader / wherever-we-came-from. Re-discover them now so the role
-  // lookups in prewarmFonts() and FolioTheme::resolveFontRole() see them.
-  THEME_FONTS.discover(renderer);
+  // SD role fonts persist across most Library exits — only the book-open
+  // path (doSelect → goToReader) unloads them. When returning from the
+  // reader, reloadActive re-scans the active theme's directory. The first
+  // render after this will call declareText, which batched-loads the
+  // glyphs we actually need into the LRU.
+  THEME_FONTS.reloadActive(renderer);
 
   // The on-disk library.bin survives onExit; load it back into memory.
   LIBRARY_INDEX.loadFromFile();
@@ -123,49 +108,24 @@ void LibraryActivity::onEnter() {
     librarySelected = 0;
   }
 
-  // Prewarm SD-loaded role fonts now so every render afterward is cheap.
-  // The mini glyph cache survives across renders within this activity
-  // (we don't use FontCacheManager::PrewarmScope and nothing in the
-  // Library navigation path clears the cache), so a single prewarm at
-  // entry is enough. Coming back from the reader re-enters this activity
-  // — onEnter runs again, re-prewarming whatever PrewarmScope wiped.
-  prewarmFonts();
-
   requestUpdate();
 }
 
 void LibraryActivity::onExit() {
   Activity::onExit();
 
-  // The X4 only has ~380 KB of RAM and LibraryActivity holds a lot of it.
-  // Whatever comes next (most often the reader, which needs every byte it
-  // can get for EPUB indexing) deserves the full heap back. We re-load
-  // everything from disk on the next onEnter().
+  // Free Library-only state that other activities don't need. SD role fonts
+  // are NOT unloaded here — that would silently drop typography in every
+  // subsequent UI activity (Settings, Browse, etc. would lose the Folio
+  // serif and fall back to embedded sans). The book-open path in doSelect()
+  // does its own font unload before goToReader, which is the one exit that
+  // actually needs the RAM.
   //
-  // Tally of what's released:
-  //   ~13 KB  cover bitmap cache (9 framebuffer-region buffers)
-  //   ~30 KB  SD-font mini glyph data (5 role fonts × ~240 codepoints prewarmed)
-  //   ~50 KB  SD-font persistent state (intervals + kerning tables for
-  //           three installed role fonts × 4 styles each)
-  //   ~25 KB  LibraryIndex books vector
-  //   --------
-  //   ~118 KB total
-  invalidateCoverCache();
-
-  auto* fcm = renderer.getFontCacheManager();
-  if (fcm) fcm->clearCache();
-
-  THEME_FONTS.unloadAll(renderer);
+  // The renderer's image cache holds 9 decoded covers (~10 KB total at 1bpp).
+  // We drop those on exit too — the next paint of any other UI is fast
+  // because those activities don't render thumbnails.
+  renderer.clearImageCache();
   LIBRARY_INDEX.unload();
-}
-
-void LibraryActivity::invalidateCoverCache() {
-  for (auto& c : coverCache) {
-    c.buf.reset();
-    c.size = 0;
-    c.valid = false;
-  }
-  cachedCoverPage = -1;
 }
 
 // ---- Input ------------------------------------------------------------------
@@ -310,6 +270,17 @@ void LibraryActivity::doSelect() {
   const LibraryBook* book = LIBRARY_INDEX.getAt(libraryPage, librarySelected, PER_PAGE);
   if (book == nullptr) return;
   LOG_DBG(LOG_TAG, "Opening book: %s", book->path.c_str());
+
+  // The reader is the RAM-critical destination — EPUB indexing wants every
+  // byte it can get. Free SD role fonts (~50 KB persistent + ~30 KB mini
+  // cache) before handing off. Library's onEnter re-discovers + re-prewarms
+  // when we come back. Other Library exits (Settings, Browse, Home) keep
+  // the fonts resident so those activities stay typographically consistent
+  // and don't lazy-fault glyphs on first paint.
+  auto* fcm = renderer.getFontCacheManager();
+  if (fcm) fcm->clearCache();
+  THEME_FONTS.unloadAll(renderer);
+
   activityManager.goToReader(book->path);
 }
 
@@ -338,32 +309,74 @@ void LibraryActivity::openMenuOption(int idx) {
 // ---- Render -----------------------------------------------------------------
 
 void LibraryActivity::render(RenderLock&&) {
-  // Fonts were prewarmed in onEnter() — drawText calls below hit the warm
-  // mini glyph cache, no per-glyph SD faults. See prewarmFonts() for the
-  // cache-lifetime reasoning.
+  // Single-pass render. ActivityManager called declareText() just before
+  // this, so the font cache LRU already holds the glyphs this paint needs.
+  // Anything the declaration missed (rare punctuation in a book title,
+  // CJK, etc.) lazy-loads into the LRU via SdCardFont::onGlyphMiss — those
+  // entries also persist across paints, so a one-off slow first paint is
+  // the worst case for unforeseen glyphs.
   renderer.clearScreen();
   renderPasses();
   renderer.displayBuffer();
 }
 
-void LibraryActivity::prewarmFonts() {
-  auto* fcm = renderer.getFontCacheManager();
-  if (!fcm) return;
+void LibraryActivity::declareText(TextCollector& tc) {
+  // Enumerate exactly the text this paint will draw. The framework
+  // batched-loads any glyphs we haven't cached yet; SdCardFont's idempotent
+  // prewarm short-circuits when the same content was declared last paint
+  // (i.e. selection movement on the same shelf page).
+  //
+  // Library uses Compact variants for the dense book-grid text (titles,
+  // authors, page rail) and default sizes for header/menu chrome — the
+  // user installs separate compact + default .cpfont files for the
+  // contrast. When only one is installed, the Compact lookup falls through
+  // to the default font so the screen still renders.
+  const int titleFont = libFont(FontRole::Title);
+  const int headingFont = libFont(FontRole::Heading);
+  const int bodyCompactFont = libFont(FontRole::BodyCompact);
+  const int captionFont = libFont(FontRole::Caption);
+  const int captionCompactFont = libFont(FontRole::CaptionCompact);
+  const int accentCompactFont = libFont(FontRole::AccentCompact);
 
-  // Bitmask convention: 0x01=regular, 0x02=bold, 0x04=italic, 0x08=bold-italic.
-  constexpr uint8_t REG_BOLD = 0x03;
-  constexpr uint8_t ITALIC = 0x04;
-  constexpr uint8_t BOLD_ITALIC = 0x06;
+  if (view == View::Menu) {
+    // Menu view chrome — default sizes, this view is roomy.
+    tc.use(titleFont, EpdFontFamily::BOLD, tr(STR_LIBRARY_MENU_TITLE));
+    tc.use(captionFont, EpdFontFamily::ITALIC, tr(STR_LIBRARY_MENU_SUBTITLE));
+    tc.use(headingFont, EpdFontFamily::ITALIC, "I.II.III.");
+    tc.use(titleFont, EpdFontFamily::BOLD, tr(STR_BROWSE_FILES));
+    tc.use(titleFont, EpdFontFamily::BOLD, tr(STR_FILE_TRANSFER));
+    tc.use(titleFont, EpdFontFamily::BOLD, tr(STR_SETTINGS_TITLE));
+    tc.use(captionFont, EpdFontFamily::ITALIC, tr(STR_LIBRARY_MENU_BROWSE_HINT));
+    tc.use(captionFont, EpdFontFamily::ITALIC, tr(STR_LIBRARY_MENU_TRANSFER_HINT));
+    tc.use(captionFont, EpdFontFamily::ITALIC, tr(STR_LIBRARY_MENU_SETTINGS_HINT));
+  } else {
+    // Library shelf view.
+    // Header — default caption (header subtitle is short, doesn't need compact).
+    tc.use(titleFont, EpdFontFamily::BOLD, tr(STR_LIBRARY));
+    if (!LIBRARY_INDEX.isEmpty()) {
+      tc.use(captionFont, EpdFontFamily::ITALIC, tr(STR_LIBRARY_SORTED_RECENT));
+      tc.use(captionFont, EpdFontFamily::ITALIC, "0123456789 · /");
+      // Page rail "1 / 12" — uses the compact accent face.
+      tc.use(accentCompactFont, EpdFontFamily::ITALIC, "0123456789 /");
+    }
+    // Book grid — dense, uses the compact caption face.
+    for (int slot = 0; slot < PER_PAGE; ++slot) {
+      const LibraryBook* book = LIBRARY_INDEX.getAt(libraryPage, slot, PER_PAGE);
+      if (book == nullptr) continue;
+      tc.use(captionCompactFont, EpdFontFamily::BOLD, book->title);
+      if (!book->author.empty()) {
+        tc.use(captionCompactFont, EpdFontFamily::ITALIC, book->author);
+      }
+    }
+  }
 
-  // Per role: which styles do we actually render in? Tighter masks mean
-  // fewer glyphs prewarmed. The text content itself is the shared alphabet
-  // — anything beyond it (CJK, rare Latin Extended) faults lazily on draw,
-  // which is fine because it's rare and one-time.
-  fcm->prewarmCache(FolioTheme::resolveFontRole(FontRole::Caption), COMMON_ALPHABET, BOLD_ITALIC);
-  fcm->prewarmCache(FolioTheme::resolveFontRole(FontRole::Title), COMMON_ALPHABET, REG_BOLD);
-  fcm->prewarmCache(FolioTheme::resolveFontRole(FontRole::Heading), COMMON_ALPHABET, ITALIC);
-  fcm->prewarmCache(FolioTheme::resolveFontRole(FontRole::Body), COMMON_ALPHABET, ITALIC);
-  fcm->prewarmCache(FolioTheme::resolveFontRole(FontRole::Accent), COMMON_ALPHABET, ITALIC);
+  // Button hints — italic body labels, compact face so the label has
+  // breathing room inside the 106-px Folio hint box.
+  tc.use(bodyCompactFont, EpdFontFamily::ITALIC, tr(STR_MENU_LABEL));
+  tc.use(bodyCompactFont, EpdFontFamily::ITALIC, tr(STR_BACK));
+  tc.use(bodyCompactFont, EpdFontFamily::ITALIC, tr(STR_SELECT));
+  tc.use(bodyCompactFont, EpdFontFamily::ITALIC, tr(STR_DIR_LEFT));
+  tc.use(bodyCompactFont, EpdFontFamily::ITALIC, tr(STR_DIR_RIGHT));
 }
 
 void LibraryActivity::renderPasses() {
@@ -379,21 +392,14 @@ void LibraryActivity::renderPasses() {
     renderMenuView();
   }
 
-  // Footer button hints. Labels depend on the active view. Note that the
-  // physical Back button is what we label "Menu" in Library / "Back" in Menu —
-  // see the loop() handler for the mapping rationale.
+  // Footer button hints — delegate to the active theme so they match the
+  // rest of the device's chrome. Folio paints hairline-italic hints, Lyra
+  // paints rounded white-filled hints, Classic paints sharp boxes, etc.
   const char* backLabel = (view == View::Menu) ? tr(STR_BACK) : tr(STR_MENU_LABEL);
   const char* leftLabel = (view == View::Menu) ? "" : tr(STR_DIR_LEFT);
   const char* rightLabel = (view == View::Menu) ? "" : tr(STR_DIR_RIGHT);
   const auto labels = mappedInput.mapLabels(backLabel, tr(STR_SELECT), leftLabel, rightLabel);
-
-  const int pageHeight = renderer.getScreenHeight();
-  const int* positions = gpio.deviceIsX3() ? X3_BTN_POS : X4_BTN_POS;
-  const char* btnLabels[] = {labels.btn1, labels.btn2, labels.btn3, labels.btn4};
-  for (int i = 0; i < 4; ++i) {
-    if (btnLabels[i] == nullptr || btnLabels[i][0] == '\0') continue;
-    FolioTheme::drawFolioButtonHint(renderer, positions[i], pageHeight - BTN_H, BTN_W, BTN_H, btnLabels[i]);
-  }
+  GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
 }
 
 void LibraryActivity::renderHeader() {
@@ -405,11 +411,11 @@ void LibraryActivity::renderHeader() {
   // happily inherits from the user's chosen theme.
   const auto& metrics = UITheme::getInstance().getMetrics();
   constexpr int maxBatteryWidth = 80;
-  renderer.fillRect(renderer.getScreenWidth() - maxBatteryWidth, 5, maxBatteryWidth, metrics.batteryHeight + 10, false);
+  renderer.fillRect(renderer.getScreenWidth() - maxBatteryWidth, 5, maxBatteryWidth, metrics.battery.height + 10, false);
   const bool showBatteryPct =
       SETTINGS.hideBatteryPercentage != CrossPointSettings::HIDE_BATTERY_PERCENTAGE::HIDE_ALWAYS;
-  const int batteryX = renderer.getScreenWidth() - 12 - metrics.batteryWidth;
-  GUI.drawBatteryRight(renderer, Rect{batteryX, 5, metrics.batteryWidth, metrics.batteryHeight}, showBatteryPct);
+  const int batteryX = renderer.getScreenWidth() - 12 - metrics.battery.width;
+  GUI.drawBatteryRight(renderer, Rect{batteryX, 5, metrics.battery.width, metrics.battery.height}, showBatteryPct);
 
   // Title and subtitle — match FolioTheme::drawHeader's positions so the
   // Library reads identically whether or not Folio is the active theme.
@@ -424,8 +430,8 @@ void LibraryActivity::renderHeader() {
                    std::to_string(libraryPage + 1) + " / " + std::to_string(totalPages());
   }
 
-  const int titleFont = FolioTheme::resolveFontRole(FontRole::Title);
-  const int captionFont = FolioTheme::resolveFontRole(FontRole::Caption);
+  const int titleFont = libFont(FontRole::Title);
+  const int captionFont = libFont(FontRole::Caption);
 
   const int titleMaxWidth = batteryX - CONTENT_PAD_X * 2;
   const std::string truncatedTitle =
@@ -448,37 +454,35 @@ void LibraryActivity::renderLibraryShelf() {
   const int shelfW = screenW - CONTENT_PAD_X * 2 - RAIL_WIDTH - RAIL_GAP;
   const int shelfH = screenH - HEADER_HEIGHT - FOOTER_HEIGHT - CONTENT_PAD_Y * 2;
 
-  // If we're rendering a different page than what's cached, drop the per-
-  // slot buffers. They'll be rebuilt by the first renderBookTile call below.
-  if (cachedCoverPage != libraryPage) {
-    invalidateCoverCache();
-    cachedCoverPage = libraryPage;
-  }
-
   for (int slot = 0; slot < PER_PAGE; ++slot) {
     const LibraryBook* book = LIBRARY_INDEX.getAt(libraryPage, slot, PER_PAGE);
     if (book == nullptr) continue;
     const Rect cell = cellRect(slot / COLS, slot % COLS, shelfX, shelfY, shelfW, shelfH);
     const bool selected = (slot == librarySelected);
 
-    // Tile content first, selection frame on top. The frame is now just an
-    // outline + corner brackets (no hatch background since 1-bit can't
-    // reproduce 5% opacity legibly), so it works as a foreground overlay.
-    // Drawing the frame last guarantees nothing — not the cover-region
-    // memcpy from the cache, not the text below — can clip its edges.
-    renderBookTile(slot, *book, selected);
+    // Selection is split into a background pass (fills — drawn BEFORE tile
+    // content so the cover bitmap and text paint on top of the wash) and a
+    // foreground pass (borders + brackets — drawn AFTER content so the
+    // frame sits on top). Themes with only fills (Lyra's RoundedFill) are
+    // no-op in foreground; themes with only borders (Folio's LayeredFrame)
+    // are no-op in background.
+    //
+    // Horizontal inset hugs the content (3 px clears Folio's layered outer
+    // + gap + inner stroke). Vertical inset is deliberately larger so the
+    // frame "lifts" the tile with breathing room above and below instead
+    // of clinging tightly to the cover/text bounds.
+    constexpr int kFrameInsetX = 3;
+    constexpr int kFrameInsetY = 8;
+    Rect selectionRect{};
     if (selected) {
       const Rect content = tileContentRect(*book, cell);
-      // Horizontal inset hugs the content (3 px clears the layered outer +
-      // gap + inner stroke). Vertical inset is deliberately larger so the
-      // frame "lifts" the tile with breathing room above and below instead
-      // of clinging tightly to the cover/text bounds.
-      constexpr int kFrameInsetX = 3;
-      constexpr int kFrameInsetY = 8;
-      FolioTheme::drawSelectionFrame(
-          renderer,
-          Rect{content.x - kFrameInsetX, content.y - kFrameInsetY,
-               content.width + kFrameInsetX * 2, content.height + kFrameInsetY * 2});
+      selectionRect = Rect{content.x - kFrameInsetX, content.y - kFrameInsetY,
+                           content.width + kFrameInsetX * 2, content.height + kFrameInsetY * 2};
+      GUI.drawSelectionBackground(renderer, selectionRect);
+    }
+    renderBookTile(slot, *book, selected);
+    if (selected) {
+      GUI.drawSelectionForeground(renderer, selectionRect);
     }
   }
 }
@@ -492,7 +496,14 @@ Rect LibraryActivity::tileContentRect(const LibraryBook& /*book*/, const Rect& c
   return Rect{cell.x, cell.y + TILE_PAD_TOP, cell.width, TILE_CONTENT_H};
 }
 
-void LibraryActivity::renderBookTile(int slotIndex, const LibraryBook& book, bool /*selected*/) {
+void LibraryActivity::renderBookTile(int slotIndex, const LibraryBook& book, bool selected) {
+  // When the active theme paints a dark selection background (Classic's
+  // SolidFill, RoundedRaff's RoundedRowAlways), the tile's text + progress
+  // bar need to render in inverted (white) ink to stay legible. The cover
+  // bitmap is unaffected — renderBookTile fills the cover area to white
+  // before drawing the BMP, so the cover always sits on a white substrate
+  // regardless of selection background.
+  const bool invertText = selected && GUI.getData()->selection.textInverted;
   const int screenW = renderer.getScreenWidth();
   const int screenH = renderer.getScreenHeight();
   const int shelfX = CONTENT_PAD_X;
@@ -501,115 +512,73 @@ void LibraryActivity::renderBookTile(int slotIndex, const LibraryBook& book, boo
   const int shelfH = screenH - HEADER_HEIGHT - FOOTER_HEIGHT - CONTENT_PAD_Y * 2;
   const Rect cell = cellRect(slotIndex / COLS, slotIndex % COLS, shelfX, shelfY, shelfW, shelfH);
 
-  // Resolve fonts up front — they may come from SD overrides (smaller faces),
-  // in which case the tile content height shrinks and we can fit more lines.
-  const int captionFont = FolioTheme::resolveFontRole(FontRole::Caption);
+  // Resolve fonts up front. The 3×3 grid is the densest screen the device
+  // renders, so we use the *Compact* caption — when the user installs
+  // /.fonts/themes/folio/caption-compact.cpfont at a smaller point size,
+  // Library tightens up while Settings / Browse keep the larger default
+  // caption. Falls through to the regular caption when no compact face is
+  // installed, so this works the day someone first installs the theme too.
+  const int captionFont = libFont(FontRole::CaptionCompact);
   const int captionLineH = renderer.getLineHeight(captionFont);
 
   // ---- Cover (centered horizontally within the cell, top-aligned) -----
-  // Cover pixels don't depend on selection state (the selection outline is
-  // drawn at the cell edges, well outside the cover area). We capture each
-  // slot's cover region to a heap buffer on first render of a page and
-  // memcpy it back on subsequent renders — the difference between ~300 ms
-  // of SD I/O per selection change and zero.
+  // The renderer's path-keyed image cache owns the SD-I/O + decode work.
+  // First paint of a thumb loads from SD; subsequent paints rasterize
+  // from cached pixel data. Library just queries dimensions, computes
+  // the centered frame, and calls drawCachedBitmap.
   //
-  // Capture rect is intentionally +1 wider and +1 taller than the cover so
-  // the bottom and right drop-shadow lines (at coverX+COVER_W, coverY+
-  // COVER_H — one pixel outside the cover proper) live inside the cached
-  // region. Without that, cache hits restore the cover correctly but lose
-  // the shadow lines, which clearScreen has wiped.
-  // The "cover area" is now the full cell width × COVER_H rather than a
-  // fixed 80-px-wide slot. Lets wider thumbnails (e.g. square or near-
-  // square sources) keep their natural size instead of being downscaled
-  // by the old width limit — they fill more of the available horizontal
-  // space while still respecting COVER_H as the vertical ceiling.
+  // The "cover area" is the full cell width × COVER_H — lets wider
+  // thumbnails (square or near-square sources) keep their natural size
+  // instead of being clipped to a fixed 80-px slot.
   const int coverAreaX = cell.x;
   const int coverAreaW = cell.width;
   const int coverY = cell.y + TILE_PAD_TOP;
-  const int captureW = coverAreaW + 1;
-  const int captureH = COVER_H + 1;
-  CoverCache& slotCache = coverCache[slotIndex];
-  const bool cacheHit = (cachedCoverPage == libraryPage && slotCache.valid);
 
-  if (cacheHit) {
-    renderer.copyBufferToRegion(coverAreaX, coverY, captureW, captureH, slotCache.buf.get(), slotCache.size);
-  } else {
-    // Clear the cover area to white before drawing — drawBitmap only writes
-    // black pixels, so without this the previous frame's hatch (or anything
-    // else underneath) bleeds through the cover's white regions.
-    renderer.fillRect(coverAreaX, coverY, coverAreaW, COVER_H, false);
+  // Default frame for the title-only fallback (no thumb on disk).
+  int frameX = cell.x + (cell.width - COVER_W) / 2;
+  int frameY = coverY;
+  int frameW = COVER_W;
+  int frameH = COVER_H;
 
-    // Frame rect for the border + drop shadow. Defaults to the legacy
-    // COVER_W × COVER_H slot (centered, for the title-only fallback) and
-    // shrinks to the bitmap's actual drawn dimensions when we have a real
-    // cover.
-    int frameX = cell.x + (cell.width - COVER_W) / 2;
-    int frameY = coverY;
-    int frameW = COVER_W;
-    int frameH = COVER_H;
-
-    bool drewCover = false;
-    const std::string thumbPath =
-        std::string("/.crosspoint/epub_") + std::to_string(book.pathHash) + "/thumb_144.bmp";
-    FsFile file;
-    if (Storage.openFileForRead(LOG_TAG, thumbPath.c_str(), file)) {
-      Bitmap bitmap(file);
-      if (bitmap.parseHeaders() == BmpReaderError::Ok) {
-        // Fit-to-box against (cell.width × COVER_H). drawBitmap1Bit only
-        // downscales, so this is bounded above by the bitmap's natural
-        // size — but the wider horizontal limit means square / wider
-        // source covers stop getting unnecessarily shrunk down to fit an
-        // 80-px slot they don't need to.
-        const int bmpW = bitmap.getWidth();
-        const int bmpH = bitmap.getHeight();
-        float scale = 1.0f;
-        if (bmpW > coverAreaW) scale = static_cast<float>(coverAreaW) / static_cast<float>(bmpW);
-        if (bmpH > COVER_H) scale = std::min(scale, static_cast<float>(COVER_H) / static_cast<float>(bmpH));
-        const int drawnW = static_cast<int>(bmpW * scale);
-        const int drawnH = static_cast<int>(bmpH * scale);
-        // Center within the cell horizontally and within the cover height
-        // vertically — taller covers naturally bottom-align since drawnH
-        // hits COVER_H first.
-        frameX = coverAreaX + (coverAreaW - drawnW) / 2;
-        frameY = coverY + (COVER_H - drawnH) / 2;
-        frameW = drawnW;
-        frameH = drawnH;
-        renderer.drawBitmap(bitmap, frameX, frameY, coverAreaW, COVER_H);
-        drewCover = true;
-      }
-    }
-    if (!drewCover) {
-      // Fallback: title-only "cover" — outlined rectangle with the first
-      // line of the title centered inside. Stays at the legacy COVER_W
-      // slot — this is the placeholder so the typical 2:3 size makes
-      // sense as the visual stand-in.
-      const std::string trunc =
-          renderer.truncatedText(captionFont, book.title.c_str(), COVER_W - 12, EpdFontFamily::BOLD);
-      const int tw = renderer.getTextWidth(captionFont, trunc.c_str(), EpdFontFamily::BOLD);
-      renderer.drawText(captionFont, frameX + (COVER_W - tw) / 2, frameY + (COVER_H - captionLineH) / 2,
-                        trunc.c_str(), true, EpdFontFamily::BOLD);
-    }
-    // 1px outer border + 1px offset drop shadow on the cover (Folio motif).
-    // Wraps the actual drawn area (bitmap or title fallback), not the slot.
-    renderer.drawRect(frameX, frameY, frameW, frameH);
-    renderer.drawLine(frameX + 1, frameY + frameH, frameX + frameW, frameY + frameH);
-    renderer.drawLine(frameX + frameW, frameY + 1, frameX + frameW, frameY + frameH);
-
-    // Capture the finished cover area (cover + border + drop shadow) so
-    // the next render on this page can skip everything above. Width is
-    // cell-wide now, so wider covers' edges stay inside the cached region.
-    const size_t need = renderer.getRegionByteSize(coverAreaX, coverY, captureW, captureH);
-    if (need > 0 && slotCache.size != need) {
-      slotCache.buf = makeUniqueNoThrow<uint8_t[]>(need);
-      slotCache.size = slotCache.buf ? need : 0;
-    }
-    if (slotCache.buf &&
-        renderer.copyRegionToBuffer(coverAreaX, coverY, captureW, captureH, slotCache.buf.get(), slotCache.size)) {
-      slotCache.valid = true;
-    } else {
-      slotCache.valid = false;
-    }
+  bool drewCover = false;
+  const std::string thumbPath =
+      std::string("/.crosspoint/epub_") + std::to_string(book.pathHash) + "/thumb_144.bmp";
+  int bmpW = 0, bmpH = 0;
+  if (renderer.getCachedBitmapDimensions(thumbPath.c_str(), &bmpW, &bmpH) && bmpW > 0 && bmpH > 0) {
+    // Fit-to-box against (cell.width × COVER_H), preserving aspect.
+    float scale = 1.0f;
+    if (bmpW > coverAreaW) scale = static_cast<float>(coverAreaW) / static_cast<float>(bmpW);
+    if (bmpH > COVER_H) scale = std::min(scale, static_cast<float>(COVER_H) / static_cast<float>(bmpH));
+    const int drawnW = static_cast<int>(bmpW * scale);
+    const int drawnH = static_cast<int>(bmpH * scale);
+    // Center within the cell horizontally and within the cover height
+    // vertically. Tall covers naturally bottom-align since drawnH hits
+    // COVER_H first.
+    frameX = coverAreaX + (coverAreaW - drawnW) / 2;
+    frameY = coverY + (COVER_H - drawnH) / 2;
+    frameW = drawnW;
+    frameH = drawnH;
+    // Clear just the bitmap rect to white. drawCachedBitmap only writes
+    // black pixels; the white substrate keeps the selection background
+    // (Lyra / Classic / RoundedRaff) showing in the slot margins around
+    // the cover.
+    renderer.fillRect(frameX, frameY, frameW, frameH, false);
+    drewCover = renderer.drawCachedBitmap(thumbPath.c_str(), frameX, frameY, frameW, frameH);
   }
+  if (!drewCover) {
+    // Fallback: title-only "cover" — outlined rectangle with the first
+    // line of the title centered inside.
+    renderer.fillRect(frameX, frameY, frameW, frameH, false);
+    const std::string trunc =
+        renderer.truncatedText(captionFont, book.title.c_str(), COVER_W - 12, EpdFontFamily::BOLD);
+    const int tw = renderer.getTextWidth(captionFont, trunc.c_str(), EpdFontFamily::BOLD);
+    renderer.drawText(captionFont, frameX + (COVER_W - tw) / 2, frameY + (COVER_H - captionLineH) / 2,
+                      trunc.c_str(), true, EpdFontFamily::BOLD);
+  }
+  // 1 px outer border + 1 px offset drop shadow on the cover (Folio motif).
+  renderer.drawRect(frameX, frameY, frameW, frameH);
+  renderer.drawLine(frameX + 1, frameY + frameH, frameX + frameW, frameY + frameH);
+  renderer.drawLine(frameX + frameW, frameY + 1, frameX + frameW, frameY + frameH);
 
   // ---- Text area (fixed-height, title + author centered vertically) -----
   // Card height is fixed (see TILE_CONTENT_H), so the title + author block
@@ -640,10 +609,13 @@ void LibraryActivity::renderBookTile(int slotIndex, const LibraryBook& book, boo
   const int blockTop = textAreaY + (centeringH - blockH) / 2;
 
   // Title — centered horizontally per line, stacked vertically from blockTop.
+  // Text color flips when the theme's selection paints a dark background.
+  const bool textBlack = !invertText;
   for (size_t i = 0; i < titleLines.size(); ++i) {
     const int lineW = renderer.getTextWidth(captionFont, titleLines[i].c_str(), EpdFontFamily::BOLD);
     renderer.drawText(captionFont, cell.x + (cell.width - lineW) / 2,
-                      blockTop + static_cast<int>(i) * captionLineH, titleLines[i].c_str(), true, EpdFontFamily::BOLD);
+                      blockTop + static_cast<int>(i) * captionLineH, titleLines[i].c_str(), textBlack,
+                      EpdFontFamily::BOLD);
   }
 
   // Author — italic, single line, directly below the title's last line.
@@ -652,7 +624,7 @@ void LibraryActivity::renderBookTile(int slotIndex, const LibraryBook& book, boo
     const std::string author =
         renderer.truncatedText(captionFont, book.author.c_str(), cell.width - 8, EpdFontFamily::ITALIC);
     const int aw = renderer.getTextWidth(captionFont, author.c_str(), EpdFontFamily::ITALIC);
-    renderer.drawText(captionFont, cell.x + (cell.width - aw) / 2, authorY, author.c_str(), true,
+    renderer.drawText(captionFont, cell.x + (cell.width - aw) / 2, authorY, author.c_str(), textBlack,
                       EpdFontFamily::ITALIC);
   }
 
@@ -663,10 +635,18 @@ void LibraryActivity::renderBookTile(int slotIndex, const LibraryBook& book, boo
   if (book.hasProgress()) {
     const int barY = textAreaY + TILE_TEXT_AREA_H + TILE_PROGRESS_MARGIN_TOP;
     const int barX = cell.x + (cell.width - COVER_W) / 2;
-    renderer.drawRect(barX, barY, COVER_W, TILE_PROGRESS_TOTAL_H);
+    // Substrate fill in the *opposite* of the ink color so the bar's empty
+    // portion always reads as a clean background-of-ink, regardless of
+    // what's painted behind the tile. Without this, Lyra's LightGray
+    // selection wash shows through the empty part of the bar (noisy
+    // dither under the progress indicator) and Classic/RoundedRaff's
+    // black selection bg makes the bar's empty area indistinguishable
+    // from the surrounding selection.
+    renderer.fillRect(barX, barY, COVER_W, TILE_PROGRESS_TOTAL_H, !textBlack);
+    renderer.drawRect(barX, barY, COVER_W, TILE_PROGRESS_TOTAL_H, textBlack);
     const int fillW = (COVER_W - 4) * book.progressPercent() / 100;
     if (fillW > 0) {
-      renderer.fillRect(barX + 2, barY + 2, fillW, TILE_PROGRESS_HEIGHT - 2);
+      renderer.fillRect(barX + 2, barY + 2, fillW, TILE_PROGRESS_HEIGHT - 2, textBlack);
     }
   }
 }
@@ -692,8 +672,11 @@ void LibraryActivity::renderPageRail() {
   }
 
   // Page count at the bottom of the rail, rotated 90° clockwise for that
-  // editorial vertical-marginalia feel from the prototype.
-  const int accentFont = FolioTheme::resolveFontRole(FontRole::Accent);
+  // editorial vertical-marginalia feel from the prototype. Uses the
+  // Compact accent so the vertical marginalia stays tight against the
+  // rail; falls through to the regular accent when no compact face is
+  // installed.
+  const int accentFont = libFont(FontRole::AccentCompact);
   char countBuf[16];
   snprintf(countBuf, sizeof(countBuf), "%d / %d", libraryPage + 1, pages);
   const int countY = railBottom - 4;
@@ -704,7 +687,7 @@ void LibraryActivity::renderPageRail() {
 void LibraryActivity::renderEmptyState() {
   const int screenW = renderer.getScreenWidth();
   const int screenH = renderer.getScreenHeight();
-  const int font = FolioTheme::resolveFontRole(FontRole::Heading);
+  const int font = libFont(FontRole::Heading);
   const char* msg = tr(STR_LIBRARY_NO_BOOKS);
   const int textW = renderer.getTextWidth(font, msg, EpdFontFamily::ITALIC);
   const int y = HEADER_HEIGHT + (screenH - HEADER_HEIGHT - FOOTER_HEIGHT) / 2;
@@ -728,31 +711,37 @@ void LibraryActivity::renderMenuView() {
   const char* metas[MENU_ITEMS] = {tr(STR_LIBRARY_MENU_BROWSE_HINT), tr(STR_LIBRARY_MENU_TRANSFER_HINT),
                                    tr(STR_LIBRARY_MENU_SETTINGS_HINT)};
 
-  const int titleFont = FolioTheme::resolveFontRole(FontRole::Title);
-  const int headingFont = FolioTheme::resolveFontRole(FontRole::Heading);
-  const int captionFont = FolioTheme::resolveFontRole(FontRole::Caption);
+  const int titleFont = libFont(FontRole::Title);
+  const int headingFont = libFont(FontRole::Heading);
+  const int captionFont = libFont(FontRole::Caption);
 
+  const bool invertText = GUI.getData()->selection.textInverted;
   for (int i = 0; i < MENU_ITEMS; ++i) {
     const int y = areaY + i * (itemH + gap);
     const Rect item{itemX, y, itemW, itemH};
     const bool selected = (i == menuSelected);
     if (selected) {
-      FolioTheme::drawSelectionFrame(renderer, item);
+      GUI.drawSelectionBackground(renderer, item);
     }
+    const bool textBlack = !(selected && invertText);
 
     // Numeral (heading-sized italic, dimmer feel than the label).
     const int numW = renderer.getTextWidth(headingFont, romanLabels[i], EpdFontFamily::ITALIC);
-    renderer.drawText(headingFont, item.x + 16, item.y + 16, romanLabels[i], true, EpdFontFamily::ITALIC);
+    renderer.drawText(headingFont, item.x + 16, item.y + 16, romanLabels[i], textBlack, EpdFontFamily::ITALIC);
 
     // Label — title-sized bold serif (matches the prototype's 28-px primary).
     const int labelX = item.x + 16 + numW + 14;
-    renderer.drawText(titleFont, labelX, item.y + 14, labels[i], true, EpdFontFamily::BOLD);
+    renderer.drawText(titleFont, labelX, item.y + 14, labels[i], textBlack, EpdFontFamily::BOLD);
 
     // Hairline rule beneath the label (cover-type motif).
     const int ruleY = item.y + 14 + renderer.getLineHeight(titleFont) + 4;
-    renderer.drawLine(labelX, ruleY, labelX + 30, ruleY);
+    renderer.drawLine(labelX, ruleY, labelX + 30, ruleY, textBlack);
 
     // Meta line (caption italic, secondary).
-    renderer.drawText(captionFont, labelX, ruleY + 6, metas[i], true, EpdFontFamily::ITALIC);
+    renderer.drawText(captionFont, labelX, ruleY + 6, metas[i], textBlack, EpdFontFamily::ITALIC);
+
+    if (selected) {
+      GUI.drawSelectionForeground(renderer, item);
+    }
   }
 }

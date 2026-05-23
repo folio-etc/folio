@@ -2,11 +2,14 @@
 
 #include <FontDecompressor.h>
 #include <HalGPIO.h>
+#include <HalStorage.h>
 #include <Logging.h>
+#include <Memory.h>
 #include <SdCardFont.h>
 #include <Utf8.h>
 
 #include <algorithm>
+#include <cmath>
 
 #include "FontCacheManager.h"
 
@@ -899,6 +902,215 @@ void GfxRenderer::drawBitmap1Bit(const Bitmap& bitmap, const int x, const int y,
 
   free(outputRow);
   free(rowBytes);
+}
+
+// ============================================================================
+// Image cache — path-keyed cache of decoded 1-bit BMP pixel data.
+// ============================================================================
+
+GfxRenderer::CachedBitmap* GfxRenderer::lookupCachedBitmap(const char* path) const {
+  if (path == nullptr || path[0] == '\0') return nullptr;
+
+  auto it = imageCache_.find(path);
+  if (it != imageCache_.end()) {
+    it->second.lastUsedTick = ++imageCacheTick_;
+    return &it->second;
+  }
+
+  // Miss — read the BMP from SD and decode all rows into the 2-bit packed
+  // buffer format that readNextRow already produces. Storing the decoded
+  // form (rather than the raw file bytes) lets drawCachedBitmap rasterize
+  // without re-running the file-parse pipeline on every paint.
+  FsFile file;
+  if (!Storage.openFileForRead("GFX", path, file)) return nullptr;
+
+  // Bitmap currently requires non-dithered for 1-bit; we keep things in
+  // BW mode for the UI cache (covers + thumbs are rendered at threshold).
+  Bitmap bitmap(file, /*dithering=*/false);
+  if (bitmap.parseHeaders() != BmpReaderError::Ok) return nullptr;
+  if (!bitmap.is1Bit()) {
+    // Higher-bpp paths still go through the existing Bitmap → drawBitmap
+    // pipeline; the cache is 1-bit only for now (covers, thumbs, etc.).
+    return nullptr;
+  }
+
+  const int width = bitmap.getWidth();
+  const int height = bitmap.getHeight();
+  if (width <= 0 || height <= 0) return nullptr;
+
+  const int stride = (width + 3) / 4;
+  const size_t bufBytes = static_cast<size_t>(stride) * static_cast<size_t>(height);
+  if (bufBytes == 0) return nullptr;
+
+  auto pixels = makeUniqueNoThrow<uint8_t[]>(bufBytes);
+  if (!pixels) {
+    LOG_ERR("GFX", "Image cache: OOM %u bytes for %s", static_cast<unsigned>(bufBytes), path);
+    return nullptr;
+  }
+
+  // Throwaway row buffer for the file's native row size (used internally
+  // by readNextRow to unpack 1-bit → 2-bit).
+  auto rowScratch = makeUniqueNoThrow<uint8_t[]>(bitmap.getRowBytes());
+  if (!rowScratch) {
+    LOG_ERR("GFX", "Image cache: OOM row scratch for %s", path);
+    return nullptr;
+  }
+
+  for (int row = 0; row < height; ++row) {
+    if (bitmap.readNextRow(pixels.get() + row * stride, rowScratch.get()) != BmpReaderError::Ok) {
+      LOG_ERR("GFX", "Image cache: row %d read failed for %s", row, path);
+      return nullptr;
+    }
+  }
+
+  // Evict LRU entries until the new entry fits under the budget. The new
+  // entry is itself counted before the loop so we don't evict ourselves.
+  while (imageCacheBytes_ + bufBytes > imageCacheBudget_ && !imageCache_.empty()) {
+    auto victim = imageCache_.begin();
+    uint32_t lowestTick = victim->second.lastUsedTick;
+    for (auto candidate = imageCache_.begin(); candidate != imageCache_.end(); ++candidate) {
+      if (candidate->second.lastUsedTick < lowestTick) {
+        lowestTick = candidate->second.lastUsedTick;
+        victim = candidate;
+      }
+    }
+    imageCacheBytes_ -= victim->second.pixelsBytes + victim->second.scaledPixelsBytes;
+    imageCache_.erase(victim);
+  }
+
+  CachedBitmap entry;
+  entry.pixels = std::move(pixels);
+  entry.pixelsBytes = bufBytes;
+  entry.width = width;
+  entry.height = height;
+  entry.topDown = bitmap.isTopDown();
+  entry.lastUsedTick = ++imageCacheTick_;
+
+  auto [inserted, ok] = imageCache_.emplace(path, std::move(entry));
+  imageCacheBytes_ += bufBytes;
+  return &inserted->second;
+}
+
+bool GfxRenderer::getCachedBitmapDimensions(const char* path, int* outWidth, int* outHeight) const {
+  CachedBitmap* entry = lookupCachedBitmap(path);
+  if (entry == nullptr) return false;
+  if (outWidth) *outWidth = entry->width;
+  if (outHeight) *outHeight = entry->height;
+  return true;
+}
+
+void GfxRenderer::buildScaledBitmap(CachedBitmap* entry, int targetW, int targetH) const {
+  if (entry->scaledPixels) {
+    imageCacheBytes_ -= entry->scaledPixelsBytes;
+    entry->scaledPixels.reset();
+    entry->scaledPixelsBytes = 0;
+  }
+
+  const int scaledStride = (targetW + 7) / 8;
+  const size_t scaledBytes = static_cast<size_t>(scaledStride) * static_cast<size_t>(targetH);
+
+  auto scaled = makeUniqueNoThrow<uint8_t[]>(scaledBytes);
+  if (!scaled) {
+    LOG_ERR("GFX", "Scaled cache OOM: %u bytes", static_cast<unsigned>(scaledBytes));
+    entry->scaledWidth = 0;
+    entry->scaledHeight = 0;
+    return;
+  }
+
+  memset(scaled.get(), 0xFF, scaledBytes);
+
+  const int srcStride = (entry->width + 3) / 4;
+  const float xRatio = static_cast<float>(entry->width) / static_cast<float>(targetW);
+  const float yRatio = static_cast<float>(entry->height) / static_cast<float>(targetH);
+
+  for (int ty = 0; ty < targetH; ++ty) {
+    const int srcRenderY = static_cast<int>(ty * yRatio);
+    const int srcRow = entry->topDown ? srcRenderY : (entry->height - 1 - srcRenderY);
+    const int clampedRow = std::clamp(srcRow, 0, entry->height - 1);
+    const uint8_t* srcRowPtr = entry->pixels.get() + clampedRow * srcStride;
+    uint8_t* dstRowPtr = scaled.get() + ty * scaledStride;
+
+    for (int tx = 0; tx < targetW; ++tx) {
+      const int srcX = static_cast<int>(tx * xRatio);
+      const uint8_t val = (srcRowPtr[srcX / 4] >> (6 - ((srcX * 2) % 8))) & 0x3;
+      if (val < 3) {
+        dstRowPtr[tx / 8] &= ~(1 << (7 - (tx % 8)));
+      }
+    }
+  }
+
+  entry->scaledPixels = std::move(scaled);
+  entry->scaledPixelsBytes = scaledBytes;
+  entry->scaledWidth = targetW;
+  entry->scaledHeight = targetH;
+  imageCacheBytes_ += scaledBytes;
+}
+
+bool GfxRenderer::drawCachedBitmap(const char* path, const int x, const int y, const int maxWidth,
+                                   const int maxHeight) const {
+  CachedBitmap* entry = lookupCachedBitmap(path);
+  if (entry == nullptr) return false;
+
+  if (fontCacheManager_ && fontCacheManager_->isScanning()) return true;
+
+  float scale = 1.0f;
+  if (maxWidth > 0 && entry->width > maxWidth)
+    scale = static_cast<float>(maxWidth) / static_cast<float>(entry->width);
+  if (maxHeight > 0 && entry->height > maxHeight)
+    scale = std::min(scale, static_cast<float>(maxHeight) / static_cast<float>(entry->height));
+
+  const int targetW = static_cast<int>(entry->width * scale);
+  const int targetH = static_cast<int>(entry->height * scale);
+  if (targetW <= 0 || targetH <= 0) return false;
+
+  if (!entry->scaledPixels || entry->scaledWidth != targetW || entry->scaledHeight != targetH)
+    buildScaledBitmap(entry, targetW, targetH);
+  if (!entry->scaledPixels) return false;
+
+  const int scaledStride = (targetW + 7) / 8;
+  const int screenW = getScreenWidth();
+  const int screenH = getScreenHeight();
+  const int sx0 = std::max(0, -x);
+  const int sx1 = std::min(targetW, screenW - x);
+  const int sy0 = std::max(0, -y);
+  const int sy1 = std::min(targetH, screenH - y);
+  if (sx0 >= sx1 || sy0 >= sy1) return true;
+
+  int phyX0, phyY0;
+  rotateCoordinates(orientation, x + sx0, y + sy0, &phyX0, &phyY0, panelWidth, panelHeight);
+
+  int dxPerSx, dyPerSx, dxPerSy, dyPerSy;
+  switch (orientation) {
+    case Portrait:                  dxPerSx =  0; dyPerSx = -1; dxPerSy =  1; dyPerSy =  0; break;
+    case LandscapeClockwise:        dxPerSx = -1; dyPerSx =  0; dxPerSy =  0; dyPerSy = -1; break;
+    case PortraitInverted:          dxPerSx =  0; dyPerSx =  1; dxPerSy = -1; dyPerSy =  0; break;
+    case LandscapeCounterClockwise: dxPerSx =  1; dyPerSx =  0; dxPerSy =  0; dyPerSy =  1; break;
+  }
+
+  for (int sy = sy0; sy < sy1; ++sy) {
+    const int rowOff = sy - sy0;
+    int phyX = phyX0 + rowOff * dxPerSy;
+    int phyY = phyY0 + rowOff * dyPerSy;
+    const uint8_t* srcRow = entry->scaledPixels.get() + sy * scaledStride;
+
+    for (int sx = sx0; sx < sx1; ++sx) {
+      if (!(srcRow[sx / 8] & (1 << (7 - (sx % 8))))) {
+        const uint32_t byteIndex = static_cast<uint32_t>(phyY) * panelWidthBytes + (phyX / 8);
+        frameBuffer[byteIndex] &= ~(1 << (7 - (phyX % 8)));
+      }
+      phyX += dxPerSx;
+      phyY += dyPerSx;
+    }
+  }
+
+  return true;
+}
+
+void GfxRenderer::clearImageCache() const {
+  imageCache_.clear();
+  imageCacheBytes_ = 0;
+  // Tick stays monotonic across clears so we never accidentally reuse a
+  // stale stored tick from before the clear.
 }
 
 void GfxRenderer::fillPolygon(const int* xPoints, const int* yPoints, int numPoints, bool state) const {

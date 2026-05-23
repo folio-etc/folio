@@ -366,11 +366,11 @@ void KeyboardEntryActivity::render(RenderLock&&) {
   const auto pageHeight = renderer.getScreenHeight();
   const auto& metrics = UITheme::getInstance().getMetrics();
 
-  GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, title.c_str());
+  GUI.drawHeader(renderer, Rect{0, metrics.layout.topPadding, pageWidth, metrics.header.height}, title.c_str());
 
   const int lineHeight = renderer.getLineHeight(UI_12_FONT_ID);
-  const int inputStartY = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing +
-                          metrics.verticalSpacing * 4 + metrics.keyboardVerticalOffset;
+  const int inputStartY = metrics.layout.topPadding + metrics.header.height + metrics.layout.verticalSpacing +
+                          metrics.layout.verticalSpacing * 4 + metrics.keyboard.verticalOffset;
   int inputHeight = 0;
 
   std::string displayText;
@@ -394,9 +394,9 @@ void KeyboardEntryActivity::render(RenderLock&&) {
   const bool isPassword = (inputType == InputType::Password);
   int availableWidth = pageWidth;
   if (gpio.deviceIsX3()) {
-    availableWidth -= 2 * metrics.sideButtonHintsWidth;
+    availableWidth -= 2 * metrics.buttonHints.sideWidth;
   }
-  const int effectiveMargin = (pageWidth - availableWidth * metrics.keyboardTextFieldWidthPercent / 100) / 2;
+  const int effectiveMargin = (pageWidth - availableWidth * metrics.keyboard.textFieldWidthPercent / 100) / 2;
   const int toggleGap = isPassword ? 4 : 0;
   const int toggleReserve = isPassword ? std::max(renderer.getTextWidth(UI_12_FONT_ID, "[abc]"),
                                                   renderer.getTextWidth(UI_12_FONT_ID, "[***]")) +
@@ -404,7 +404,7 @@ void KeyboardEntryActivity::render(RenderLock&&) {
                                        : 0;
   const int textAreaWidth = pageWidth - 2 * effectiveMargin - toggleReserve;
   const int maxLineWidth = textAreaWidth;
-  const bool centerText = metrics.keyboardCenteredText;
+  const bool centerText = metrics.keyboard.centeredText;
 
   int cursorCharWidth = 6;
   if (cursorPos < text.length()) {
@@ -524,7 +524,7 @@ void KeyboardEntryActivity::render(RenderLock&&) {
 
   if (hintVisible && !text.empty()) {
     const int hintLh = renderer.getLineHeight(SMALL_FONT_ID);
-    const int underlineY = inputStartY + inputHeight + lineHeight + metrics.verticalSpacing;
+    const int underlineY = inputStartY + inputHeight + lineHeight + metrics.layout.verticalSpacing;
     const int hintY = underlineY + 4;
     if (cursorMode) {
       int hintLineY = hintY;
@@ -547,23 +547,23 @@ void KeyboardEntryActivity::render(RenderLock&&) {
     }
   }
 
-  const int keyHeight = metrics.keyboardKeyHeight;
-  const int bottomKeyHeight = metrics.keyboardBottomKeyHeight;
-  const int keySpacing = metrics.keyboardKeySpacing;
+  const int keyHeight = metrics.keyboard.keyHeight;
+  const int bottomKeyHeight = metrics.keyboard.bottomKeyHeight;
+  const int keySpacing = metrics.keyboard.keySpacing;
   const int contentCols = getContentColCount();
-  const int keyboardWidth = pageWidth * metrics.keyboardWidthPercent / 100;
+  const int keyboardWidth = pageWidth * metrics.keyboard.widthPercent / 100;
   const int keyWidth = (keyboardWidth - (contentCols - 1) * keySpacing) / contentCols;
   const int leftMargin = (pageWidth - (contentCols * keyWidth + (contentCols - 1) * keySpacing)) / 2;
 
-  const int bottomRowGap = metrics.keyboardBottomKeySpacing > 0 ? 4 : 0;
-  const int keyboardStartY = metrics.keyboardBottomAligned
-                                 ? pageHeight - metrics.buttonHintsHeight - metrics.verticalSpacing -
+  const int bottomRowGap = metrics.keyboard.bottomKeySpacing > 0 ? 4 : 0;
+  const int keyboardStartY = metrics.keyboard.bottomAligned
+                                 ? pageHeight - metrics.buttonHints.height - metrics.layout.verticalSpacing -
                                        (keyHeight + keySpacing) * getContentRowCount() - bottomKeyHeight -
-                                       bottomRowGap + metrics.keyboardVerticalOffset
-                                 : inputStartY + inputHeight + lineHeight + metrics.verticalSpacing;
+                                       bottomRowGap + metrics.keyboard.verticalOffset
+                                 : inputStartY + inputHeight + lineHeight + metrics.layout.verticalSpacing;
 
   const int tipsLh = renderer.getLineHeight(SMALL_FONT_ID);
-  const int underlineBottom = inputStartY + inputHeight + lineHeight + metrics.verticalSpacing + 4;
+  const int underlineBottom = inputStartY + inputHeight + lineHeight + metrics.layout.verticalSpacing + 4;
   auto drawTip = [&](const char* tip, int y) { renderer.drawCenteredText(SMALL_FONT_ID, y, tip, true); };
 
   int tipCount = 0;
@@ -614,7 +614,7 @@ void KeyboardEntryActivity::render(RenderLock&&) {
     }
   }
 
-  const int bkSpacing = metrics.keyboardBottomKeySpacing;
+  const int bkSpacing = metrics.keyboard.bottomKeySpacing;
   const int abcKeyWidth = (keyboardWidth - (COLS - 1) * keySpacing) / COLS;
   const int contentTotalWidth = COLS * abcKeyWidth + (COLS - 1) * keySpacing;
   const int bottomKeyWidth = (contentTotalWidth - (BOTTOM_KEY_COUNT - 1) * bkSpacing) / BOTTOM_KEY_COUNT;

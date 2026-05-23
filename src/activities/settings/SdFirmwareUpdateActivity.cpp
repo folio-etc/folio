@@ -207,7 +207,7 @@ void SdFirmwareUpdateActivity::render(RenderLock&&) {
   renderer.clearScreen();
 
   const char* headerText = recoveryMode ? tr(STR_RECOVERY_MODE) : tr(STR_SD_FIRMWARE_UPDATE);
-  GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, headerText);
+  GUI.drawHeader(renderer, Rect{0, metrics.layout.topPadding, pageWidth, metrics.header.height}, headerText);
 
   const auto lineHeight = renderer.getLineHeight(UI_10_FONT_ID);
   const auto top = (pageHeight - lineHeight) / 2;
@@ -224,23 +224,23 @@ void SdFirmwareUpdateActivity::render(RenderLock&&) {
 
     renderer.drawCenteredText(UI_10_FONT_ID, top, tr(STR_UPDATING), true, EpdFontFamily::BOLD);
 
-    int y = top + lineHeight + metrics.verticalSpacing;
+    int y = top + lineHeight + metrics.layout.verticalSpacing;
     GUI.drawProgressBar(
         renderer,
-        Rect{metrics.contentSidePadding, y, pageWidth - metrics.contentSidePadding * 2, metrics.progressBarHeight},
+        Rect{metrics.layout.contentSidePadding, y, pageWidth - metrics.layout.contentSidePadding * 2, metrics.progressBar.height},
         static_cast<int>(pct), 100);
-    y += metrics.progressBarHeight + metrics.verticalSpacing;
+    y += metrics.progressBar.height + metrics.layout.verticalSpacing;
     // Percent label is drawn by BaseTheme::drawProgressBar; this slot is left intentionally empty
     // so the do-not-power-off line below stays at the same Y as before.
-    y += lineHeight + metrics.verticalSpacing;
+    y += lineHeight + metrics.layout.verticalSpacing;
     renderer.drawCenteredText(UI_10_FONT_ID, y, tr(STR_FIRMWARE_UPDATE_DO_NOT_POWER_OFF));
   } else if (state == State::SUCCESS) {
     renderer.drawCenteredText(UI_10_FONT_ID, top, tr(STR_UPDATE_COMPLETE), true, EpdFontFamily::BOLD);
-    renderer.drawCenteredText(UI_10_FONT_ID, top + lineHeight + metrics.verticalSpacing, tr(STR_RESTARTING_HINT));
+    renderer.drawCenteredText(UI_10_FONT_ID, top + lineHeight + metrics.layout.verticalSpacing, tr(STR_RESTARTING_HINT));
   } else if (state == State::FAILED) {
     renderer.drawCenteredText(UI_10_FONT_ID, top, tr(STR_UPDATE_FAILED), true, EpdFontFamily::BOLD);
     if (!errorMessage.empty()) {
-      renderer.drawCenteredText(UI_10_FONT_ID, top + lineHeight + metrics.verticalSpacing, errorMessage.c_str());
+      renderer.drawCenteredText(UI_10_FONT_ID, top + lineHeight + metrics.layout.verticalSpacing, errorMessage.c_str());
     }
     const auto labels = mappedInput.mapLabels(tr(STR_BACK), "", "", "");
     GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);

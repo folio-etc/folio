@@ -8,6 +8,7 @@
 
 class GfxRenderer;
 struct RecentBook;
+struct ThemeData;
 
 struct Rect {
   int x;
@@ -23,78 +24,111 @@ struct TabInfo {
   bool selected;
 };
 
+// Sizes, paddings, and other non-stylistic configuration. Grouped by the
+// UI element they affect — `metrics.battery.width`, `metrics.popup.cornerRadius`,
+// etc. Strict grouping keeps the >50-field surface navigable.
 struct ThemeMetrics {
-  int batteryWidth;
-  int batteryHeight;
+  struct Layout {
+    int topPadding;
+    int verticalSpacing;
+    int contentSidePadding;
+  } layout;
 
-  int topPadding;
-  int batteryBarHeight;
-  int headerHeight;
-  int verticalSpacing;
+  struct Battery {
+    int width;
+    int height;
+    int barHeight;
+  } battery;
 
-  int contentSidePadding;
-  int listRowHeight;
-  int listWithSubtitleRowHeight;
-  int menuRowHeight;
-  int menuSpacing;
+  struct Header {
+    int height;
+  } header;
 
-  int tabSpacing;
-  int tabBarHeight;
+  struct ButtonHints {
+    int height;
+    int sideWidth;
+  } buttonHints;
 
-  int scrollBarWidth;
-  int scrollBarRightOffset;
+  struct List {
+    int rowHeight;
+    int rowHeightWithSubtitle;
+    int menuRowHeight;
+    int menuSpacing;
+  } list;
 
-  int homeTopPadding;
-  int homeCoverHeight;
-  int homeCoverTileHeight;
-  int homeRecentBooksCount;
-  bool homeContinueReadingInMenu;
-  int homeMenuTopOffset;
+  struct TabBar {
+    int spacing;
+    int height;
+  } tabBar;
 
-  int buttonHintsHeight;
-  int sideButtonHintsWidth;
+  struct ScrollBar {
+    int width;
+    int rightOffset;
+  } scrollBar;
 
-  int progressBarHeight;
-  int progressBarMarginTop;
-  int statusBarHorizontalMargin;
-  int statusBarVerticalMargin;
+  struct Home {
+    int topPadding;
+    int coverHeight;
+    int coverTileHeight;
+    int recentBooksCount;
+    bool continueReadingInMenu;
+    int menuTopOffset;
+  } home;
 
-  int keyboardKeyWidth;
-  int keyboardKeyHeight;
-  int keyboardKeySpacing;
-  int keyboardBottomKeyHeight;
-  int keyboardBottomKeySpacing;
-  bool keyboardBottomAligned;
-  bool keyboardCenteredText;
-  int keyboardVerticalOffset;
-  int keyboardTextFieldWidthPercent;
-  int keyboardWidthPercent;
-  int keyboardKeyCornerRadius;
-  bool keyboardFillUnselected;
-  bool keyboardOutlineAllUnselected;
-  bool keyboardDrawSpecialOutlineWhenUnselected;
-  int keyboardSecondaryLabelRightPadding;
-  int keyboardSecondaryLabelTopPadding;
-  int keyboardMinArrowHeadSize;
+  struct ProgressBar {
+    int height;
+    int marginTop;
+  } progressBar;
 
-  float popupTopOffsetRatio;
-  int popupMarginX;
-  int popupMarginY;
-  int popupFrameThickness;
-  int popupCornerRadius;
-  bool popupTextBold;
-  bool popupTextInverted;
-  int popupTextBaselineOffsetY;
-  int popupProgressBarHeight;
-  bool popupProgressDrawOutline;
-  bool popupProgressClampPercent;
-  bool popupProgressFillInverted;
-  bool popupProgressOutlineInverted;
+  struct StatusBar {
+    int horizontalMargin;
+    int verticalMargin;
+  } statusBar;
 
-  int textFieldHorizontalPadding;
-  int textFieldNormalThickness;
-  int textFieldCursorThickness;
-  int textFieldLineEndOffset;
+  struct Keyboard {
+    int keyWidth;
+    int keyHeight;
+    int keySpacing;
+    int bottomKeyHeight;
+    int bottomKeySpacing;
+    bool bottomAligned;
+    bool centeredText;
+    int verticalOffset;
+    int textFieldWidthPercent;
+    int widthPercent;
+    int keyCornerRadius;
+    bool fillUnselected;
+    bool outlineAllUnselected;
+    bool drawSpecialOutlineWhenUnselected;
+    int secondaryLabelRightPadding;
+    int secondaryLabelTopPadding;
+    int minArrowHeadSize;
+  } keyboard;
+
+  struct Popup {
+    float topOffsetRatio;
+    int marginX;
+    int marginY;
+    int frameThickness;
+    int cornerRadius;
+    bool textBold;
+    bool textInverted;
+    int textBaselineOffsetY;
+    struct Progress {
+      int barHeight;
+      bool drawOutline;
+      bool clampPercent;
+      bool fillInverted;
+      bool outlineInverted;
+    } progress;
+  } popup;
+
+  struct TextField {
+    int horizontalPadding;
+    int normalThickness;
+    int cursorThickness;
+    int lineEndOffset;
+  } textField;
 };
 
 enum UIIcon { Folder, Text, Image, Book, File, Recent, Settings, Transfer, Library, Wifi, Hotspot };
@@ -105,149 +139,148 @@ enum class KeyboardKeyType { Normal, Shift, Mode, Space, Del, Ok, Disabled };
 //
 // Themes expose a font *role* (semantic name) instead of a specific font ID
 // so the renderer can swap in user-installed SD-card faces without code
-// changes. Each theme overrides `getFontForRole()` to map roles to its
-// preferred embedded faces; the ThemeFontRegistry walks
-// `/.fonts/themes/<theme>/<role>.cpfont` at boot and lets the theme prefer an
-// SD-loaded face over the embedded default.
+// changes. ThemeData carries the embedded fallback per role; ThemeFontRegistry
+// can layer an SD-loaded override on top via the theme's `id` string.
 enum class FontRole {
   Title,    // Display titles ("Library.", page headers)
   Heading,  // Section headings, button-menu primary labels
   Body,     // Standard UI text (settings rows, list titles)
   Caption,  // Secondary text below the body (subtitles, author lines, hints)
   Accent,   // Italic accents, meta lines, breadcrumb / status chrome
+
+  // Compact variants — smaller faces for high-density screens like Library's
+  // 3×3 book grid. Each falls back to its non-compact counterpart's font ID
+  // when no SD override is installed, so themes that don't install a
+  // compact face still render at the default size.
+  BodyCompact,
+  CaptionCompact,
+  AccentCompact,
 };
 
 // Lowercase, filesystem-safe name for a role — used to locate role-specific
 // SD card font files. Defined in BaseTheme.cpp.
 const char* fontRoleName(FontRole role);
 
-// Default theme implementation (Classic Theme)
-// Additional themes can inherit from this and override methods as needed
-
-namespace BaseMetrics {
-constexpr ThemeMetrics values = {.batteryWidth = 15,
-                                 .batteryHeight = 12,
-                                 .topPadding = 5,
-                                 .batteryBarHeight = 20,
-                                 .headerHeight = 45,
-                                 .verticalSpacing = 10,
-                                 .contentSidePadding = 20,
-                                 .listRowHeight = 30,
-                                 .listWithSubtitleRowHeight = 50,
-                                 .menuRowHeight = 45,
-                                 .menuSpacing = 8,
-                                 .tabSpacing = 10,
-                                 .tabBarHeight = 50,
-                                 .scrollBarWidth = 4,
-                                 .scrollBarRightOffset = 5,
-                                 .homeTopPadding = 40,
-                                 .homeCoverHeight = 400,
-                                 .homeCoverTileHeight = 400,
-                                 .homeRecentBooksCount = 1,
-                                 .homeContinueReadingInMenu = false,
-                                 .homeMenuTopOffset = 10,
-                                 .buttonHintsHeight = 40,
-                                 .sideButtonHintsWidth = 30,
-                                 .progressBarHeight = 16,
-                                 .progressBarMarginTop = 1,
-                                 .statusBarHorizontalMargin = 5,
-                                 .statusBarVerticalMargin = 19,
-                                 .keyboardKeyWidth = 22,
-                                 .keyboardKeyHeight = 40,
-                                 .keyboardKeySpacing = 0,
-                                 .keyboardBottomKeyHeight = 35,
-                                 .keyboardBottomKeySpacing = 5,
-                                 .keyboardBottomAligned = true,
-                                 .keyboardCenteredText = false,
-                                 .keyboardVerticalOffset = -13,
-                                 .keyboardTextFieldWidthPercent = 85,
-                                 .keyboardWidthPercent = 90,
-                                 .keyboardKeyCornerRadius = 0,
-                                 .keyboardFillUnselected = false,
-                                 .keyboardOutlineAllUnselected = false,
-                                 .keyboardDrawSpecialOutlineWhenUnselected = true,
-                                 .keyboardSecondaryLabelRightPadding = 1,
-                                 .keyboardSecondaryLabelTopPadding = 0,
-                                 .keyboardMinArrowHeadSize = 0,
-                                 .popupTopOffsetRatio = 0.075f,
-                                 .popupMarginX = 15,
-                                 .popupMarginY = 15,
-                                 .popupFrameThickness = 2,
-                                 .popupCornerRadius = 0,
-                                 .popupTextBold = true,
-                                 .popupTextInverted = true,
-                                 .popupTextBaselineOffsetY = -2,
-                                 .popupProgressBarHeight = 4,
-                                 .popupProgressDrawOutline = false,
-                                 .popupProgressClampPercent = false,
-                                 .popupProgressFillInverted = true,
-                                 .popupProgressOutlineInverted = true,
-                                 .textFieldHorizontalPadding = 6,
-                                 .textFieldNormalThickness = 1,
-                                 .textFieldCursorThickness = 3,
-                                 .textFieldLineEndOffset = 0};
-}
-
+// The single concrete theme implementation. All four built-in themes share
+// this class; they differ only in the `ThemeData` instance pointed to by
+// `data`. To add a new theme, declare a new `ThemeData` instance and add it
+// to UITheme::setTheme().
 class BaseTheme {
  public:
-  virtual ~BaseTheme() = default;
+  // Default-construct binds to the Classic theme.
+  BaseTheme();
+  // Bind to a specific `ThemeData`. Keep the pointer valid for the theme's
+  // lifetime — built-in themes live in flash and never move.
+  explicit BaseTheme(const ThemeData* data);
 
-  // Short, stable name used to locate theme-specific SD card font files
-  // under `/.fonts/themes/<themeName()>/`. Lowercase, no spaces. Each
-  // concrete theme overrides; the default returns "base".
-  virtual const char* themeName() const { return "base"; }
+  const ThemeData* getData() const { return data; }
+  void setData(const ThemeData* newData) { data = newData; }
 
-  // Maps a semantic role to a concrete font ID for use with drawText/etc.
-  // Themes override to express their typographic choices. The default
-  // returns the firmware's built-in UI fonts (sans-serif).
-  //
-  // Themes that want SD-card progressive enhancement check the
-  // ThemeFontRegistry first (see folio/FolioTheme.cpp for the pattern) and
-  // fall back to embedded faces when no SD override is installed.
-  virtual int getFontForRole(FontRole role) const;
+  // Convenience accessor for the theme's id (used as the SD font registry key).
+  const char* themeName() const;
 
-  // Component drawing methods
+  // Maps a semantic role to a concrete font ID. Consults the SD font registry
+  // first via the theme's id; falls back to the embedded font listed in
+  // ThemeData. Static overload lets callers (e.g. LibraryActivity) resolve
+  // roles against any ThemeData without holding a theme reference.
+  int getFontForRole(FontRole role) const;
+  static int resolveFontRole(const ThemeData& data, FontRole role);
+
+  // Component drawing methods --------------------------------------------
   void drawProgressBar(const GfxRenderer& renderer, Rect rect, size_t current, size_t total) const;
-  void drawBatteryLeft(const GfxRenderer& renderer, Rect rect,
-                       bool showPercentage = true) const;  // Left aligned (reader mode)
-  void drawBatteryRight(const GfxRenderer& renderer, Rect rect,
-                        bool showPercentage = true) const;  // Right aligned (UI headers)
-  virtual void fillBatteryIcon(const GfxRenderer& renderer, Rect rect, uint16_t percentage) const;
-  virtual void drawButtonHints(GfxRenderer& renderer, const char* btn1, const char* btn2, const char* btn3,
-                               const char* btn4) const;
-  virtual void drawSideButtonHints(const GfxRenderer& renderer, const char* topBtn, const char* bottomBtn) const;
-  virtual void drawList(const GfxRenderer& renderer, Rect rect, int itemCount, int selectedIndex,
-                        const std::function<std::string(int index)>& rowTitle,
-                        const std::function<std::string(int index)>& rowSubtitle = nullptr,
-                        const std::function<UIIcon(int index)>& rowIcon = nullptr,
-                        const std::function<std::string(int index)>& rowValue = nullptr, bool highlightValue = false,
-                        const std::function<bool(int index)>& rowDimmed = nullptr) const;
-  virtual void drawHeader(const GfxRenderer& renderer, Rect rect, const char* title,
-                          const char* subtitle = nullptr) const;
-  virtual void drawSubHeader(const GfxRenderer& renderer, Rect rect, const char* label,
-                             const char* rightLabel = nullptr) const;
-  virtual void drawTabBar(const GfxRenderer& renderer, Rect rect, const std::vector<TabInfo>& tabs,
-                          bool selected) const;
-  virtual void drawRecentBookCover(GfxRenderer& renderer, Rect rect, const std::vector<RecentBook>& recentBooks,
-                                   const int selectorIndex, bool& coverRendered, bool& coverBufferStored,
-                                   bool& bufferRestored, std::function<bool()> storeCoverBuffer) const;
-  virtual void drawButtonMenu(GfxRenderer& renderer, Rect rect, int buttonCount, int selectedIndex,
-                              const std::function<std::string(int index)>& buttonLabel,
-                              const std::function<UIIcon(int index)>& rowIcon) const;
-  virtual Rect drawPopup(const GfxRenderer& renderer, const char* message) const;
-  virtual void fillPopupProgress(const GfxRenderer& renderer, const Rect& layout, const int progress) const;
-  void drawStatusBar(GfxRenderer& renderer, const float bookProgress, const int currentPage, const int pageCount,
-                     std::string title, const int paddingBottom = 0, const int textYOffset = 0) const;
+  void drawBatteryLeft(const GfxRenderer& renderer, Rect rect, bool showPercentage = true) const;
+  void drawBatteryRight(const GfxRenderer& renderer, Rect rect, bool showPercentage = true) const;
+  void fillBatteryIcon(const GfxRenderer& renderer, Rect rect, uint16_t percentage) const;
+  void drawButtonHints(GfxRenderer& renderer, const char* btn1, const char* btn2, const char* btn3,
+                       const char* btn4) const;
+  void drawSideButtonHints(const GfxRenderer& renderer, const char* topBtn, const char* bottomBtn) const;
+  void drawList(const GfxRenderer& renderer, Rect rect, int itemCount, int selectedIndex,
+                const std::function<std::string(int index)>& rowTitle,
+                const std::function<std::string(int index)>& rowSubtitle = nullptr,
+                const std::function<UIIcon(int index)>& rowIcon = nullptr,
+                const std::function<std::string(int index)>& rowValue = nullptr, bool highlightValue = false,
+                const std::function<bool(int index)>& rowDimmed = nullptr) const;
+  void drawHeader(const GfxRenderer& renderer, Rect rect, const char* title,
+                  const char* subtitle = nullptr) const;
+  void drawSubHeader(const GfxRenderer& renderer, Rect rect, const char* label,
+                     const char* rightLabel = nullptr) const;
+  void drawTabBar(const GfxRenderer& renderer, Rect rect, const std::vector<TabInfo>& tabs, bool selected) const;
+  void drawRecentBookCover(GfxRenderer& renderer, Rect rect, const std::vector<RecentBook>& recentBooks,
+                           int selectorIndex, bool& coverRendered, bool& coverBufferStored,
+                           bool& bufferRestored, std::function<bool()> storeCoverBuffer) const;
+  void drawButtonMenu(GfxRenderer& renderer, Rect rect, int buttonCount, int selectedIndex,
+                      const std::function<std::string(int index)>& buttonLabel,
+                      const std::function<UIIcon(int index)>& rowIcon) const;
+  Rect drawPopup(const GfxRenderer& renderer, const char* message) const;
+  void fillPopupProgress(const GfxRenderer& renderer, const Rect& layout, int progress) const;
+  void drawStatusBar(GfxRenderer& renderer, float bookProgress, int currentPage, int pageCount, std::string title,
+                     int paddingBottom = 0, int textYOffset = 0) const;
   void drawHelpText(const GfxRenderer& renderer, Rect rect, const char* label) const;
-  virtual void drawTextField(const GfxRenderer& renderer, Rect rect, const int textWidth, bool cursorMode = false,
-                             int contentStartX = 0, int contentWidth = 0) const;
-  virtual void drawKeyboardKey(const GfxRenderer& renderer, Rect rect, const char* label, const bool isSelected,
-                               const char* secondaryLabel = nullptr, KeyboardKeyType keyType = KeyboardKeyType::Normal,
-                               bool inactiveSelection = false) const;
-  virtual bool showsFileIcons() const { return false; }
+  void drawTextField(const GfxRenderer& renderer, Rect rect, int textWidth, bool cursorMode = false,
+                     int contentStartX = 0, int contentWidth = 0) const;
+  void drawKeyboardKey(const GfxRenderer& renderer, Rect rect, const char* label, bool isSelected,
+                       const char* secondaryLabel = nullptr, KeyboardKeyType keyType = KeyboardKeyType::Normal,
+                       bool inactiveSelection = false) const;
+  bool showsFileIcons() const;
 
-  // Shared constants and helpers for battery drawing (used by all themes)
+  // Shared primitives, available to any caller -----------------------------
+  //
+  // Promoted from FolioTheme so LibraryActivity (and any other widget that
+  // wants the Folio visual language regardless of the active theme) can use
+  // the same primitives without depending on a specific theme class.
+
   static constexpr int batteryPercentSpacing = 4;
   static void drawBatteryOutline(const GfxRenderer& renderer, int x, int y, int battWidth, int rectHeight);
   static void drawBatteryLightningBolt(const GfxRenderer& renderer, int boltX, int boltY);
+
+  // Selection rectangle primitive — generic building block parameterized
+  // by fill and border style. Themes (and theme-adaptive activities like
+  // Library) compose their selection treatment from these two axes.
+  enum class SelectionFill : uint8_t {
+    None,       // no background fill
+    Solid,      // solid black fill (text should invert)
+    LightGray,  // dithered light-gray wash (text stays black)
+  };
+  enum class SelectionBorder : uint8_t {
+    None,        // no border stroke
+    Single,      // 1-2 px ink outline
+    Double,      // outer 2 px ink + 1 px white gap + inner 2 px ink (Folio)
+    Brackets,    // diagonal corner brackets only (TL + BR)
+  };
+  // Renders a selection treatment by composition. Borders are drawn after
+  // fills so a Double border can sit cleanly over a fill. The Brackets
+  // border combines naturally with Double (Folio's signature) or stands
+  // alone for a minimal accent.
+  static void drawSelectionRect(const GfxRenderer& renderer, Rect rect, SelectionFill fill, SelectionBorder border,
+                                int cornerRadius = 0);
+
+  // Theme-aware selection treatment, split into two passes so callers can
+  // bracket their content drawing correctly:
+  //   1. drawSelectionBackground(rect)  — fills (drawn BEFORE content so
+  //                                        cover bitmaps and text paint on
+  //                                        top of the wash)
+  //   2. drawSelectionForeground(rect)  — borders / brackets (drawn AFTER
+  //                                        content so the frame sits on
+  //                                        top)
+  // A theme that uses only fills (Lyra's RoundedFill) is a no-op for
+  // foreground; a theme that uses only borders (Folio's LayeredFrame) is
+  // a no-op for background. Callers always call both — the no-ops are
+  // free.
+  void drawSelectionBackground(const GfxRenderer& renderer, Rect rect) const;
+  void drawSelectionForeground(const GfxRenderer& renderer, Rect rect) const;
+
+  // Folio-style selection: backwards-compat alias for drawSelectionRect
+  // with Double border + Brackets. Kept for callers that want the Folio
+  // look regardless of active theme.
+  static void drawSelectionFrame(const GfxRenderer& renderer, Rect rect);
+  static void drawCornerBrackets(const GfxRenderer& renderer, Rect rect, int armPx = 8, int strokePx = 2);
+
+  // Folio-style button hint: 1-px outline + italic-serif label + hairline
+  // rule below. Uses the supplied font for the label so the same primitive
+  // works whether or not a theme has SD-installed role fonts.
+  static void drawHairlineButtonHint(const GfxRenderer& renderer, int x, int y, int buttonWidth, int buttonHeight,
+                                     const char* label, int labelFontId);
+
+ private:
+  const ThemeData* data;
 };

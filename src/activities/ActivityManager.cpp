@@ -1,5 +1,7 @@
 #include "ActivityManager.h"
 
+#include <FontCacheManager.h>
+#include <GfxRenderer.h>
 #include <HalPowerManager.h>
 
 #include <algorithm>
@@ -42,6 +44,21 @@ void ActivityManager::renderTaskLoop() {
     RenderLock lock;
     if (currentActivity) {
       HalPowerManager::Lock powerLock;  // Ensure we don't go into low-power mode while rendering
+
+      // Declarative prewarm pass. Ask the activity to enumerate the text
+      // it'll draw, then batched-load any missing glyphs into the font
+      // cache LRU before the actual render. Activities that don't override
+      // declareText() produce an empty collector — no-op. Activities that
+      // do override pay a hash-compare on stable paints (when content
+      // hasn't changed since the last declaration) and a batched SD read
+      // on first paint / scene change.
+      auto* fcm = renderer.getFontCacheManager();
+      if (fcm != nullptr) {
+        TextCollector tc;
+        currentActivity->declareText(tc);
+        tc.applyTo(*fcm);
+      }
+
       currentActivity->render(std::move(lock));
     }
     // Notify any task blocked in requestUpdateAndWait() that the render is done.

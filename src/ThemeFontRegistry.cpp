@@ -30,51 +30,57 @@ ThemeFontRegistry& ThemeFontRegistry::getInstance() {
 
 ThemeFontRegistry::~ThemeFontRegistry() = default;
 
-void ThemeFontRegistry::discover(GfxRenderer& renderer) {
+void ThemeFontRegistry::discover(GfxRenderer& renderer, const char* themeId) {
+  if (themeId == nullptr || themeId[0] == '\0') return;
   clear(renderer);
-  scanRoot(renderer, THEMES_DIR_HIDDEN);
-  scanRoot(renderer, THEMES_DIR_VISIBLE);
-  LOG_DBG(LOG_TAG, "Discovered %d theme role font(s)", static_cast<int>(loaded_.size()));
+  scanRoot(renderer, THEMES_DIR_HIDDEN, themeId);
+  scanRoot(renderer, THEMES_DIR_VISIBLE, themeId);
+  activeThemeId_ = themeId;
+  LOG_DBG(LOG_TAG, "Discovered %d role font(s) for theme '%s'", static_cast<int>(loaded_.size()), themeId);
 }
 
-void ThemeFontRegistry::scanRoot(GfxRenderer& renderer, const char* rootPath) {
-  if (!Storage.exists(rootPath)) return;
+void ThemeFontRegistry::setActiveTheme(GfxRenderer& renderer, const char* themeId) {
+  if (themeId == nullptr) return;
+  if (activeThemeId_ == themeId) return;
+  discover(renderer, themeId);
+}
 
-  HalFile root = Storage.open(rootPath);
-  if (!root || !root.isDirectory()) {
-    return;
+void ThemeFontRegistry::reloadActive(GfxRenderer& renderer) {
+  if (activeThemeId_.empty()) return;
+  // Capture by value — discover() clears state, including activeThemeId_,
+  // and we'd be reading it through itself otherwise.
+  const std::string id = activeThemeId_;
+  discover(renderer, id.c_str());
+}
+
+void ThemeFontRegistry::scanRoot(GfxRenderer& renderer, const char* rootPath, const char* themeId) {
+  // Build the exact directory path for the named theme rather than walking
+  // every theme directory under the root — saves a directory enumeration
+  // on a constrained device and avoids touching unused themes' files.
+  const std::string themeDirPath = std::string(rootPath) + "/" + themeId;
+  if (!Storage.exists(themeDirPath.c_str())) return;
+
+  HalFile themeDir = Storage.open(themeDirPath.c_str());
+  if (!themeDir || !themeDir.isDirectory()) return;
+  themeDir.rewindDirectory();
+
+  char roleFileName[128];
+  for (HalFile roleFile = themeDir.openNextFile(); roleFile; roleFile = themeDir.openNextFile()) {
+    if (roleFile.isDirectory()) continue;
+    roleFile.getName(roleFileName, sizeof(roleFileName));
+    if (roleFileName[0] == '.') continue;
+    if (!FsHelpers::checkFileExtension(std::string_view{roleFileName}, CPFONT_EXT)) continue;
+
+    // Strip ".cpfont" to recover the role name.
+    const size_t nameLen = std::strlen(roleFileName);
+    const size_t extLen = std::strlen(CPFONT_EXT);
+    if (nameLen <= extLen) continue;
+    const std::string roleName{roleFileName, nameLen - extLen};
+
+    const std::string filePath = themeDirPath + "/" + roleFileName;
+    loadRoleFile(renderer, themeId, roleName, filePath);
   }
-  root.rewindDirectory();
-
-  // Each child of the root is expected to be a theme directory.
-  char nameBuf[128];
-  for (HalFile themeDir = root.openNextFile(); themeDir; themeDir = root.openNextFile()) {
-    if (!themeDir.isDirectory()) continue;
-    themeDir.getName(nameBuf, sizeof(nameBuf));
-    if (nameBuf[0] == '.') continue;
-    const std::string themeName{nameBuf};
-    const std::string themeDirPath = std::string(rootPath) + "/" + themeName;
-
-    themeDir.rewindDirectory();
-    char roleFileName[128];
-    for (HalFile roleFile = themeDir.openNextFile(); roleFile; roleFile = themeDir.openNextFile()) {
-      if (roleFile.isDirectory()) continue;
-      roleFile.getName(roleFileName, sizeof(roleFileName));
-      if (roleFileName[0] == '.') continue;
-      if (!FsHelpers::checkFileExtension(std::string_view{roleFileName}, CPFONT_EXT)) continue;
-
-      // Strip ".cpfont" to recover the role name.
-      const size_t nameLen = std::strlen(roleFileName);
-      const size_t extLen = std::strlen(CPFONT_EXT);
-      if (nameLen <= extLen) continue;
-      const std::string roleName{roleFileName, nameLen - extLen};
-
-      const std::string filePath = themeDirPath + "/" + roleFileName;
-      loadRoleFile(renderer, themeName, roleName, filePath);
-    }
-    themeDir.close();
-  }
-  root.close();
+  themeDir.close();
 }
 
 bool ThemeFontRegistry::loadRoleFile(GfxRenderer& renderer, const std::string& themeName,
@@ -111,6 +117,9 @@ bool ThemeFontRegistry::loadRoleFile(GfxRenderer& renderer, const std::string& t
 void ThemeFontRegistry::unloadAll(GfxRenderer& renderer) {
   clear(renderer);
   loaded_.shrink_to_fit();
+  // Preserve activeThemeId_ — callers like LibraryActivity unload to reclaim
+  // RAM before the reader and then expect reloadActive() to re-discover the
+  // same theme on return.
 }
 
 int ThemeFontRegistry::getRoleFont(const char* themeName, FontRole role) const {
@@ -135,6 +144,9 @@ FontRole ThemeFontRegistry::parseRoleName(const char* name, bool& ok) {
   if (std::strcmp(name, "body") == 0) return FontRole::Body;
   if (std::strcmp(name, "caption") == 0) return FontRole::Caption;
   if (std::strcmp(name, "accent") == 0) return FontRole::Accent;
+  if (std::strcmp(name, "body-compact") == 0) return FontRole::BodyCompact;
+  if (std::strcmp(name, "caption-compact") == 0) return FontRole::CaptionCompact;
+  if (std::strcmp(name, "accent-compact") == 0) return FontRole::AccentCompact;
   ok = false;
   return FontRole::Body;
 }

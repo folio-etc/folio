@@ -195,17 +195,32 @@ class SdCardFont {
   };
   OverflowContext overflowCtx_[MAX_STYLES] = {};
 
-  // Shared on-demand overflow buffer (ring buffer of glyphs loaded via glyphMissHandler)
-  static constexpr uint32_t OVERFLOW_CAPACITY = 8;
+  // On-demand glyph cache. Holds glyphs that aren't in the prewarmed mini
+  // data — populated by glyphMissHandler on the first drawText that touches
+  // a not-yet-cached codepoint. With LRU eviction sized for a UI screen's
+  // working set (~50-100 unique glyphs), it persistently caches everything
+  // a normal screen renders, eliminating the per-paint refault pathology
+  // the old 8-slot ring caused for activities whose visible glyph set
+  // exceeded the prewarmed mini alphabet.
+  //
+  // Memory cost: 64 entries × (sizeof(OverflowEntry) ~32 B + avg bitmap
+  // ~50 B) ≈ 5 KB per font instance. Folio's three role fonts thus add
+  // ~15 KB of resident state — comfortably within budget on the ~280 KB
+  // free-heap floor we usually maintain.
+  static constexpr uint32_t OVERFLOW_CAPACITY = 64;
   struct OverflowEntry {
     EpdGlyph glyph;
     uint8_t* bitmap = nullptr;
     uint32_t codepoint = 0;
     uint8_t styleIdx = 0;
+    // Logical timestamp for LRU eviction. 0 = entry empty / never used.
+    // Touched on lookup hit AND on insertion. Eviction picks the entry
+    // with the lowest non-zero tick.
+    uint32_t lastUsedTick = 0;
   };
   OverflowEntry overflow_[OVERFLOW_CAPACITY] = {};
   uint32_t overflowCount_ = 0;
-  uint32_t overflowNext_ = 0;
+  uint32_t nextLruTick_ = 1;  // Monotonic counter (0 reserved for "unused" sentinel).
 
   // Compact advance-only table for layout measurement (per-style).
   // Built by buildAdvanceTable(), queried by getAdvance().
@@ -224,10 +239,16 @@ class SdCardFont {
   // Merge sortedNew (sorted by codepoint, no overlap with existing) into the
   // advance table for styleIdx, preserving sort order; cap-truncates the tail.
   void mergeIntoAdvanceTable(uint8_t styleIdx, const AdvanceEntry* sortedNew, uint32_t newCount);
-
   Stats stats_;
   uint32_t contentHash_ = 0;
   bool loaded_ = false;
+
+  // Fingerprint of the last successful prewarm — FNV-1a hash of the sorted
+  // codepoints + styleMask + metadataOnly flag. Used by prewarm() to skip
+  // the destructive rebuild when the same content is re-prewarmed (a common
+  // case when activities re-render with stable visible text). Reset by
+  // clearCache() / freeAll() so the next prewarm rebuilds unconditionally.
+  uint32_t lastPrewarmHash_ = 0;
 
   // Per-style helpers
   void freeStyleMiniData(PerStyle& s);

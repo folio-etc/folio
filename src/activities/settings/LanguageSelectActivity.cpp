@@ -83,11 +83,11 @@ void LanguageSelectActivity::render(RenderLock&&) {
   const auto pageHeight = renderer.getScreenHeight();
   auto metrics = UITheme::getInstance().getMetrics();
 
-  GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, tr(STR_LANGUAGE));
+  GUI.drawHeader(renderer, Rect{0, metrics.layout.topPadding, pageWidth, metrics.header.height}, tr(STR_LANGUAGE));
 
   // Current language marker
-  const int contentTop = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
-  const int contentHeight = pageHeight - contentTop - metrics.buttonHintsHeight - metrics.verticalSpacing;
+  const int contentTop = metrics.layout.topPadding + metrics.header.height + metrics.layout.verticalSpacing;
+  const int contentHeight = pageHeight - contentTop - metrics.buttonHints.height - metrics.layout.verticalSpacing;
   const auto currentLang = static_cast<uint8_t>(I18N.getLanguage());
   GUI.drawList(
       renderer, Rect{0, contentTop, pageWidth, contentHeight}, totalItems, selectedIndex,

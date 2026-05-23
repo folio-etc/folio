@@ -33,11 +33,26 @@ class ThemeFontRegistry {
  public:
   static ThemeFontRegistry& getInstance();
 
-  // Discover all `/.fonts/themes/*/*.cpfont` files, load them, and register
-  // with the renderer. Safe to call exactly once during boot (after
-  // Storage.begin()). Subsequent calls reload the registry from disk —
-  // useful after the web UI installs/removes a font.
-  void discover(GfxRenderer& renderer);
+  // Scan `/.fonts/themes/<themeId>/*.cpfont`, load any role fonts found,
+  // and register them with the renderer. Only the named theme's directory
+  // is touched — fonts for other themes stay on disk untouched. Safe to
+  // call after Storage.begin(). Subsequent calls reload the same theme's
+  // role fonts from disk (useful after the web UI installs/removes one).
+  void discover(GfxRenderer& renderer, const char* themeId);
+
+  // Switch the active theme. If `themeId` differs from the currently-active
+  // theme, unload the previous theme's fonts entirely (frees ~50 KB
+  // persistent state + ~30 KB glyph cache per font) and discover the new
+  // theme's fonts. No-op if `themeId` matches the active theme.
+  void setActiveTheme(GfxRenderer& renderer, const char* themeId);
+
+  // Re-discover the currently-active theme's fonts. Used by activities like
+  // Library that unload before transitioning into the reader and want their
+  // theme fonts back on return.
+  void reloadActive(GfxRenderer& renderer);
+
+  // Returns the active theme id (empty string if no theme has been set).
+  const char* getActiveThemeId() const { return activeThemeId_.c_str(); }
 
   // Returns the renderer font ID registered for (themeName, role), or 0
   // when no SD override is installed. The 0 sentinel matches the renderer's
@@ -60,6 +75,7 @@ class ThemeFontRegistry {
   };
 
   std::vector<LoadedRoleFont> loaded_;
+  std::string activeThemeId_;
 
   ThemeFontRegistry() = default;
   ~ThemeFontRegistry();
@@ -74,8 +90,9 @@ class ThemeFontRegistry {
   bool loadRoleFile(GfxRenderer& renderer, const std::string& themeName, const std::string& roleName,
                     const std::string& filePath);
 
-  // Walk one root (`/.fonts` or `/fonts`) for theme role files.
-  void scanRoot(GfxRenderer& renderer, const char* rootPath);
+  // Walk one root (`/.fonts/themes` or `/fonts/themes`) looking only for
+  // the named theme's subdirectory.
+  void scanRoot(GfxRenderer& renderer, const char* rootPath, const char* themeId);
 
   // Parse "roleName" out of a filename like "caption.cpfont". Returns
   // FontRole and sets ok=true on success.

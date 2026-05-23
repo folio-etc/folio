@@ -76,12 +76,19 @@ void FontCacheManager::recordText(const char* text, int fontId, EpdFontFamily::S
 
 // --- PrewarmScope implementation ---
 
-FontCacheManager::PrewarmScope::PrewarmScope(FontCacheManager& manager) : manager_(&manager) {
+FontCacheManager::PrewarmScope::PrewarmScope(FontCacheManager& manager, bool persistent)
+    : manager_(&manager), persistent_(persistent) {
   manager_->scanMode_ = ScanMode::Scanning;
-  manager_->clearCache();
+  // Destructive mode wipes the existing mini cache up front so the rebuild
+  // is the only resident state. Persistent mode preserves it — the
+  // idempotent prewarm short-circuit in SdCardFont compares the new request
+  // against the prior hash and skips rebuild when stable.
+  if (!persistent_) {
+    manager_->clearCache();
+  }
   manager_->resetStats();
   manager_->scanText_.clear();
-  manager_->scanText_.reserve(2048);  // Pre-allocate to avoid heap fragmentation from repeated concat
+  manager_->scanText_.reserve(2048);
   memset(manager_->scanStyleCounts_, 0, sizeof(manager_->scanStyleCounts_));
   manager_->scanFontId_ = -1;
 }
@@ -107,13 +114,37 @@ void FontCacheManager::PrewarmScope::endScanAndPrewarm() {
 FontCacheManager::PrewarmScope::~PrewarmScope() {
   if (active_) {
     endScanAndPrewarm();  // no-op if already called (scanText_ is empty)
-    manager_->clearCache();
+    if (!persistent_) {
+      manager_->clearCache();
+    }
   }
 }
 
 FontCacheManager::PrewarmScope::PrewarmScope(PrewarmScope&& other) noexcept
-    : manager_(other.manager_), active_(other.active_) {
+    : manager_(other.manager_), active_(other.active_), persistent_(other.persistent_) {
   other.active_ = false;
 }
 
-FontCacheManager::PrewarmScope FontCacheManager::createPrewarmScope() { return PrewarmScope(*this); }
+FontCacheManager::PrewarmScope FontCacheManager::createPrewarmScope() {
+  return PrewarmScope(*this, /*persistent=*/false);
+}
+
+FontCacheManager::PrewarmScope FontCacheManager::createPersistentPrewarmScope() {
+  return PrewarmScope(*this, /*persistent=*/true);
+}
+
+// --- TextCollector implementation ---
+
+void TextCollector::use(int fontId, EpdFontFamily::Style style, const char* text) {
+  if (fontId == 0 || text == nullptr || text[0] == '\0') return;
+  auto& entry = byFont_[fontId];
+  entry.styleMask |= static_cast<uint8_t>(1u << static_cast<uint8_t>(style));
+  entry.text += text;
+}
+
+void TextCollector::applyTo(FontCacheManager& fcm) const {
+  for (const auto& [fontId, entry] : byFont_) {
+    if (entry.styleMask == 0 || entry.text.empty()) continue;
+    fcm.prewarmCache(fontId, entry.text.c_str(), entry.styleMask);
+  }
+}

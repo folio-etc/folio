@@ -335,9 +335,16 @@ void setupDisplayAndFonts(bool seamless = false) {
   // Discover and load SD card fonts
   sdFontSystem.begin(renderer);
 
-  // Theme-role font registry — scans /.fonts/themes/<theme>/<role>.cpfont and
-  // makes role overrides available to BaseTheme::getFontForRole().
-  ThemeFontRegistry::getInstance().discover(renderer);
+  // Theme-role font registry discovers SD-installed fonts for the *active*
+  // theme only (driven by UITheme.reload below — that's where the registry
+  // gets told which theme is current). Other themes' role fonts stay on
+  // disk untouched until the user actually switches themes.
+  //
+  // Prewarming the mini glyph cache is deliberately NOT done here:
+  // prewarmAll across every style of every role font is ~2,700+ sequential
+  // SD reads, which trips the task watchdog inside setup() and boot-loops
+  // the device. Activities prewarm on first entry (see Activity::onEnter)
+  // when the watchdog is being fed normally.
 
   LOG_DBG("MAIN", "Fonts setup");
 }
@@ -390,7 +397,10 @@ void setup() {
   I18N.setLanguage(static_cast<Language>(SETTINGS.language));
   KOREADER_STORE.loadFromFile();
   OPDS_STORE.loadFromFile();
-  UITheme::getInstance().reload();
+  // Renderer-taking reload also discovers SD theme fonts for the active
+  // theme (replaces the standalone THEME_FONTS.discover() that used to live
+  // up in setupFonts).
+  UITheme::getInstance().reload(renderer);
   ButtonNavigator::setMappedInputManager(mappedInputManager);
 
   const auto wakeupReason = gpio.getWakeupReason();

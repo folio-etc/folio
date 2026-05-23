@@ -537,10 +537,10 @@ void FontDownloadActivity::render(RenderLock&&) {
 
   renderer.clearScreen();
 
-  GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, tr(STR_FONT_BROWSER));
+  GUI.drawHeader(renderer, Rect{0, metrics.layout.topPadding, pageWidth, metrics.header.height}, tr(STR_FONT_BROWSER));
 
   const auto lineHeight = renderer.getLineHeight(UI_10_FONT_ID);
-  const auto contentTop = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
+  const auto contentTop = metrics.layout.topPadding + metrics.header.height + metrics.layout.verticalSpacing;
   const auto centerY = (pageHeight - lineHeight) / 2;
 
   if (state_ == LOADING_MANIFEST) {
@@ -553,7 +553,7 @@ void FontDownloadActivity::render(RenderLock&&) {
     } else {
       GUI.drawList(
           renderer,
-          Rect{0, contentTop, pageWidth, pageHeight - contentTop - metrics.buttonHintsHeight - metrics.verticalSpacing},
+          Rect{0, contentTop, pageWidth, pageHeight - contentTop - metrics.buttonHints.height - metrics.layout.verticalSpacing},
           listItemCount(), selectedIndex_,
           [this](int index) -> std::string {
             if (isDownloadAllRow(index)) {
@@ -602,10 +602,10 @@ void FontDownloadActivity::render(RenderLock&&) {
       progress = static_cast<float>(fileProgress_) / static_cast<float>(fileTotal_);
     }
 
-    int barY = centerY + metrics.verticalSpacing;
+    int barY = centerY + metrics.layout.verticalSpacing;
     GUI.drawProgressBar(
         renderer,
-        Rect{metrics.contentSidePadding, barY, pageWidth - metrics.contentSidePadding * 2, metrics.progressBarHeight},
+        Rect{metrics.layout.contentSidePadding, barY, pageWidth - metrics.layout.contentSidePadding * 2, metrics.progressBar.height},
         static_cast<int>(progress * 100), 100);
 
     const auto labels = mappedInput.mapLabels(tr(STR_CANCEL), "", "", "");
@@ -618,7 +618,7 @@ void FontDownloadActivity::render(RenderLock&&) {
     renderer.drawCenteredText(UI_10_FONT_ID, centerY - lineHeight, tr(STR_FONT_INSTALL_FAILED), true,
                               EpdFontFamily::BOLD);
     if (!errorMessage_.empty()) {
-      renderer.drawCenteredText(UI_10_FONT_ID, centerY + metrics.verticalSpacing, errorMessage_.c_str());
+      renderer.drawCenteredText(UI_10_FONT_ID, centerY + metrics.layout.verticalSpacing, errorMessage_.c_str());
     }
     const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_RETRY), "", "");
     GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);

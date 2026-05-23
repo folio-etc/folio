@@ -177,12 +177,12 @@ void OpdsSettingsActivity::render(RenderLock&&) {
   // Reuse STR_OPDS_BROWSER as the "edit existing server" title.
   // New server creation uses STR_ADD_SERVER.
   const char* header = isNewServer ? tr(STR_ADD_SERVER) : tr(STR_OPDS_BROWSER);
-  GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, header);
-  GUI.drawSubHeader(renderer, Rect{0, metrics.topPadding + metrics.headerHeight, pageWidth, metrics.tabBarHeight},
+  GUI.drawHeader(renderer, Rect{0, metrics.layout.topPadding, pageWidth, metrics.header.height}, header);
+  GUI.drawSubHeader(renderer, Rect{0, metrics.layout.topPadding + metrics.header.height, pageWidth, metrics.tabBar.height},
                     tr(STR_CALIBRE_URL_HINT));
 
-  const int contentTop = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing + metrics.tabBarHeight;
-  const int contentHeight = pageHeight - contentTop - metrics.buttonHintsHeight - metrics.verticalSpacing * 2;
+  const int contentTop = metrics.layout.topPadding + metrics.header.height + metrics.layout.verticalSpacing + metrics.tabBar.height;
+  const int contentHeight = pageHeight - contentTop - metrics.buttonHints.height - metrics.layout.verticalSpacing * 2;
   const int menuItems = getMenuItemCount();
 
   const StrId fieldNames[] = {StrId::STR_SERVER_NAME, StrId::STR_OPDS_SERVER_URL, StrId::STR_USERNAME,

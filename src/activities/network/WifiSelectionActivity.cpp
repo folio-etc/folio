@@ -491,11 +491,11 @@ void WifiSelectionActivity::render(RenderLock&&) {
   // Draw header
   char countStr[32];
   snprintf(countStr, sizeof(countStr), tr(STR_NETWORKS_FOUND), networks.size());
-  GUI.drawHeader(renderer, Rect{screen.x, screen.y + metrics.topPadding, screen.width, metrics.headerHeight},
+  GUI.drawHeader(renderer, Rect{screen.x, screen.y + metrics.layout.topPadding, screen.width, metrics.header.height},
                  tr(STR_WIFI_NETWORKS), countStr);
   GUI.drawSubHeader(
       renderer,
-      Rect{screen.x, screen.y + metrics.topPadding + metrics.headerHeight, screen.width, metrics.tabBarHeight},
+      Rect{screen.x, screen.y + metrics.layout.topPadding + metrics.header.height, screen.width, metrics.tabBar.height},
       cachedMacAddress.c_str());
 
   switch (state) {
@@ -537,8 +537,8 @@ void WifiSelectionActivity::renderNetworkList(const Rect* screen, const ThemeMet
     UITheme::drawCenteredText(renderer, *screen, SMALL_FONT_ID, top + height + 10, tr(STR_PRESS_OK_SCAN));
   } else {
     int contentTop =
-        screen->y + metrics->topPadding + metrics->headerHeight + metrics->tabBarHeight + metrics->verticalSpacing;
-    int contentHeight = screen->height - contentTop - metrics->verticalSpacing * 2;
+        screen->y + metrics->layout.topPadding + metrics->header.height + metrics->tabBar.height + metrics->layout.verticalSpacing;
+    int contentHeight = screen->height - contentTop - metrics->layout.verticalSpacing * 2;
     GUI.drawList(
         renderer, Rect{screen->x, contentTop, screen->width, contentHeight}, static_cast<int>(networks.size()),
         selectedNetworkIndex, [this](int index) { return networks[index].ssid; }, nullptr, nullptr,
@@ -550,7 +550,7 @@ void WifiSelectionActivity::renderNetworkList(const Rect* screen, const ThemeMet
   }
 
   GUI.drawHelpText(renderer,
-                   Rect{screen->x, screen->y + screen->height - metrics->contentSidePadding - 15, screen->width, 20},
+                   Rect{screen->x, screen->y + screen->height - metrics->layout.contentSidePadding - 15, screen->width, 20},
                    tr(STR_NETWORK_LEGEND));
 
   const bool hasSavedPassword = !networks.empty() && networks[selectedNetworkIndex].hasSavedPassword;

@@ -1,4 +1,5 @@
 #pragma once
+#include <FontCacheManager.h>  // for TextCollector
 #include <Logging.h>
 
 #include <cassert>
@@ -33,6 +34,22 @@ class Activity {
   virtual void loop() {}
 
   virtual void render(RenderLock&&) {}
+
+  // Declarative prewarm hook — called by the render pipeline immediately
+  // before each render(). Override to enumerate the text this paint will
+  // draw via `tc.use(fontId, style, text)` calls; the framework then
+  // batched-loads any missing glyphs into the font cache LRU so the
+  // upcoming drawText calls hit warm.
+  //
+  // This is a *pure data API* — declareText must not draw or mutate the
+  // framebuffer (drawText/drawRect/etc. should not be called here). Only
+  // the (fontId, style, text) declarations matter; SdCardFont's idempotent
+  // prewarm hashes the resulting codepoint set and short-circuits when it
+  // matches the prior paint, so stable scenes cost only the hash compare.
+  //
+  // Default implementation declares nothing — activities that render only
+  // embedded (flash) fonts don't need to override.
+  virtual void declareText(TextCollector&) {}
 
   // If immediate is true, the update will be triggered immediately.
   // Otherwise, it will be deferred until the end of the current loop iteration.

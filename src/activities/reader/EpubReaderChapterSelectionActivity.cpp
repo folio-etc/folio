@@ -76,11 +76,11 @@ void EpubReaderChapterSelectionActivity::render(RenderLock&&) {
   auto metrics = UITheme::getInstance().getMetrics();
   Rect screen = UITheme::getInstance().getScreenSafeArea(renderer, true, false);
 
-  GUI.drawHeader(renderer, Rect{screen.x, screen.y + metrics.topPadding, screen.width, metrics.headerHeight},
+  GUI.drawHeader(renderer, Rect{screen.x, screen.y + metrics.layout.topPadding, screen.width, metrics.header.height},
                  tr(STR_SELECT_CHAPTER));
 
-  const int contentTop = screen.y + metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
-  const int contentHeight = screen.height - contentTop - metrics.verticalSpacing;
+  const int contentTop = screen.y + metrics.layout.topPadding + metrics.header.height + metrics.layout.verticalSpacing;
+  const int contentHeight = screen.height - contentTop - metrics.layout.verticalSpacing;
 
   const int totalItems = getTotalItems();
   GUI.drawList(renderer, Rect{screen.x, contentTop, screen.width, contentHeight}, totalItems, selectorIndex,

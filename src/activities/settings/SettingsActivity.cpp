@@ -100,7 +100,10 @@ void SettingsActivity::onEnter() {
 void SettingsActivity::onExit() {
   Activity::onExit();
 
-  UITheme::getInstance().reload();  // Re-apply theme in case it was changed
+  // Renderer-taking reload also reconciles SD theme fonts — unloads the
+  // previous theme's role fonts if the user changed themes, and discovers
+  // the new theme's. No-op when the theme didn't change.
+  UITheme::getInstance().reload(renderer);
 }
 
 void SettingsActivity::loop() {
@@ -294,7 +297,7 @@ void SettingsActivity::render(RenderLock&&) {
 
   const auto& metrics = UITheme::getInstance().getMetrics();
 
-  GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, tr(STR_SETTINGS_TITLE),
+  GUI.drawHeader(renderer, Rect{0, metrics.layout.topPadding, pageWidth, metrics.header.height}, tr(STR_SETTINGS_TITLE),
                  CROSSPOINT_VERSION);
 
   std::vector<TabInfo> tabs;
@@ -302,15 +305,15 @@ void SettingsActivity::render(RenderLock&&) {
   for (int i = 0; i < categoryCount; i++) {
     tabs.push_back({I18N.get(categoryNames[i]), selectedCategoryIndex == i});
   }
-  GUI.drawTabBar(renderer, Rect{0, metrics.topPadding + metrics.headerHeight, pageWidth, metrics.tabBarHeight}, tabs,
+  GUI.drawTabBar(renderer, Rect{0, metrics.layout.topPadding + metrics.header.height, pageWidth, metrics.tabBar.height}, tabs,
                  selectedSettingIndex == 0);
 
   const auto& settings = *currentSettings;
   GUI.drawList(
       renderer,
-      Rect{0, metrics.topPadding + metrics.headerHeight + metrics.tabBarHeight + metrics.verticalSpacing, pageWidth,
-           pageHeight - (metrics.topPadding + metrics.headerHeight + metrics.tabBarHeight + metrics.buttonHintsHeight +
-                         metrics.verticalSpacing * 2)},
+      Rect{0, metrics.layout.topPadding + metrics.header.height + metrics.tabBar.height + metrics.layout.verticalSpacing, pageWidth,
+           pageHeight - (metrics.layout.topPadding + metrics.header.height + metrics.tabBar.height + metrics.buttonHints.height +
+                         metrics.layout.verticalSpacing * 2)},
       settingsCount, selectedSettingIndex - 1,
       [&settings](int index) { return std::string(I18N.get(settings[index].nameId)); }, nullptr, nullptr,
       [&settings](int i) {

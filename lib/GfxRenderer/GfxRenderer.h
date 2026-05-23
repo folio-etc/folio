@@ -8,6 +8,7 @@ class SdCardFont;
 
 #include <cstring>
 #include <map>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -53,6 +54,41 @@ class GfxRenderer {
   // recording to the (non-const) FontCacheManager. Same pragmatic compromise
   // as before, concentrated in a single pointer instead of four fields.
   mutable FontCacheManager* fontCacheManager_ = nullptr;
+
+  // ─── Image cache state ──────────────────────────────────────────────
+  // Cached pixel data is in the 2-bit-per-pixel packed format that
+  // Bitmap::readNextRow produces (consistent across 1/4/8 bpp sources).
+  // Stride is (width + 3) / 4 bytes; total pixels buffer size is stride
+  // × height. Pixel ordering follows the bitmap's natural orientation
+  // (use `topDown` to map render Y → buffer Y).
+  struct CachedBitmap {
+    std::unique_ptr<uint8_t[]> pixels;
+    size_t pixelsBytes = 0;
+    int width = 0;
+    int height = 0;
+    bool topDown = false;
+    uint32_t lastUsedTick = 0;  // monotonic; touched on every cache lookup.
+
+    // Pre-scaled 1-bit pixel data at the most recently requested target
+    // dimensions. Built lazily on first drawCachedBitmap call; reused on
+    // subsequent paints when target size matches. 1 bit/pixel, MSB first,
+    // row-major, stride = (scaledWidth+7)/8.
+    std::unique_ptr<uint8_t[]> scaledPixels;
+    size_t scaledPixelsBytes = 0;
+    int scaledWidth = 0;
+    int scaledHeight = 0;
+  };
+  mutable std::map<std::string, CachedBitmap> imageCache_;
+  mutable size_t imageCacheBytes_ = 0;
+  mutable size_t imageCacheBudget_ = 64 * 1024;
+  mutable uint32_t imageCacheTick_ = 0;
+
+  // Returns a pointer to the cached entry for `path`, reading + decoding
+  // from SD on miss. nullptr on failure (file not found, unsupported
+  // format, OOM). LRU-touches the entry; evicts as needed to fit the
+  // new entry within imageCacheBudget_.
+  CachedBitmap* lookupCachedBitmap(const char* path) const;
+  void buildScaledBitmap(CachedBitmap* entry, int targetW, int targetH) const;
 
   void renderChar(const EpdFontFamily& fontFamily, uint32_t cp, int* x, int* y, bool pixelState,
                   EpdFontFamily::Style style) const;
@@ -135,6 +171,34 @@ class GfxRenderer {
   void drawBitmap(const Bitmap& bitmap, int x, int y, int maxWidth, int maxHeight, float cropX = 0,
                   float cropY = 0) const;
   void drawBitmap1Bit(const Bitmap& bitmap, int x, int y, int maxWidth, int maxHeight) const;
+
+  // ─── Image cache ─────────────────────────────────────────────────────
+  // Path-keyed cache of decoded 1-bit BMP data. First call for a path
+  // reads + decodes from SD into RAM; subsequent calls render straight
+  // from the cached pixels. Avoids the per-paint SD-I/O cost (~30 ms per
+  // cover on a 9-tile Library page) without requiring callers to manage
+  // their own capture/restore buffers.
+  //
+  // The cache is LRU-managed under a configurable byte budget (~64 KB
+  // default — enough for ~50 small thumbs). Activities call
+  // clearImageCache() on exit when they want the RAM back.
+  //
+  // Returns the bitmap's native dimensions on success; pass nullptrs to
+  // skip the dim outputs when you only care about cache priming.
+  bool getCachedBitmapDimensions(const char* path, int* outWidth, int* outHeight) const;
+
+  // Draw the BMP at `path`, scaled to fit (maxWidth × maxHeight) at top-
+  // left (x, y). Reads + decodes + caches on first call for a given path;
+  // subsequent calls memcpy-style rasterize from cached pixels. Returns
+  // true on success. Currently 1-bit BMPs only — higher-bpp images fall
+  // through to the SD-backed drawBitmap path.
+  bool drawCachedBitmap(const char* path, int x, int y, int maxWidth, int maxHeight) const;
+
+  // Drop every cached bitmap and reclaim the RAM.
+  void clearImageCache() const;
+
+  // Override the default cache budget (bytes). Eviction is LRU.
+  void setImageCacheBudget(size_t bytes) const { imageCacheBudget_ = bytes; }
   void fillPolygon(const int* xPoints, const int* yPoints, int numPoints, bool state = true) const;
 
   // Text
