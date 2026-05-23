@@ -37,6 +37,7 @@ class LibraryActivity final : public Activity {
   // True when the Confirm release that brought us into this activity should
   // not also trigger an open-book (typical when launched from a parent menu).
   bool lockNextConfirmRelease = false;
+  bool lockNextBackRelease = false;
 
   // No per-slot cover cache here — the renderer owns a path-keyed image
   // cache (see GfxRenderer::drawCachedBitmap). Library just calls

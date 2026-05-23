@@ -29,9 +29,6 @@ constexpr char LOG_TAG[] = "LIBA";
 // up sans-serif Lyra fonts under Lyra, Folio serif under Folio, etc.
 int libFont(FontRole role) { return GUI.getFontForRole(role); }
 
-// Long-press threshold for Back-to-Home, matching the firmware convention.
-constexpr unsigned long GO_HOME_MS = 1000;
-
 // Layout (in physical-pixel coordinates, portrait orientation 480 × 800).
 // Header is matched to the prototype: 89 px tall with a 3 px inner border.
 constexpr int HEADER_HEIGHT = 89;
@@ -82,6 +79,7 @@ void LibraryActivity::onEnter() {
   // Ignore the Confirm release that brought us here (otherwise we'd
   // immediately auto-open the first book).
   lockNextConfirmRelease = mappedInput.isPressed(MappedInputManager::Button::Confirm);
+  lockNextBackRelease = mappedInput.isPressed(MappedInputManager::Button::Back);
 
   view = View::Library;
   menuSelected = 0;
@@ -139,13 +137,14 @@ void LibraryActivity::loop() {
     return;
   }
 
-  // Long-press Back → exit to home regardless of view.
-  if (mappedInput.isPressed(MappedInputManager::Button::Back) && mappedInput.getHeldTime() >= GO_HOME_MS) {
-    onGoHome();
+  if (lockNextBackRelease) {
+    if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
+      lockNextBackRelease = false;
+    }
     return;
   }
 
-  if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
+  if (mappedInput.wasPressed(MappedInputManager::Button::Back)) {
     if (view == View::Menu) {
       view = View::Library;
       requestUpdate();
