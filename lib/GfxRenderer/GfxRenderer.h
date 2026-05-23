@@ -163,6 +163,8 @@ class GfxRenderer {
   void maskRoundedRectOutsideCorners(int x, int y, int width, int height, int radius, Color color = Color::White) const;
   void fillRect(int x, int y, int width, int height, bool state = true) const;
   void fillRectDither(int x, int y, int width, int height, Color color) const;
+  void drawCircle(int cx, int cy, int radius, Color color) const;
+  void fillCircle(int cx, int cy, int radius, Color color) const;
   void fillRoundedRect(int x, int y, int width, int height, int cornerRadius, Color color) const;
   void fillRoundedRect(int x, int y, int width, int height, int cornerRadius, bool roundTopLeft, bool roundTopRight,
                        bool roundBottomLeft, bool roundBottomRight, Color color) const;

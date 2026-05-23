@@ -553,6 +553,52 @@ void GfxRenderer::fillRectDither(const int x, const int y, const int width, cons
   }
 }
 
+void GfxRenderer::drawCircle(const int cx, const int cy, const int radius, const Color color) const {
+  if (radius <= 0 || color == Color::Clear) return;
+  // Midpoint circle algorithm — plots the 8-way symmetric outline.
+  int x = radius;
+  int y = 0;
+  int d = 1 - radius;
+  while (x >= y) {
+    fillRectDither(cx + x, cy + y, 1, 1, color);
+    fillRectDither(cx - x, cy + y, 1, 1, color);
+    fillRectDither(cx + x, cy - y, 1, 1, color);
+    fillRectDither(cx - x, cy - y, 1, 1, color);
+    fillRectDither(cx + y, cy + x, 1, 1, color);
+    fillRectDither(cx - y, cy + x, 1, 1, color);
+    fillRectDither(cx + y, cy - x, 1, 1, color);
+    fillRectDither(cx - y, cy - x, 1, 1, color);
+    ++y;
+    if (d <= 0) {
+      d += 2 * y + 1;
+    } else {
+      --x;
+      d += 2 * (y - x) + 1;
+    }
+  }
+}
+
+void GfxRenderer::fillCircle(const int cx, const int cy, const int radius, const Color color) const {
+  if (radius <= 0 || color == Color::Clear) return;
+  // Midpoint circle — fill horizontal spans for each scanline pair.
+  int x = radius;
+  int y = 0;
+  int d = 1 - radius;
+  while (x >= y) {
+    fillRectDither(cx - x, cy + y, 2 * x + 1, 1, color);
+    fillRectDither(cx - x, cy - y, 2 * x + 1, 1, color);
+    fillRectDither(cx - y, cy + x, 2 * y + 1, 1, color);
+    fillRectDither(cx - y, cy - x, 2 * y + 1, 1, color);
+    ++y;
+    if (d <= 0) {
+      d += 2 * y + 1;
+    } else {
+      --x;
+      d += 2 * (y - x) + 1;
+    }
+  }
+}
+
 void GfxRenderer::maskRoundedRectOutsideCorners(const int x, const int y, const int width, const int height,
                                                 const int radius, const Color color) const {
   if (radius <= 0 || color == Color::Clear) {

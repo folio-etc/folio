@@ -10,6 +10,16 @@
 # Types defined elsewhere whose JSON string mappings the parser needs.
 # The generator emits their EnumEntry tables but NOT their enum definitions.
 external_types:
+  Color:
+    include: <GfxRenderer.h>
+    table_name: kColors
+    variants:
+      - { json: "clear",      cpp: "Color::Clear" }
+      - { json: "white",      cpp: "Color::White" }
+      - { json: "lightgray",  cpp: "Color::LightGray" }
+      - { json: "darkgray",   cpp: "Color::DarkGray" }
+      - { json: "black",      cpp: "Color::Black" }
+
   EpdFontFamily::Style:
     include: <EpdFontFamily.h>
     table_name: kFontStyles
@@ -74,6 +84,11 @@ enums:
   BatteryStyle:
     - { name: Solid,     json: "solid" }
     - { name: Segmented, json: "segmented" }
+
+  IndicatorShape:
+    - { name: Circle,      json: "circle" }
+    - { name: Square,      json: "square" }
+    - { name: RoundedRect, json: "rounded-rect" }
 
 # ThemeData struct members in declaration order.
 # Each entry is either:
@@ -196,6 +211,17 @@ struct:
       - { cpp: secondaryLabelRightPadding,        type: int,  default: 1 }
       - { cpp: secondaryLabelTopPadding,          type: int,  default: 0 }
       - { cpp: minArrowHeadSize,                  type: int,  default: 0 }
+
+  - group: library
+    struct_name: Library
+    fields:
+      - { cpp: pageIndicatorShape,           type: IndicatorShape, default: IndicatorShape::Square }
+      - { cpp: pageIndicatorSize,            type: int,            default: 9 }
+      - { cpp: pageIndicatorBorder,          type: Color,          default: Color::Black }
+      - { cpp: pageIndicatorBorderSelected,  type: Color,          default: Color::Clear }
+      - { cpp: pageIndicatorFill,            type: Color,          default: Color::Clear }
+      - { cpp: pageIndicatorFillSelected,    type: Color,          default: Color::Black }
+      - { cpp: pageIndicatorCornerRadius,   type: int,            default: 3 }
 
   - group: popup
     struct_name: Popup

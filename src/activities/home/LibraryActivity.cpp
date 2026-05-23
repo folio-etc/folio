@@ -659,14 +659,31 @@ void LibraryActivity::renderPageRail() {
   const int railTop = HEADER_HEIGHT + CONTENT_PAD_Y + RAIL_PAD_TOP;
   const int railBottom = screenH - FOOTER_HEIGHT - CONTENT_PAD_Y;
 
+  const auto& lib = GUI.getData()->library;
+  const int tickSize = lib.pageIndicatorSize;
   const int visibleTicks = std::min(pages, RAIL_TICK_COUNT);
-  const int tickX = railX + (RAIL_WIDTH - RAIL_TICK) / 2;
+  const int tickX = railX + (RAIL_WIDTH - tickSize) / 2;
   for (int i = 0; i < visibleTicks; ++i) {
-    const int tickY = railTop + i * (RAIL_TICK + RAIL_TICK_GAP);
-    if (i == libraryPage) {
-      renderer.fillRect(tickX, tickY, RAIL_TICK, RAIL_TICK);
+    const int tickY = railTop + i * (tickSize + RAIL_TICK_GAP);
+    const Color fill = (i == libraryPage) ? lib.pageIndicatorFillSelected : lib.pageIndicatorFill;
+    const Color border = (i == libraryPage) ? lib.pageIndicatorBorderSelected : lib.pageIndicatorBorder;
+    if (lib.pageIndicatorShape == IndicatorShape::Circle) {
+      const int r = tickSize / 2;
+      const int cx = tickX + r;
+      const int cy = tickY + r;
+      renderer.fillCircle(cx, cy, r, fill);
+      renderer.drawCircle(cx, cy, r, border);
+    } else if (lib.pageIndicatorShape == IndicatorShape::RoundedRect) {
+      renderer.fillRoundedRect(tickX, tickY, tickSize, tickSize, lib.pageIndicatorCornerRadius, fill);
+      if (border != Color::Clear) {
+        renderer.drawRoundedRect(tickX, tickY, tickSize, tickSize, 1, lib.pageIndicatorCornerRadius,
+                                 border == Color::Black);
+      }
     } else {
-      renderer.drawRect(tickX, tickY, RAIL_TICK, RAIL_TICK);
+      renderer.fillRectDither(tickX, tickY, tickSize, tickSize, fill);
+      if (border != Color::Clear) {
+        renderer.drawRect(tickX, tickY, tickSize, tickSize, border == Color::Black);
+      }
     }
   }
 
