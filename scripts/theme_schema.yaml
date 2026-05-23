@@ -42,6 +42,20 @@ external_types:
       - { json: "caption-compact", cpp: "FontRole::CaptionCompact" }
       - { json: "accent-compact", cpp: "FontRole::AccentCompact" }
 
+# Folio built-in identity — fields that live outside the schema-driven struct
+# but are needed to generate a complete BuiltinThemes::Folio constant.
+folio:
+  id: folio
+  fonts:
+    titleId:          NOTOSERIF_14_FONT_ID
+    headingId:        NOTOSERIF_14_FONT_ID
+    bodyId:           NOTOSERIF_10_FONT_ID
+    captionId:        NOTOSERIF_10_FONT_ID
+    accentId:         NOTOSERIF_10_FONT_ID
+    bodyIdCompact:    NOTOSERIF_8_FONT_ID
+    captionIdCompact: NOTOSERIF_6_FONT_ID
+    accentIdCompact:  NOTOSERIF_5_FONT_ID
+
 # Theme-owned enums. Generator emits `enum class X : uint8_t { ... };`
 enums:
   HeaderStyle:
@@ -221,7 +235,7 @@ struct:
       - { cpp: pageIndicatorBorderSelected,  type: Color,          default: Color::Clear }
       - { cpp: pageIndicatorFill,            type: Color,          default: Color::Clear }
       - { cpp: pageIndicatorFillSelected,    type: Color,          default: Color::Black }
-      - { cpp: pageIndicatorCornerRadius,   type: int,            default: 3 }
+      - { cpp: pageIndicatorCornerRadius,    type: int,            default: 3 }
 
   - group: popup
     struct_name: Popup

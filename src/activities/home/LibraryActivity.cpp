@@ -17,6 +17,7 @@
 #include "ThemeFontRegistry.h"
 #include "components/UITheme.h"
 #include "components/themes/BaseTheme.h"
+#include "components/themes/ThemeData.generated.h"
 #include "components/themes/ThemeData.h"
 #include "fontIds.h"
 
@@ -665,25 +666,26 @@ void LibraryActivity::renderPageRail() {
   const int tickX = railX + (RAIL_WIDTH - tickSize) / 2;
   for (int i = 0; i < visibleTicks; ++i) {
     const int tickY = railTop + i * (tickSize + RAIL_TICK_GAP);
+
     const Color fill = (i == libraryPage) ? lib.pageIndicatorFillSelected : lib.pageIndicatorFill;
     const Color border = (i == libraryPage) ? lib.pageIndicatorBorderSelected : lib.pageIndicatorBorder;
-    if (lib.pageIndicatorShape == IndicatorShape::Circle) {
-      const int r = tickSize / 2;
-      const int cx = tickX + r;
-      const int cy = tickY + r;
-      renderer.fillCircle(cx, cy, r, fill);
-      renderer.drawCircle(cx, cy, r, border);
-    } else if (lib.pageIndicatorShape == IndicatorShape::RoundedRect) {
-      renderer.fillRoundedRect(tickX, tickY, tickSize, tickSize, lib.pageIndicatorCornerRadius, fill);
-      if (border != Color::Clear) {
+
+    switch(lib.pageIndicatorShape) {
+      case IndicatorShape::Circle: {
+        const int r = tickSize / 2;
+        const int cx = tickX + r;
+        const int cy = tickY + r;
+        renderer.fillCircle(cx, cy, r, fill);
+        renderer.drawCircle(cx, cy, r, border);
+        break;
+      } 
+      case IndicatorShape::Square:
+        renderer.fillRoundedRect(tickX, tickY, tickSize, tickSize, lib.pageIndicatorCornerRadius, fill);
         renderer.drawRoundedRect(tickX, tickY, tickSize, tickSize, 1, lib.pageIndicatorCornerRadius,
                                  border == Color::Black);
-      }
-    } else {
-      renderer.fillRectDither(tickX, tickY, tickSize, tickSize, fill);
-      if (border != Color::Clear) {
+      case IndicatorShape::RoundedRect:
+        renderer.fillRectDither(tickX, tickY, tickSize, tickSize, fill);
         renderer.drawRect(tickX, tickY, tickSize, tickSize, border == Color::Black);
-      }
     }
   }
 

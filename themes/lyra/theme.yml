@@ -92,10 +92,10 @@ keyboard:
 
 library:
   pageIndicatorShape: rounded-rect 
-  pageIndicatorSize: 10
+  pageIndicatorSize: 12
   pageIndicatorCornerRadius: 3
-  pageIndicatorFill: lightgray
-  pageIndicatorFillSelected: darkgray 
+  pageIndicatorFill: darkgray
+  pageIndicatorFillSelected: black 
   pageIndicatorBorder: clear
   pageIndicatorBorderSelected: clear
 

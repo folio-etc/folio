@@ -110,6 +110,7 @@ def short_alias(group_name: str) -> str:
         "progressBar": "pb",
         "statusBar": "stb",
         "keyboard": "kb",
+        "library": "lib",
         "popup": "pp",
         "textField": "tf",
         "progress": "prog",
@@ -195,17 +196,35 @@ def _emit_struct_group(lines: list[str], group: dict, schema: dict, indent: int)
 # ---------------------------------------------------------------------------
 
 def generate_defaults(schema: dict) -> str:
+    folio = schema.get("folio", {})
+    folio_id = folio.get("id", "folio")
+    folio_fonts = folio.get("fonts", {})
+
+    font_roles = [
+        "titleId", "headingId", "bodyId", "captionId", "accentId",
+        "bodyIdCompact", "captionIdCompact", "accentIdCompact",
+    ]
+
     lines: list[str] = []
     lines.append("#pragma once\n")
     lines.append(HEADER_COMMENT)
     lines.append(CLANG_FORMAT_OFF)
     lines.append("\n")
     lines.append('#include "ThemeData.generated.h"\n')
+    lines.append('#include "fontIds.h"\n')
     lines.append("\n")
     lines.append("namespace BuiltinThemes {\n\n")
-    lines.append("inline constexpr ThemeData FolioDefaults = {\n")
-    lines.append("    .id = nullptr,\n")
-    lines.append("    .fonts = {},\n")
+    lines.append("inline constexpr ThemeData Folio = {\n")
+    lines.append(f'    .id = "{folio_id}",\n')
+
+    # Fonts sub-initializer
+    lines.append("    .fonts = {")
+    font_parts = []
+    for role in font_roles:
+        val = folio_fonts.get(role, "0")
+        font_parts.append(f".{role} = {val}")
+    lines.append(", ".join(font_parts))
+    lines.append("},\n")
 
     for entry in schema["struct"]:
         if is_group(entry):
