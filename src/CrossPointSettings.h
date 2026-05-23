@@ -99,8 +99,7 @@ class CrossPointSettings {
   enum SIDE_BUTTON_LAYOUT { PREV_NEXT = 0, NEXT_PREV = 1, SIDE_BUTTON_LAYOUT_COUNT };
 
   // Font family options (built-in fonts only; SD card fonts use sdFontFamilyName)
-  enum FONT_FAMILY { NOTOSERIF = 0, NOTOSANS = 1, OPENDYSLEXIC = 2, FONT_FAMILY_COUNT };
-  static constexpr uint8_t BUILTIN_FONT_COUNT = 2;
+  enum FONT_FAMILY { NOTOSERIF = 0, NOTOSANS = 1, FONT_FAMILY_COUNT };
   // Font size options
   enum FONT_SIZE { SMALL = 0, MEDIUM = 1, LARGE = 2, EXTRA_LARGE = 3, FONT_SIZE_COUNT };
   enum LINE_COMPRESSION { TIGHT = 0, NORMAL = 1, WIDE = 2, LINE_COMPRESSION_COUNT };
@@ -150,8 +149,6 @@ class CrossPointSettings {
 
   // UI Theme. Folio is the only built-in theme; all others are SD card
   // .cptheme bundles identified by sdThemeName.
-  // Legacy enum values (CLASSIC=0, LYRA=1, ROUNDEDRAFF=2, FOLIO=3) are
-  // migrated on settings load — see JsonSettingsIO.cpp.
   enum UI_THEME { FOLIO = 0, SD_THEME = 1, UI_THEME_COUNT };
 
   // Image rendering in EPUB reader

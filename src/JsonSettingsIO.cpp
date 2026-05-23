@@ -239,7 +239,7 @@ bool JsonSettingsIO::loadSettings(CrossPointSettings& s, const char* json, bool*
   CrossPointSettings::validateFrontButtonMapping(s);
 
   // Font family — uses dynamic getter/setter in SettingsList so the generic loop skips it.
-  s.fontFamily = clamp(doc["fontFamily"] | (uint8_t)0, CrossPointSettings::BUILTIN_FONT_COUNT, 0);
+  s.fontFamily = clamp(doc["fontFamily"] | (uint8_t)0, CrossPointSettings::FONT_FAMILY_COUNT, 0);
   // SD card font family name — not in SettingsList, load manually
   const char* sfn = doc["sdFontFamilyName"] | "";
   strncpy(s.sdFontFamilyName, sfn, sizeof(s.sdFontFamilyName) - 1);
@@ -249,23 +249,6 @@ bool JsonSettingsIO::loadSettings(CrossPointSettings& s, const char* json, bool*
   const char* stn = doc["sdThemeName"] | "";
   strncpy(s.sdThemeName, stn, sizeof(s.sdThemeName) - 1);
   s.sdThemeName[sizeof(s.sdThemeName) - 1] = '\0';
-
-  // Migrate legacy uiTheme enum (CLASSIC=0, LYRA=1, ROUNDEDRAFF=2, FOLIO=3).
-  // Old-format files have no "sdThemeName" key; the raw uiTheme value encodes
-  // the theme identity. New-format files always have "sdThemeName" (even if
-  // empty string), so we use its absence as the migration trigger.
-  if (doc["sdThemeName"].isNull() && !doc["uiTheme"].isNull()) {
-    static constexpr const char* kLegacyThemeIds[] = {"classic", "lyra", "roundedraff"};
-    const uint8_t raw = doc["uiTheme"] | static_cast<uint8_t>(3);
-    if (raw <= 2) {
-      strncpy(s.sdThemeName, kLegacyThemeIds[raw], sizeof(s.sdThemeName) - 1);
-      s.sdThemeName[sizeof(s.sdThemeName) - 1] = '\0';
-      s.uiTheme = CrossPointSettings::SD_THEME;
-    } else {
-      s.uiTheme = CrossPointSettings::FOLIO;
-    }
-    if (needsResave) *needsResave = true;
-  }
 
   // Language -- stored as code string for stability across enum reorders.
   if (doc["language"].is<const char*>()) {
