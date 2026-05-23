@@ -90,6 +90,14 @@ keyboard:
   secondaryLabelTopPadding: 1
   minArrowHeadSize: 1
 
+library:
+  pageIndicatorShape: circle 
+  pageIndicatorSize: 12
+  pageIndicatorFill: clear
+  pageIndicatorFillSelected: black 
+  pageIndicatorBorder: clear
+  pageIndicatorBorderSelected: black
+
 popup:
   topOffsetRatio: 0.12
   marginX: 20

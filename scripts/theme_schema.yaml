@@ -232,7 +232,7 @@ struct:
       - { cpp: pageIndicatorShape,           type: IndicatorShape, default: IndicatorShape::Square }
       - { cpp: pageIndicatorSize,            type: int,            default: 9 }
       - { cpp: pageIndicatorBorder,          type: Color,          default: Color::Black }
-      - { cpp: pageIndicatorBorderSelected,  type: Color,          default: Color::Clear }
+      - { cpp: pageIndicatorBorderSelected,  type: Color,          default: Color::Black }
       - { cpp: pageIndicatorFill,            type: Color,          default: Color::Clear }
       - { cpp: pageIndicatorFillSelected,    type: Color,          default: Color::Black }
       - { cpp: pageIndicatorCornerRadius,    type: int,            default: 3 }

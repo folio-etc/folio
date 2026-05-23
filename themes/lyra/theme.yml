@@ -93,7 +93,7 @@ keyboard:
 library:
   pageIndicatorShape: rounded-rect 
   pageIndicatorSize: 12
-  pageIndicatorCornerRadius: 3
+  pageIndicatorCornerRadius: 2
   pageIndicatorFill: darkgray
   pageIndicatorFillSelected: black 
   pageIndicatorBorder: clear

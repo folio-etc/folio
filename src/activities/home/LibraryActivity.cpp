@@ -680,12 +680,14 @@ void LibraryActivity::renderPageRail() {
         break;
       } 
       case IndicatorShape::Square:
+        renderer.fillRectDither(tickX, tickY, tickSize, tickSize, fill);
+        renderer.drawRect(tickX, tickY, tickSize, tickSize, border == Color::Black);
+        break;
+      case IndicatorShape::RoundedRect:
         renderer.fillRoundedRect(tickX, tickY, tickSize, tickSize, lib.pageIndicatorCornerRadius, fill);
         renderer.drawRoundedRect(tickX, tickY, tickSize, tickSize, 1, lib.pageIndicatorCornerRadius,
                                  border == Color::Black);
-      case IndicatorShape::RoundedRect:
-        renderer.fillRectDither(tickX, tickY, tickSize, tickSize, fill);
-        renderer.drawRect(tickX, tickY, tickSize, tickSize, border == Color::Black);
+        break;
     }
   }
 
