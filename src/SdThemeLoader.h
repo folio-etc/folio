@@ -61,8 +61,8 @@ class SdThemeLoader {
   // Extract a .cptheme archive to /.themes/<id>/ cache directory.
   bool extractCptheme(const char* cpthemePath, const char* themeId);
 
-  // Check whether an extraction cache exists for the given theme.
-  bool isExtracted(const char* themeId) const;
+  // Check whether an extraction cache exists and matches the source .cptheme.
+  bool isExtracted(const char* themeId, const char* cpthemePath) const;
 
   // Load theme fonts from the extracted cache using the parsed font spec.
   void loadThemeFonts(const char* themeId, const ThemeFontSpec& fontSpec,

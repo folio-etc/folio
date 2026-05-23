@@ -41,6 +41,25 @@ uint32_t fnvHash(const char* str) {
   return hash;
 }
 
+uint32_t fnvHashBytes(const uint8_t* data, size_t len) {
+  uint32_t hash = 2166136261u;
+  for (size_t i = 0; i < len; ++i) {
+    hash ^= data[i];
+    hash *= 16777619u;
+  }
+  return hash;
+}
+
+uint32_t hashFile(const char* path) {
+  FsFile f;
+  if (!Storage.openFileForRead(LOG_TAG, path, f)) return 0;
+  const size_t size = f.fileSize();
+  auto buf = makeUniqueNoThrow<uint8_t[]>(size);
+  if (!buf) return 0;
+  f.read(buf.get(), size);
+  return fnvHashBytes(buf.get(), size);
+}
+
 int computeBundledFontId(const char* themeId, const char* roleName) {
   uint32_t hash = fnvHash(themeId);
   hash ^= 0x42;
@@ -145,7 +164,7 @@ bool SdThemeLoader::loadTheme(const char* themeId, GfxRenderer& renderer) {
     return false;
   }
 
-  if (!isExtracted(themeId)) {
+  if (!isExtracted(themeId, info->cpthemePath)) {
     if (!extractCptheme(info->cpthemePath, themeId)) {
       LOG_ERR(LOG_TAG, "Failed to extract %s", info->cpthemePath);
       return false;
@@ -206,10 +225,21 @@ void SdThemeLoader::unloadTheme(GfxRenderer& renderer) {
   nameBuf_[0] = '\0';
 }
 
-bool SdThemeLoader::isExtracted(const char* themeId) const {
+bool SdThemeLoader::isExtracted(const char* themeId, const char* cpthemePath) const {
   char markerPath[192];
   snprintf(markerPath, sizeof(markerPath), "%s/%s/%s", CACHE_ROOT, themeId, EXTRACTED_MARKER);
-  return Storage.exists(markerPath);
+  FsFile marker;
+  if (!Storage.openFileForRead(LOG_TAG, markerPath, marker)) return false;
+
+  char stored[16] = "";
+  const int n = marker.read(stored, sizeof(stored) - 1);
+  if (n <= 0) return false;
+  stored[n] = '\0';
+  const uint32_t storedHash = strtoul(stored, nullptr, 16);
+
+  const uint32_t currentHash = hashFile(cpthemePath);
+  if (currentHash == 0) return false;
+  return storedHash == currentHash;
 }
 
 bool SdThemeLoader::extractCptheme(const char* cpthemePath, const char* themeId) {
@@ -310,12 +340,15 @@ bool SdThemeLoader::extractCptheme(const char* cpthemePath, const char* themeId)
   }
 
   // Write the extraction marker last — incomplete extraction will be
-  // retried on next load.
+  // retried on next load. Store source file hash for invalidation.
   char markerPath[192];
   snprintf(markerPath, sizeof(markerPath), "%s/%s/%s", CACHE_ROOT, themeId, EXTRACTED_MARKER);
   FsFile marker;
   if (Storage.openFileForWrite(LOG_TAG, markerPath, marker)) {
-    marker.write(static_cast<uint8_t>('1'));
+    const uint32_t srcHash = hashFile(cpthemePath);
+    char hashStr[12];
+    snprintf(hashStr, sizeof(hashStr), "%08x", srcHash);
+    marker.write(reinterpret_cast<const uint8_t*>(hashStr), strlen(hashStr));
   }
 
   LOG_INF(LOG_TAG, "Extraction complete for '%s'", themeId);
