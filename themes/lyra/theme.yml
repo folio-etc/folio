@@ -98,6 +98,7 @@ library:
   pageIndicatorFillSelected: black 
   pageIndicatorBorder: clear
   pageIndicatorBorderSelected: clear
+  pageIndicatorGap: 6
 
 popup:
   topOffsetRatio: 0.165
