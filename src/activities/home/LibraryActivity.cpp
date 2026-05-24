@@ -665,7 +665,7 @@ void LibraryActivity::renderPageRail() {
   const int visibleTicks = std::min(pages, RAIL_TICK_COUNT);
   const int tickX = railX + (RAIL_WIDTH - tickSize) / 2;
   for (int i = 0; i < visibleTicks; ++i) {
-    const int tickY = railTop + i * (tickSize + RAIL_TICK_GAP);
+    const int tickY = railTop + i * (tickSize + lib.pageIndicatorGap);
 
     const Color fill = (i == libraryPage) ? lib.pageIndicatorFillSelected : lib.pageIndicatorFill;
     const Color border = (i == libraryPage) ? lib.pageIndicatorBorderSelected : lib.pageIndicatorBorder;

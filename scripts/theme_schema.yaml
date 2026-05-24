@@ -236,6 +236,7 @@ struct:
       - { cpp: pageIndicatorFill,            type: Color,          default: Color::Clear }
       - { cpp: pageIndicatorFillSelected,    type: Color,          default: Color::Black }
       - { cpp: pageIndicatorCornerRadius,    type: int,            default: 3 }
+      - { cpp: pageIndicatorGap,             type: int,            default: 10 }
 
   - group: popup
     struct_name: Popup

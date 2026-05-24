@@ -95,7 +95,7 @@ library:
   pageIndicatorSize: 12
   pageIndicatorFill: clear
   pageIndicatorFillSelected: black 
-  pageIndicatorBorder: clear
+  pageIndicatorBorder: black
   pageIndicatorBorderSelected: black
 
 popup:
