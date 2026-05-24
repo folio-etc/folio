@@ -7,7 +7,6 @@
 #include "MappedInputManager.h"
 #include "RecentBooksStore.h"
 #include "SdThemeLoader.h"
-#include "ThemeFontRegistry.h"
 #include "components/themes/BaseTheme.h"
 #include "components/themes/ThemeData.h"
 
@@ -37,7 +36,6 @@ void UITheme::setTheme(CrossPointSettings::UI_THEME type, GfxRenderer& renderer)
       } else {
         currentTheme->setData(sdData);
       }
-      THEME_FONTS.setActiveTheme(renderer, sdData->id);
       return;
     }
     LOG_ERR("UI", "SD theme '%s' failed to load; falling back to Folio", SETTINGS.sdThemeName);
@@ -46,7 +44,6 @@ void UITheme::setTheme(CrossPointSettings::UI_THEME type, GfxRenderer& renderer)
   }
 
   setTheme(CrossPointSettings::FOLIO);
-  THEME_FONTS.setActiveTheme(renderer, currentTheme->getData()->id);
 }
 
 void UITheme::setTheme(CrossPointSettings::UI_THEME type) {

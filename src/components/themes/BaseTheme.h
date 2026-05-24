@@ -32,12 +32,6 @@ enum UIIcon { Folder, Text, Image, Book, File, Recent, Settings, Transfer, Libra
 
 enum class KeyboardKeyType { Normal, Shift, Mode, Space, Del, Ok, Disabled };
 
-// Theme font role registry --------------------------------------------------
-//
-// Themes expose a font *role* (semantic name) instead of a specific font ID
-// so the renderer can swap in user-installed SD-card faces without code
-// changes. ThemeData carries the embedded fallback per role; ThemeFontRegistry
-// can layer an SD-loaded override on top via the theme's `id` string.
 enum class FontRole {
   Title,    // Display titles ("Library.", page headers)
   Heading,  // Section headings, button-menu primary labels
@@ -45,18 +39,10 @@ enum class FontRole {
   Caption,  // Secondary text below the body (subtitles, author lines, hints)
   Accent,   // Italic accents, meta lines, breadcrumb / status chrome
 
-  // Compact variants — smaller faces for high-density screens like Library's
-  // 3×3 book grid. Each falls back to its non-compact counterpart's font ID
-  // when no SD override is installed, so themes that don't install a
-  // compact face still render at the default size.
   BodyCompact,
   CaptionCompact,
   AccentCompact,
 };
-
-// Lowercase, filesystem-safe name for a role — used to locate role-specific
-// SD card font files. Defined in BaseTheme.cpp.
-const char* fontRoleName(FontRole role);
 
 // The single concrete theme implementation. All four built-in themes share
 // this class; they differ only in the `ThemeData` instance pointed to by

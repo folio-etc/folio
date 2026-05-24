@@ -14,7 +14,6 @@
 
 #include "I18n.h"
 #include "RecentBooksStore.h"
-#include "ThemeFontRegistry.h"
 #include "components/UITheme.h"
 #include "components/icons/book.h"
 #include "components/icons/book24.h"
@@ -77,30 +76,7 @@ BaseTheme::BaseTheme(const ThemeData* d) : data(d != nullptr ? d : &BuiltinTheme
 
 const char* BaseTheme::themeName() const { return data->id; }
 
-const char* fontRoleName(FontRole role) {
-  switch (role) {
-    case FontRole::Title:          return "title";
-    case FontRole::Heading:        return "heading";
-    case FontRole::Body:           return "body";
-    case FontRole::Caption:        return "caption";
-    case FontRole::Accent:         return "accent";
-    case FontRole::BodyCompact:    return "body-compact";
-    case FontRole::CaptionCompact: return "caption-compact";
-    case FontRole::AccentCompact:  return "accent-compact";
-  }
-  return "body";
-}
-
 int BaseTheme::resolveFontRole(const ThemeData& data, FontRole role) {
-  // Prefer an SD-installed face if the user has dropped one under
-  // /.fonts/themes/<id>/<role>.cpfont.
-  const int sdId = THEME_FONTS.getRoleFont(data.id, role);
-  if (sdId != 0) return sdId;
-
-  // Embedded fallback. Compact roles fall through to their non-compact
-  // counterpart when no compact embedded face is configured — themes
-  // without a compact-specific embedded font still render at the default
-  // size rather than failing the lookup.
   switch (role) {
     case FontRole::Title:          return data.fonts.titleId;
     case FontRole::Heading:        return data.fonts.headingId;

@@ -26,7 +26,6 @@
 #include "RecentBooksStore.h"
 #include "SdCardFontSystem.h"
 #include "SdThemeLoader.h"
-#include "ThemeFontRegistry.h"
 #include "activities/Activity.h"
 #include "activities/ActivityManager.h"
 #include "activities/settings/SdFirmwareUpdateActivity.h"
@@ -394,9 +393,6 @@ void setup() {
   // Discover SD card themes before loading the active theme so the theme
   // loader can find .cptheme bundles referenced in settings.
   SD_THEMES.discoverThemes();
-  // Renderer-taking reload also discovers SD theme fonts for the active
-  // theme (replaces the standalone THEME_FONTS.discover() that used to live
-  // up in setupFonts).
   UITheme::getInstance().reload(renderer);
   ButtonNavigator::setMappedInputManager(mappedInputManager);
 

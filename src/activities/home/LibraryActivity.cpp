@@ -14,7 +14,6 @@
 #include "CrossPointSettings.h"
 #include "FontCacheManager.h"
 #include "MappedInputManager.h"
-#include "ThemeFontRegistry.h"
 #include "components/UITheme.h"
 #include "components/themes/BaseTheme.h"
 #include "components/themes/ThemeData.generated.h"
@@ -84,13 +83,6 @@ void LibraryActivity::onEnter() {
 
   view = View::Library;
   menuSelected = 0;
-
-  // SD role fonts persist across most Library exits — only the book-open
-  // path (doSelect → goToReader) unloads them. When returning from the
-  // reader, reloadActive re-scans the active theme's directory. The first
-  // render after this will call declareText, which batched-loads the
-  // glyphs we actually need into the LRU.
-  THEME_FONTS.reloadActive(renderer);
 
   // The on-disk library.bin survives onExit; load it back into memory.
   LIBRARY_INDEX.loadFromFile();
@@ -271,15 +263,8 @@ void LibraryActivity::doSelect() {
   if (book == nullptr) return;
   LOG_DBG(LOG_TAG, "Opening book: %s", book->path.c_str());
 
-  // The reader is the RAM-critical destination — EPUB indexing wants every
-  // byte it can get. Free SD role fonts (~50 KB persistent + ~30 KB mini
-  // cache) before handing off. Library's onEnter re-discovers + re-prewarms
-  // when we come back. Other Library exits (Settings, Browse, Home) keep
-  // the fonts resident so those activities stay typographically consistent
-  // and don't lazy-fault glyphs on first paint.
   auto* fcm = renderer.getFontCacheManager();
   if (fcm) fcm->clearCache();
-  THEME_FONTS.unloadAll(renderer);
 
   activityManager.goToReader(book->path);
 }
@@ -512,12 +497,6 @@ void LibraryActivity::renderBookTile(int slotIndex, const LibraryBook& book, boo
   const int shelfH = screenH - HEADER_HEIGHT - FOOTER_HEIGHT - CONTENT_PAD_Y * 2;
   const Rect cell = cellRect(slotIndex / COLS, slotIndex % COLS, shelfX, shelfY, shelfW, shelfH);
 
-  // Resolve fonts up front. The 3×3 grid is the densest screen the device
-  // renders, so we use the *Compact* caption — when the user installs
-  // /.fonts/themes/folio/caption-compact.cpfont at a smaller point size,
-  // Library tightens up while Settings / Browse keep the larger default
-  // caption. Falls through to the regular caption when no compact face is
-  // installed, so this works the day someone first installs the theme too.
   const int captionFont = libFont(FontRole::CaptionCompact);
   const int captionLineH = renderer.getLineHeight(captionFont);
 
