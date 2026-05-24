@@ -1,0 +1,1118 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>CrossPoint Reader — Library Screen Prototype (Portrait, Folio)</title>
+<style>
+  :root {
+    --ink: #111;
+    --paper: #f6f3ea;
+    --border: 1px solid var(--ink);
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  html, body {
+    background: #2a2a2a;
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-family: "Iowan Old Style", "Charter", Georgia, "Times New Roman", serif;
+    color: var(--ink);
+  }
+
+  /* Faux device bezel ------------------------------------------------------- */
+  .bezel {
+    background: #111;
+    padding: 24px 22px 48px;
+    border-radius: 14px;
+    box-shadow:
+      0 0 0 1px #000,
+      inset 0 0 0 1px #2a2a2a,
+      0 30px 60px rgba(0,0,0,0.55);
+  }
+  .bezel-label {
+    margin-top: 14px;
+    text-align: center;
+    color: #777;
+    font-family: "Courier New", monospace;
+    font-size: 10px;
+    letter-spacing: 4px;
+  }
+
+  /* The screen — exactly 480 × 800 (X4 portrait) -------------------------- */
+  .screen {
+    width: 480px;
+    height: 800px;
+    background: var(--paper);
+    color: var(--ink);
+    position: relative;
+    overflow: hidden;
+    background-image:
+      radial-gradient(rgba(0,0,0,0.04) 1px, transparent 1px),
+      radial-gradient(rgba(0,0,0,0.03) 1px, transparent 1px);
+    background-size: 3px 3px, 7px 7px;
+    background-position: 0 0, 1px 2px;
+  }
+
+  /* Header — 89px tall with a 3px inner bottom border --------------------- */
+  /* No status row, no breadcrumb — just title + italic subtitle + battery. */
+  .header {
+    height: 89px;
+    border-bottom: 3px solid var(--ink);
+    padding: 0 18px;
+    position: relative;
+  }
+  /* Battery (Folio: BatteryStyle::Solid) — outlined cell with horizontal */
+  /* fill bar + 2-px terminal nub. Sits flush top-right, no percentage    */
+  /* text rendered here (Library doesn't paint one in the current code).  */
+  .battery {
+    position: absolute;
+    top: 11px;
+    right: 12px;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+  }
+  .battery-cell {
+    width: 16px;
+    height: 12px;
+    border: 1px solid var(--ink);
+    position: relative;
+    padding: 2px;
+  }
+  .battery-cell::after {
+    content: "";
+    position: absolute;
+    right: -3px;
+    top: 4px;
+    width: 2px;
+    height: 4px;
+    background: var(--ink);
+  }
+  .battery-fill {
+    height: 100%;
+    width: 78%;
+    background: var(--ink);
+  }
+  .battery-pct {
+    font-family: "Iowan Old Style", "Charter", Georgia, serif;
+    font-size: 11px;
+    letter-spacing: 0.4px;
+  }
+
+  .header h1 {
+    font-size: 22px;
+    font-weight: 700;
+    letter-spacing: 0.3px;
+    line-height: 1;
+    padding-top: 16px;
+  }
+  .header h1 .accent {
+    font-style: italic;
+    font-weight: 400;
+  }
+  .header .subtitle {
+    margin-top: 4px;
+    font-size: 13px;
+    font-style: italic;
+    letter-spacing: 0.2px;
+    color: var(--ink);
+  }
+  .header .subtitle .sep { margin: 0 6px; opacity: 0.6; }
+
+  /* Content area — 671px tall (800 − 89 − 40) ---------------------------- */
+  .content {
+    position: relative;
+    height: 671px;
+    padding: 8px 18px 8px;
+    display: grid;
+    grid-template-columns: 1fr 18px;
+    gap: 10px;
+  }
+  .shelf-pages {
+    height: 100%;
+    position: relative;
+  }
+  .shelf {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    grid-template-rows: repeat(3, 1fr);
+    gap: 14px;
+    align-items: start;
+    height: 100%;
+  }
+  .shelf[hidden] { display: none; }
+
+  /* Book tile — fixed content height so the selection frame and inter-tile */
+  /* spacing read the same for every card regardless of title length /      */
+  /* author presence / read state.                                          */
+  .book {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    /* TILE_PAD_TOP = 4 in the device: the cover sits 4 px below the cell  */
+    /* top so the layered frame (which extends 8 px past the content) ends */
+    /* up only 4 px above the cell top — leaving the visible breathing     */
+    /* room between the header band and the selection frame.               */
+    padding-top: 4px;
+  }
+
+  /* Folio's LayeredFrame selection: outer 2-px ink rect + 1-px paper gap   */
+  /* + inner 2-px ink rect + corner brackets (TL + BR, 8-px arms, 2-px      */
+  /* stroke). No background fill — paper stays paper.                       */
+  /*                                                                        */
+  /* Device geometry (LibraryActivity.cpp): the frame is positioned         */
+  /* outside the tile content by kFrameInsetX = 3 horizontally and          */
+  /* kFrameInsetY = 8 vertically, so the cover/progress have visible        */
+  /* breathing room from the layered border.                                */
+  .book.selected .frame {
+    position: absolute;
+    /* Top is -4 (not -8) because the cover sits 4 px inside .book via      */
+    /* padding-top, so the visible 8-px gap between frame and cover top is  */
+    /* split 4 (padding) + 4 (negative offset). Bottom is -8 since there's  */
+    /* no padding-bottom on .book — the progress bar ends at .book.bottom.  */
+    top: -4px;
+    bottom: -8px;
+    left: -3px;
+    right: -3px;
+    pointer-events: none;
+  }
+  .menu-item.selected .frame {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+  }
+  .book.selected .frame::before,
+  .menu-item.selected .frame::before {
+    /* Outer 2-px ink border */
+    content: "";
+    position: absolute;
+    inset: 0;
+    border: 2px solid var(--ink);
+  }
+  .book.selected .frame::after,
+  .menu-item.selected .frame::after {
+    /* Inner 2-px ink border, 1 px paper gap between this and the outer */
+    /* border (the gap is just background showing through).             */
+    content: "";
+    position: absolute;
+    inset: 3px;
+    border: 2px solid var(--ink);
+  }
+  .corner {
+    position: absolute;
+    width: 8px;
+    height: 8px;
+    pointer-events: none;
+  }
+  /* Brackets sit 1 px inside the frame's outer ink corner (matches the   */
+  /* device's drawCornerBrackets: rx+1, ry+1 / rect.right-strokePx, etc.) */
+  .book.selected .corner.tl {
+    top: -3px; left: -2px;
+    border-top: 2px solid var(--ink);
+    border-left: 2px solid var(--ink);
+  }
+  .book.selected .corner.br {
+    bottom: -7px; right: -2px;
+    border-bottom: 2px solid var(--ink);
+    border-right: 2px solid var(--ink);
+  }
+  .menu-item.selected .corner.tl {
+    top: 1px; left: 1px;
+    border-top: 2px solid var(--ink);
+    border-left: 2px solid var(--ink);
+  }
+  .menu-item.selected .corner.br {
+    bottom: 1px; right: 1px;
+    border-bottom: 2px solid var(--ink);
+    border-right: 2px solid var(--ink);
+  }
+  .book .frame,
+  .book .corner,
+  .menu-item .frame,
+  .menu-item .corner { display: none; }
+  .book.selected .frame,
+  .book.selected .corner,
+  .menu-item.selected .frame,
+  .menu-item.selected .corner { display: block; }
+
+  /* Cover — 80 × 120 (Folio's COVER_W × COVER_H) + 1-px drop shadow ------ */
+  .cover {
+    width: 80px;
+    height: 120px;
+    border: var(--border);
+    background: #fff;
+    position: relative;
+    overflow: hidden;
+    box-shadow: 1px 1px 0 var(--ink);
+  }
+
+  /* Book text block — reserved 60-px area (TILE_TEXT_AREA_H), title +      */
+  /* author centered vertically inside.                                     */
+  .book-text {
+    width: 100%;
+    height: 60px;
+    margin-top: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 0 4px;
+  }
+  .book-title {
+    font-size: 12px;
+    font-weight: 700;
+    line-height: 1.15;
+    text-align: center;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+  .book-author {
+    margin-top: 1px;
+    font-size: 11px;
+    font-style: italic;
+    text-align: center;
+    opacity: 0.85;
+  }
+
+  /* Progress bar — 80 px wide (matches cover), anchored at the bottom     */
+  /* of the reserved text area so every row aligns horizontally.            */
+  .progress {
+    margin-top: 3px;
+    width: 80px;
+    height: 6px;
+    border: 1px solid var(--ink);
+    background: var(--paper);
+    position: relative;
+    padding: 1px;
+  }
+  .progress > i {
+    display: block;
+    height: 100%;
+    background: var(--ink);
+  }
+  .progress.unread { visibility: hidden; }
+
+  /* Right-side page rail — square ticks (Folio's Library.pageIndicator).  */
+  /* Rotated "page X / total" sits at the rail bottom.                     */
+  .rail {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding-top: 8px;
+    gap: 10px;
+  }
+  .rail[hidden] { display: none; }
+  .rail .tick {
+    width: 9px;
+    height: 9px;
+    border: 1px solid var(--ink);
+    background: transparent;
+  }
+  .rail .tick.current { background: var(--ink); }
+  .rail .count {
+    margin-top: auto;
+    margin-bottom: 4px;
+    writing-mode: vertical-rl;
+    transform: rotate(180deg);
+    font-family: "Iowan Old Style", "Charter", Georgia, serif;
+    font-style: italic;
+    font-size: 11px;
+    letter-spacing: 0.6px;
+  }
+
+  /* Footer — Folio Hairline button hints.                                 */
+  /* X coordinates and width still match BaseTheme::drawButtonHints (X4    */
+  /* portrait): x = 25, 130, 245, 350 | button = 106 × 40.                 */
+  /* Each hint is outline-only (no fill); label is italic, centered, with  */
+  /* a 22-px horizontal rule beneath.                                      */
+  .footer {
+    position: absolute;
+    bottom: 0; left: 0; right: 0;
+    height: 40px;
+  }
+  .btn {
+    position: absolute;
+    bottom: 0;
+    width: 106px;
+    height: 40px;
+    border: 1px solid var(--ink);
+    background: transparent;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: flex-start;
+    padding-top: 7px;
+    gap: 4px;
+    font-family: "Iowan Old Style", "Charter", Georgia, serif;
+    font-size: 14px;
+    font-style: italic;
+    font-weight: 500;
+    letter-spacing: 0.3px;
+    color: var(--ink);
+    cursor: pointer;
+  }
+  .btn::after {
+    content: "";
+    display: block;
+    width: 22px;
+    height: 0;
+    border-top: 1px solid var(--ink);
+    /* Anchor rule 12 px from the button's bottom edge */
+    position: absolute;
+    bottom: 12px;
+  }
+  .btn:disabled,
+  .btn.hidden { visibility: hidden; }
+  .btn-1 { left: 25px; }
+  .btn-2 { left: 130px; }
+  .btn-3 { left: 245px; }
+  .btn-4 { left: 350px; }
+
+  /* ---------------------------------------------------------------------- */
+  /*  Menu view — replaces the content area when open                      */
+  /*  Three items: roman numeral + bold title + 30-px rule + italic meta.   */
+  /* ---------------------------------------------------------------------- */
+  .menu-view {
+    position: absolute;
+    inset: 0;
+    background: var(--paper);
+    background-image:
+      radial-gradient(rgba(0,0,0,0.04) 1px, transparent 1px),
+      radial-gradient(rgba(0,0,0,0.03) 1px, transparent 1px);
+    background-size: 3px 3px, 7px 7px;
+    background-position: 0 0, 1px 2px;
+    padding: 30px 30px;
+    display: flex;
+    flex-direction: column;
+  }
+  .menu-view[hidden] { display: none; }
+  .menu-list {
+    list-style: none;
+    margin: 0; padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+    flex: 1;
+  }
+  .menu-item {
+    position: relative;
+    padding: 14px 16px;
+    border: 1px solid transparent;
+    display: flex;
+    align-items: flex-start;
+    gap: 14px;
+    flex: 1;
+  }
+  .menu-num {
+    font-family: "Iowan Old Style", "Charter", Georgia, serif;
+    font-style: italic;
+    font-weight: 500;
+    font-size: 20px;
+    letter-spacing: 0.3px;
+    min-width: 36px;
+    margin-top: 2px;
+    opacity: 0.6;
+  }
+  .menu-content {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+  }
+  .menu-label {
+    font-family: "Iowan Old Style", "Charter", Georgia, serif;
+    font-size: 22px;
+    font-weight: 700;
+    letter-spacing: 0.2px;
+    line-height: 1.1;
+  }
+  .menu-rule {
+    width: 30px;
+    height: 0;
+    border-top: 1px solid var(--ink);
+    margin: 8px 0 6px;
+  }
+  .menu-meta {
+    font-size: 13px;
+    font-style: italic;
+    letter-spacing: 0.2px;
+    opacity: 0.85;
+  }
+
+  /* ---------------------------------------------------------------------- */
+  /*  Cover designs — slightly resized to fit the new 80 × 120 frame.       */
+  /* ---------------------------------------------------------------------- */
+  .cover-slab {
+    background: var(--ink);
+    color: #fff;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    padding: 8px 6px;
+    text-align: center;
+  }
+  .cover-slab .t {
+    font-size: 11px;
+    line-height: 1.05;
+    font-weight: 700;
+    letter-spacing: 0.4px;
+    margin-top: 8px;
+  }
+  .cover-slab .a {
+    font-size: 7px;
+    letter-spacing: 1.8px;
+    text-transform: uppercase;
+    border-top: 1px solid #fff;
+    padding-top: 4px;
+  }
+
+  .cover-wave {
+    background: #fff;
+    position: relative;
+    padding: 6px;
+  }
+  .cover-wave::before {
+    content: "";
+    position: absolute; inset: 6px 6px auto 6px; height: 60px;
+    background:
+      repeating-linear-gradient(
+        0deg,
+        var(--ink) 0 2px,
+        #fff 2px 6px
+      );
+  }
+  .cover-wave .plaque {
+    position: absolute;
+    left: 5px; right: 5px; bottom: 8px;
+    background: #fff;
+    border-top: 1px solid var(--ink);
+    border-bottom: 1px solid var(--ink);
+    padding: 3px 2px;
+    text-align: center;
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.4px;
+    line-height: 1.05;
+  }
+
+  .cover-type {
+    background: #fff;
+    padding: 6px 4px;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    text-align: center;
+  }
+  .cover-type .drop {
+    font-family: "Iowan Old Style", Georgia, serif;
+    font-size: 48px;
+    line-height: 0.85;
+    font-weight: 700;
+    margin-top: 2px;
+  }
+  .cover-type .t {
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.4px;
+    line-height: 1.1;
+  }
+  .cover-type .a {
+    font-size: 7px;
+    font-style: italic;
+    letter-spacing: 0.3px;
+    margin-top: 2px;
+  }
+  .cover-type .rule {
+    height: 0;
+    border-top: 1px solid var(--ink);
+    margin: 3px 12px;
+  }
+
+  .cover-slash {
+    background:
+      repeating-linear-gradient(
+        135deg,
+        var(--ink) 0 5px,
+        #fff 5px 12px
+      );
+    position: relative;
+  }
+  .cover-slash .label {
+    position: absolute;
+    left: 5px; right: 5px;
+    top: 50%;
+    transform: translateY(-50%);
+    background: #fff;
+    border: 1px solid var(--ink);
+    padding: 4px 3px;
+    text-align: center;
+    font-size: 9px;
+    font-weight: 700;
+    line-height: 1.1;
+  }
+  .cover-slash .label .a {
+    display: block;
+    font-size: 7px;
+    font-weight: 400;
+    font-style: italic;
+    margin-top: 2px;
+  }
+
+  .cover-halftone {
+    background:
+      radial-gradient(circle at 50% 38%, var(--ink) 0 7px, #fff 8px 12px, var(--ink) 12px 14px, #fff 15px 22px, var(--ink) 22px 24px, transparent 25px),
+      radial-gradient(rgba(0,0,0,0.85) 1px, transparent 1.5px);
+    background-size: auto, 5px 5px;
+    background-position: center, 0 0;
+    background-color: #fff;
+    position: relative;
+  }
+  .cover-halftone .strip {
+    position: absolute;
+    left: 0; right: 0; bottom: 8px;
+    background: var(--ink);
+    color: #fff;
+    text-align: center;
+    padding: 3px 3px;
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.4px;
+    line-height: 1.05;
+  }
+  .cover-halftone .strip .a {
+    display: block;
+    font-weight: 400;
+    font-style: italic;
+    font-size: 7px;
+    letter-spacing: 0.2px;
+    margin-top: 1px;
+  }
+</style>
+</head>
+<body>
+  <div class="bezel">
+    <!-- 480 × 800 e-ink screen (X4 portrait) ----------------------------- -->
+    <div class="screen" role="application" aria-label="Library">
+
+      <!-- ===== Header (89px + 3px inner bottom border) ================ -->
+      <header class="header">
+        <div class="battery" aria-label="Battery 78 percent">
+          <span class="battery-pct">78%</span>
+          <span class="battery-cell"><span class="battery-fill"></span></span>
+        </div>
+
+        <h1 id="page-title">Library<span class="accent">.</span></h1>
+        <div class="subtitle" id="page-subtitle">
+          Sorted by recently opened <span class="sep">·</span> 1 / 6
+        </div>
+      </header>
+
+      <!-- ===== Content ================================================ -->
+      <section class="content">
+
+        <!-- Library: two pages of nine books -->
+        <div class="shelf-pages">
+
+          <!-- Page 1 -->
+          <div class="shelf" data-page="1">
+            <div class="book">
+              <span class="frame"></span><span class="corner tl"></span><span class="corner br"></span>
+              <div class="cover cover-slab">
+                <div class="t">MOBY-<br/>DICK</div>
+                <div class="a">Melville</div>
+              </div>
+              <div class="book-text">
+                <div class="book-title">Moby-Dick</div>
+                <div class="book-author">Herman Melville</div>
+              </div>
+              <div class="progress"><i style="width: 42%"></i></div>
+            </div>
+
+            <div class="book">
+              <span class="frame"></span><span class="corner tl"></span><span class="corner br"></span>
+              <div class="cover cover-wave">
+                <div class="plaque">BRAVE<br/>NEW WORLD</div>
+              </div>
+              <div class="book-text">
+                <div class="book-title">Brave New World</div>
+                <div class="book-author">Aldous Huxley</div>
+              </div>
+              <div class="progress"><i style="width: 12%"></i></div>
+            </div>
+
+            <div class="book">
+              <span class="frame"></span><span class="corner tl"></span><span class="corner br"></span>
+              <div class="cover cover-type">
+                <div class="drop">P.</div>
+                <div>
+                  <div class="rule"></div>
+                  <div class="t">Persuasion</div>
+                  <div class="a">Jane Austen</div>
+                </div>
+              </div>
+              <div class="book-text">
+                <div class="book-title">Persuasion</div>
+                <div class="book-author">Jane Austen</div>
+              </div>
+              <div class="progress unread"></div>
+            </div>
+
+            <div class="book">
+              <span class="frame"></span><span class="corner tl"></span><span class="corner br"></span>
+              <div class="cover cover-slash">
+                <div class="label">
+                  FOUNDATION
+                  <span class="a">Isaac Asimov</span>
+                </div>
+              </div>
+              <div class="book-text">
+                <div class="book-title">Foundation</div>
+                <div class="book-author">Isaac Asimov</div>
+              </div>
+              <div class="progress"><i style="width: 88%"></i></div>
+            </div>
+
+            <div class="book">
+              <span class="frame"></span><span class="corner tl"></span><span class="corner br"></span>
+              <div class="cover cover-halftone">
+                <div class="strip">
+                  BELOVED
+                  <span class="a">Toni Morrison</span>
+                </div>
+              </div>
+              <div class="book-text">
+                <div class="book-title">Beloved</div>
+                <div class="book-author">Toni Morrison</div>
+              </div>
+              <div class="progress unread"></div>
+            </div>
+
+            <div class="book">
+              <span class="frame"></span><span class="corner tl"></span><span class="corner br"></span>
+              <div class="cover cover-slab">
+                <div class="t">THE LEFT<br/>HAND OF<br/>DARKNESS</div>
+                <div class="a">Le Guin</div>
+              </div>
+              <div class="book-text">
+                <div class="book-title">The Left Hand of Darkness</div>
+                <div class="book-author">Ursula K. Le Guin</div>
+              </div>
+              <div class="progress"><i style="width: 64%"></i></div>
+            </div>
+
+            <div class="book">
+              <span class="frame"></span><span class="corner tl"></span><span class="corner br"></span>
+              <div class="cover cover-wave">
+                <div class="plaque">DUNE</div>
+              </div>
+              <div class="book-text">
+                <div class="book-title">Dune</div>
+                <div class="book-author">Frank Herbert</div>
+              </div>
+              <div class="progress"><i style="width: 100%"></i></div>
+            </div>
+
+            <div class="book">
+              <span class="frame"></span><span class="corner tl"></span><span class="corner br"></span>
+              <div class="cover cover-type">
+                <div class="drop">19<br/>84</div>
+                <div>
+                  <div class="rule"></div>
+                  <div class="t">Nineteen Eighty-Four</div>
+                  <div class="a">George Orwell</div>
+                </div>
+              </div>
+              <div class="book-text">
+                <div class="book-title">1984</div>
+                <div class="book-author">George Orwell</div>
+              </div>
+              <div class="progress unread"></div>
+            </div>
+
+            <div class="book">
+              <span class="frame"></span><span class="corner tl"></span><span class="corner br"></span>
+              <div class="cover cover-slash">
+                <div class="label">
+                  THE ROAD
+                  <span class="a">Cormac McCarthy</span>
+                </div>
+              </div>
+              <div class="book-text">
+                <div class="book-title">The Road</div>
+                <div class="book-author">Cormac McCarthy</div>
+              </div>
+              <div class="progress"><i style="width: 28%"></i></div>
+            </div>
+          </div><!-- /.shelf page 1 -->
+
+          <!-- Page 2 -->
+          <div class="shelf" data-page="2" hidden>
+            <div class="book">
+              <span class="frame"></span><span class="corner tl"></span><span class="corner br"></span>
+              <div class="cover cover-slab">
+                <div class="t">THE<br/>GREAT<br/>GATSBY</div>
+                <div class="a">Fitzgerald</div>
+              </div>
+              <div class="book-text">
+                <div class="book-title">The Great Gatsby</div>
+                <div class="book-author">F. Scott Fitzgerald</div>
+              </div>
+              <div class="progress"><i style="width: 35%"></i></div>
+            </div>
+
+            <div class="book">
+              <span class="frame"></span><span class="corner tl"></span><span class="corner br"></span>
+              <div class="cover cover-wave">
+                <div class="plaque">TO KILL A<br/>MOCKINGBIRD</div>
+              </div>
+              <div class="book-text">
+                <div class="book-title">To Kill a Mockingbird</div>
+                <div class="book-author">Harper Lee</div>
+              </div>
+              <div class="progress unread"></div>
+            </div>
+
+            <div class="book">
+              <span class="frame"></span><span class="corner tl"></span><span class="corner br"></span>
+              <div class="cover cover-type">
+                <div class="drop">C.</div>
+                <div>
+                  <div class="rule"></div>
+                  <div class="t">Crime &amp; Punishment</div>
+                  <div class="a">F. Dostoyevsky</div>
+                </div>
+              </div>
+              <div class="book-text">
+                <div class="book-title">Crime and Punishment</div>
+                <div class="book-author">Fyodor Dostoyevsky</div>
+              </div>
+              <div class="progress"><i style="width: 18%"></i></div>
+            </div>
+
+            <div class="book">
+              <span class="frame"></span><span class="corner tl"></span><span class="corner br"></span>
+              <div class="cover cover-slash">
+                <div class="label">
+                  SLAUGHTER-<br/>HOUSE&#8209;FIVE
+                  <span class="a">Kurt Vonnegut</span>
+                </div>
+              </div>
+              <div class="book-text">
+                <div class="book-title">Slaughterhouse-Five</div>
+                <div class="book-author">Kurt Vonnegut</div>
+              </div>
+              <div class="progress"><i style="width: 76%"></i></div>
+            </div>
+
+            <div class="book">
+              <span class="frame"></span><span class="corner tl"></span><span class="corner br"></span>
+              <div class="cover cover-halftone">
+                <div class="strip">
+                  THE BELL JAR
+                  <span class="a">Sylvia Plath</span>
+                </div>
+              </div>
+              <div class="book-text">
+                <div class="book-title">The Bell Jar</div>
+                <div class="book-author">Sylvia Plath</div>
+              </div>
+              <div class="progress unread"></div>
+            </div>
+
+            <div class="book">
+              <span class="frame"></span><span class="corner tl"></span><span class="corner br"></span>
+              <div class="cover cover-type">
+                <div class="drop">W.</div>
+                <div>
+                  <div class="rule"></div>
+                  <div class="t">Wuthering Heights</div>
+                  <div class="a">Emily Brontë</div>
+                </div>
+              </div>
+              <div class="book-text">
+                <div class="book-title">Wuthering Heights</div>
+                <div class="book-author">Emily Brontë</div>
+              </div>
+              <div class="progress"><i style="width: 100%"></i></div>
+            </div>
+
+            <div class="book">
+              <span class="frame"></span><span class="corner tl"></span><span class="corner br"></span>
+              <div class="cover cover-slab">
+                <div class="t">THE SUN<br/>ALSO<br/>RISES</div>
+                <div class="a">Hemingway</div>
+              </div>
+              <div class="book-text">
+                <div class="book-title">The Sun Also Rises</div>
+                <div class="book-author">Ernest Hemingway</div>
+              </div>
+              <div class="progress"><i style="width: 50%"></i></div>
+            </div>
+
+            <div class="book">
+              <span class="frame"></span><span class="corner tl"></span><span class="corner br"></span>
+              <div class="cover cover-wave">
+                <div class="plaque">EAST OF<br/>EDEN</div>
+              </div>
+              <div class="book-text">
+                <div class="book-title">East of Eden</div>
+                <div class="book-author">John Steinbeck</div>
+              </div>
+              <div class="progress"><i style="width: 22%"></i></div>
+            </div>
+
+            <div class="book">
+              <span class="frame"></span><span class="corner tl"></span><span class="corner br"></span>
+              <div class="cover cover-halftone">
+                <div class="strip">
+                  ANNA KARENINA
+                  <span class="a">Leo Tolstoy</span>
+                </div>
+              </div>
+              <div class="book-text">
+                <div class="book-title">Anna Karenina</div>
+                <div class="book-author">Leo Tolstoy</div>
+              </div>
+              <div class="progress unread"></div>
+            </div>
+          </div><!-- /.shelf page 2 -->
+
+        </div><!-- /.shelf-pages -->
+
+        <!-- Vertical page rail on the right -->
+        <aside class="rail" aria-label="Page indicator">
+          <span class="tick current" title="Page 1"></span>
+          <span class="tick"></span>
+          <span class="tick"></span>
+          <span class="tick"></span>
+          <span class="tick"></span>
+          <span class="tick"></span>
+          <span class="count" id="page-count">1 / 6</span>
+        </aside>
+
+        <!-- Menu view (overlays the content area when open) -->
+        <div class="menu-view" hidden>
+          <ul class="menu-list">
+            <li class="menu-item">
+              <span class="frame"></span><span class="corner tl"></span><span class="corner br"></span>
+              <span class="menu-num">I.</span>
+              <span class="menu-content">
+                <span class="menu-label">Browse Files</span>
+                <span class="menu-rule"></span>
+                <span class="menu-meta">Wander the SD card</span>
+              </span>
+            </li>
+            <li class="menu-item">
+              <span class="frame"></span><span class="corner tl"></span><span class="corner br"></span>
+              <span class="menu-num">II.</span>
+              <span class="menu-content">
+                <span class="menu-label">File Transfer</span>
+                <span class="menu-rule"></span>
+                <span class="menu-meta">Wi-Fi &middot; OPDS &middot; web UI</span>
+              </span>
+            </li>
+            <li class="menu-item">
+              <span class="frame"></span><span class="corner tl"></span><span class="corner br"></span>
+              <span class="menu-num">III.</span>
+              <span class="menu-content">
+                <span class="menu-label">Settings</span>
+                <span class="menu-rule"></span>
+                <span class="menu-meta">Fonts &middot; sleep &middot; language</span>
+              </span>
+            </li>
+          </ul>
+        </div>
+
+      </section>
+
+      <!-- ===== Footer (40px, four Folio Hairline button hints) ======== -->
+      <footer class="footer">
+        <button class="btn btn-1" type="button" id="btn-menu">Menu</button>
+        <button class="btn btn-2" type="button" id="btn-select">Select</button>
+        <button class="btn btn-3" type="button" id="btn-left">Left</button>
+        <button class="btn btn-4" type="button" id="btn-right">Right</button>
+      </footer>
+
+    </div><!-- /.screen -->
+    <div class="bezel-label">XTEINK X4 &middot; 480 × 800 &middot; B/W E-INK &middot; FOLIO</div>
+  </div>
+
+<script>
+(function () {
+  // ----- Constants -------------------------------------------------------
+  const COLS = 3, ROWS = 3;
+  const TOTAL_PAGES = 6;       // shown in "1 / 6" — matches the seeded shelves
+  const MAX_REAL_PAGE = 2;     // only the first two pages have rendered content
+  const MENU_ITEMS = 3;
+
+  // ----- State -----------------------------------------------------------
+  const state = {
+    view: 'library',           // 'library' | 'menu'
+    libraryPage: 1,            // 1..MAX_REAL_PAGE
+    librarySelected: 1,        // 0..8 — starts on "Brave New World"
+    menuSelected: 0,           // 0..MENU_ITEMS-1
+  };
+
+  const $  = (sel, root = document) => root.querySelector(sel);
+  const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
+
+  // ----- Render ----------------------------------------------------------
+  function render() {
+    const inLibrary = state.view === 'library';
+
+    // Header copy swaps based on view. Subtitle mirrors LibraryActivity's
+    //   "<sorted-by>  ·  <page> / <total>"  for the shelf,
+    //   "System & navigation"               for the menu.
+    if (inLibrary) {
+      $('#page-title').innerHTML = 'Library<span class="accent">.</span>';
+      $('#page-subtitle').innerHTML =
+        `Sorted by recently opened <span class="sep">·</span> ${state.libraryPage} / ${TOTAL_PAGES}`;
+    } else {
+      $('#page-title').innerHTML = 'Menu<span class="accent">.</span>';
+      $('#page-subtitle').innerHTML = 'System &amp; navigation';
+    }
+
+    // Library — which page is showing, which book is selected
+    $$('.shelf').forEach(s => {
+      s.hidden = parseInt(s.dataset.page, 10) !== state.libraryPage;
+    });
+    $$('.book').forEach(b => b.classList.remove('selected'));
+    if (inLibrary) {
+      const shelf = $(`.shelf[data-page="${state.libraryPage}"]`);
+      const books = $$('.book', shelf);
+      const target = books[state.librarySelected];
+      if (target) target.classList.add('selected');
+    }
+
+    // Page rail (hides when in menu)
+    $$('.rail .tick').forEach((tick, i) => {
+      tick.classList.toggle('current', i + 1 === state.libraryPage);
+    });
+    $('#page-count').textContent = `${state.libraryPage} / ${TOTAL_PAGES}`;
+    $('.rail').hidden = !inLibrary;
+
+    // Menu — show/hide and selection
+    $('.menu-view').hidden = inLibrary;
+    $$('.menu-item').forEach((item, i) => {
+      item.classList.toggle('selected', !inLibrary && i === state.menuSelected);
+    });
+
+    // Button labels mirror LibraryActivity::renderPasses — the Menu button
+    // becomes Back inside the menu, and Left/Right hints disappear (they're
+    // no-ops in the menu view).
+    if (inLibrary) {
+      $('#btn-menu').textContent  = 'Menu';
+      $('#btn-left').textContent  = 'Left';
+      $('#btn-right').textContent = 'Right';
+      $('#btn-left').classList.remove('hidden');
+      $('#btn-right').classList.remove('hidden');
+    } else {
+      $('#btn-menu').textContent  = 'Back';
+      $('#btn-left').classList.add('hidden');
+      $('#btn-right').classList.add('hidden');
+    }
+  }
+
+  // ----- Actions (shared by keyboard and footer buttons) -----------------
+  function moveUp() {
+    if (state.view === 'menu') {
+      state.menuSelected = Math.max(0, state.menuSelected - 1);
+      return render();
+    }
+    const idx = state.librarySelected;
+    const row = Math.floor(idx / COLS);
+    const col = idx % COLS;
+    if (row > 0) {
+      state.librarySelected = (row - 1) * COLS + col;
+    } else if (state.libraryPage > 1) {
+      // At the top row: page back, selection lands at bottom row, same column
+      state.libraryPage -= 1;
+      state.librarySelected = (ROWS - 1) * COLS + col;
+    }
+    render();
+  }
+
+  function moveDown() {
+    if (state.view === 'menu') {
+      state.menuSelected = Math.min(MENU_ITEMS - 1, state.menuSelected + 1);
+      return render();
+    }
+    const idx = state.librarySelected;
+    const row = Math.floor(idx / COLS);
+    const col = idx % COLS;
+    if (row < ROWS - 1) {
+      state.librarySelected = (row + 1) * COLS + col;
+    } else if (state.libraryPage < MAX_REAL_PAGE) {
+      // At the bottom row: page forward, selection lands at top row, same column
+      state.libraryPage += 1;
+      state.librarySelected = col;
+    }
+    render();
+  }
+
+  function moveLeft() {
+    if (state.view === 'menu') return;     // Left has no meaning in the menu
+    const col = state.librarySelected % COLS;
+    if (col > 0) {
+      state.librarySelected -= 1;
+      render();
+    }
+  }
+
+  function moveRight() {
+    if (state.view === 'menu') return;
+    const col = state.librarySelected % COLS;
+    if (col < COLS - 1) {
+      state.librarySelected += 1;
+      render();
+    }
+  }
+
+  function toggleMenu() {
+    state.view = state.view === 'menu' ? 'library' : 'menu';
+    if (state.view === 'menu') state.menuSelected = 0;
+    render();
+  }
+
+  function doSelect() {
+    // No-op: selecting a book doesn't lead anywhere in this prototype, and
+    // the menu options are placeholder targets.
+  }
+
+  // ----- Input wiring ----------------------------------------------------
+  document.addEventListener('keydown', (e) => {
+    let handled = true;
+    switch (e.key) {
+      case 'ArrowUp':    moveUp();    break;
+      case 'ArrowDown':  moveDown();  break;
+      case 'ArrowLeft':  moveLeft();  break;
+      case 'ArrowRight': moveRight(); break;
+      case 'Enter':
+      case ' ':          doSelect();  break;
+      case 'Escape':     if (state.view === 'menu') toggleMenu(); break;
+      default:           handled = false;
+    }
+    if (handled) e.preventDefault();
+  });
+
+  // Footer buttons mirror the physical inputs exactly — clicking Left does
+  // the same thing as pressing ArrowLeft, etc.
+  $('#btn-menu').addEventListener('click',   toggleMenu);
+  $('#btn-select').addEventListener('click', doSelect);
+  $('#btn-left').addEventListener('click',   moveLeft);
+  $('#btn-right').addEventListener('click',  moveRight);
+
+  // Clicking a footer button steals focus from the page; restore it so
+  // arrow keys keep working without the user having to click elsewhere.
+  $$('.btn').forEach(btn => btn.addEventListener('mouseup', () => btn.blur()));
+
+  render();
+})();
+</script>
+</body>
+</html>
