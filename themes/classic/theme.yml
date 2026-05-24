@@ -124,8 +124,10 @@ fonts:
   accent:
     builtin: small
   body-compact:
+    file: fonts/Ubuntu_7.cpfont
     builtin: small
   caption-compact:
+    file: fonts/Ubuntu_7.cpfont
     builtin: small
   accent-compact:
     builtin: small

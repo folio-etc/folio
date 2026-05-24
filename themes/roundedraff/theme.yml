@@ -134,6 +134,7 @@ fonts:
   body-compact:
     builtin: ui-10
   caption-compact:
+    file: fonts/Ubuntu_7.cpfont
     builtin: small
   accent-compact:
     builtin: small
