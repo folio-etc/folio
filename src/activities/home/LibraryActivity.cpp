@@ -554,10 +554,11 @@ void LibraryActivity::renderBookTile(int slotIndex, const LibraryBook& book, boo
     renderer.drawText(captionFont, frameX + (COVER_W - tw) / 2, frameY + (COVER_H - captionLineH) / 2,
                       trunc.c_str(), true, EpdFontFamily::BOLD);
   }
+
   // 1 px outer border + 1 px offset drop shadow on the cover (Folio motif).
-  renderer.drawRect(frameX, frameY, frameW, frameH);
-  renderer.drawLine(frameX + 1, frameY + frameH, frameX + frameW, frameY + frameH);
-  renderer.drawLine(frameX + frameW, frameY + 1, frameX + frameW, frameY + frameH);
+  renderer.drawRect(frameX, frameY, frameW, frameH, !invertText);
+  renderer.drawLine(frameX + 1, frameY + frameH, frameX + frameW, frameY + frameH, !invertText);
+  renderer.drawLine(frameX + frameW, frameY + 1, frameX + frameW, frameY + frameH, !invertText);
 
   // ---- Text area (fixed-height, title + author centered vertically) -----
   // Card height is fixed (see TILE_CONTENT_H), so the title + author block
