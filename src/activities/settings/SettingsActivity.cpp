@@ -83,6 +83,8 @@ void SettingsActivity::rebuildSettingsLists() {
 void SettingsActivity::onEnter() {
   Activity::onEnter();
 
+  themeChangedThisSession = false;
+
   // Reset selection to first category
   selectedCategoryIndex = 0;
   selectedSettingIndex = 0;
@@ -155,6 +157,13 @@ void SettingsActivity::loop() {
     selectedCategoryIndex = ButtonNavigator::previousIndex(selectedCategoryIndex, categoryCount);
     requestUpdate();
   });
+
+  // Apply live theme change if detected in toggleCurrentSetting()
+  if (themeChangedThisSession) {
+    themeChangedThisSession = false;
+    UITheme::getInstance().reload(renderer);
+    requestUpdate();
+  }
 
   if (hasChangedCategory) {
     selectedSettingIndex = (selectedSettingIndex == 0) ? 0 : 1;
@@ -263,6 +272,12 @@ void SettingsActivity::toggleCurrentSetting() {
   }
 
   syncQuickResumeTimeoutForSleepScreen(sleepScreenChanged, quickResumeTimeoutChanged);
+
+  // Detect theme change so loop() can apply it live
+  if (setting.nameId == StrId::STR_UI_THEME) {
+    themeChangedThisSession = true;
+  }
+
   SETTINGS.saveToFile();
 }
 

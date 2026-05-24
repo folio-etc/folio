@@ -250,6 +250,11 @@ bool JsonSettingsIO::loadSettings(CrossPointSettings& s, const char* json, bool*
   strncpy(s.sdThemeName, stn, sizeof(s.sdThemeName) - 1);
   s.sdThemeName[sizeof(s.sdThemeName) - 1] = '\0';
 
+  // Restore uiTheme from sdThemeName — the generic loop clamps it to FOLIO because
+  // the base SettingsList only declares one enum option (FOLIO), so any SD_THEME value
+  // saved by the user is incorrectly clamped back to 0 during deserialization.
+  s.uiTheme = (s.sdThemeName[0] != '\0') ? CrossPointSettings::SD_THEME : CrossPointSettings::FOLIO;
+
   // Language -- stored as code string for stability across enum reorders.
   if (doc["language"].is<const char*>()) {
     s.language = static_cast<uint8_t>(I18n::languageFromCode(doc["language"].as<const char*>()));
