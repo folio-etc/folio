@@ -151,6 +151,21 @@ class CrossPointSettings {
   // .cptheme bundles identified by sdThemeName.
   enum UI_THEME { FOLIO = 0, SD_THEME = 1, UI_THEME_COUNT };
 
+  // Library shelf sort options. Order must match LibraryIndex::SortField
+  // (LibraryActivity static_casts between them).
+  enum LIBRARY_SORT_FIELD {
+    LIB_SORT_RECENT = 0,
+    LIB_SORT_TITLE = 1,
+    LIB_SORT_AUTHOR = 2,
+    LIB_SORT_PROGRESS = 3,
+    LIBRARY_SORT_FIELD_COUNT
+  };
+  enum LIBRARY_SORT_DIRECTION {
+    LIB_SORT_DESC = 0,
+    LIB_SORT_ASC = 1,
+    LIBRARY_SORT_DIRECTION_COUNT
+  };
+
   // Image rendering in EPUB reader
   enum IMAGE_RENDERING { IMAGES_DISPLAY = 0, IMAGES_PLACEHOLDER = 1, IMAGES_SUPPRESS = 2, IMAGE_RENDERING_COUNT };
 
@@ -243,6 +258,10 @@ class CrossPointSettings {
   uint8_t showHiddenFiles = 0;
   // Remove a book from the Recent Books list when its End-of-Book screen is reached (0 = off, 1 = on)
   uint8_t removeReadBooksFromRecents = 0;
+  // Library shelf sort. Defaults match the prototype's initial state:
+  // most-recently-opened first.
+  uint8_t librarySortField = LIB_SORT_RECENT;
+  uint8_t librarySortDirection = LIB_SORT_DESC;
   // Move epub to /Read/ folder on SD card when finished (0 = disabled, 1 = enabled)
   uint8_t moveFinishedToReadFolder = 0;
   // Image rendering mode in EPUB reader

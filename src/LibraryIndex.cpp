@@ -26,7 +26,10 @@ constexpr char LIBRARY_FILE_TMP[] = "/.crosspoint/library.bin.tmp";
 
 // 'XPLB' (CrossPoint Library) in little-endian byte order on the wire.
 constexpr uint32_t LIBRARY_FILE_MAGIC = 0x424C5058u;
-constexpr uint8_t LIBRARY_FILE_VERSION = 1;
+// v2 adds LibraryBook::openSequence. The load path's version-mismatch branch
+// triggers a full disk rescan, so old caches regenerate transparently with
+// openSequence = 0 on every book.
+constexpr uint8_t LIBRARY_FILE_VERSION = 2;
 
 // Bound directory recursion. /Books/Author/Series/Title.epub is plenty;
 // deeper hierarchies are uncommon in book libraries and recursing further
@@ -117,6 +120,7 @@ bool LibraryIndex::loadFromFile() {
     serialization::readPod(f, b.pathHash);
     serialization::readPod(f, b.progressSpineIndex);
     serialization::readPod(f, b.spineCount);
+    serialization::readPod(f, b.openSequence);
     serialization::readString(f, b.path);
     serialization::readString(f, b.title);
     serialization::readString(f, b.author);
@@ -150,6 +154,7 @@ bool LibraryIndex::saveToFile() const {
     serialization::writePod(f, b.pathHash);
     serialization::writePod(f, b.progressSpineIndex);
     serialization::writePod(f, b.spineCount);
+    serialization::writePod(f, b.openSequence);
     serialization::writeString(f, b.path);
     serialization::writeString(f, b.title);
     serialization::writeString(f, b.author);
@@ -297,12 +302,8 @@ bool LibraryIndex::refreshFromSdCard(GfxRenderer* progressRenderer) {
     changed = true;
   }
 
-  // Stable display order: alphabetic by title (falling back to author then path).
-  std::sort(books.begin(), books.end(), [](const LibraryBook& a, const LibraryBook& b) {
-    if (a.title != b.title) return a.title < b.title;
-    if (a.author != b.author) return a.author < b.author;
-    return a.path < b.path;
-  });
+  // Sort order is owned by LibraryActivity now (it reads CrossPointSettings
+  // and calls sortBy()). Leave books in scan order here.
 
   loaded = true;
 
@@ -345,4 +346,120 @@ void LibraryIndex::refreshProgress(const std::string& path) {
   if (it->progressSpineIndex != old) {
     saveToFile();
   }
+}
+
+void LibraryIndex::noteBookOpened(const std::string& path) {
+  const uint32_t h = hashPath(path);
+  auto it = std::find_if(books.begin(), books.end(),
+                         [h, &path](const LibraryBook& b) { return b.pathHash == h && b.path == path; });
+  if (it == books.end()) return;  // Not indexed (e.g. opened from file browser).
+
+  uint32_t maxSeq = 0;
+  for (const auto& b : books) {
+    if (b.openSequence > maxSeq) maxSeq = b.openSequence;
+  }
+  it->openSequence = maxSeq + 1;
+  saveToFile();
+}
+
+namespace {
+
+// Strip a single leading article ("The ", "A ", "An ") from a title for sort
+// purposes. ASCII-only — matches the prototype's normalisation.
+std::string_view titleSortKey(const std::string& title) {
+  std::string_view v{title};
+  auto startsWithCi = [&](std::string_view prefix) -> bool {
+    if (v.size() < prefix.size()) return false;
+    for (size_t i = 0; i < prefix.size(); ++i) {
+      char a = v[i];
+      char b = prefix[i];
+      if (a >= 'A' && a <= 'Z') a = static_cast<char>(a - 'A' + 'a');
+      if (a != b) return false;
+    }
+    return true;
+  };
+  if (startsWithCi("the ")) v.remove_prefix(4);
+  else if (startsWithCi("an ")) v.remove_prefix(3);
+  else if (startsWithCi("a ")) v.remove_prefix(2);
+  return v;
+}
+
+// The last whitespace-separated token of `author` (the surname for typical
+// "First Last" inputs). Returns the full string when there's no whitespace.
+std::string_view authorSurname(const std::string& author) {
+  std::string_view v{author};
+  const size_t sp = v.find_last_of(" \t");
+  if (sp == std::string_view::npos) return v;
+  return v.substr(sp + 1);
+}
+
+int ciCompare(std::string_view a, std::string_view b) {
+  const size_t n = std::min(a.size(), b.size());
+  for (size_t i = 0; i < n; ++i) {
+    char ca = a[i];
+    char cb = b[i];
+    if (ca >= 'A' && ca <= 'Z') ca = static_cast<char>(ca - 'A' + 'a');
+    if (cb >= 'A' && cb <= 'Z') cb = static_cast<char>(cb - 'A' + 'a');
+    if (ca != cb) return (ca < cb) ? -1 : 1;
+  }
+  if (a.size() == b.size()) return 0;
+  return (a.size() < b.size()) ? -1 : 1;
+}
+
+}  // namespace
+
+void LibraryIndex::sortBy(SortField field, SortDirection direction) {
+  const bool asc = (direction == SortDirection::Ascending);
+
+  // Comparator returns "a comes first" relative to the *natural* direction
+  // for the field, then we flip at the end if descending was requested.
+  // Books with no usable key (unread / no author / never opened) always
+  // sort to the END, regardless of direction — matches the prototype.
+  std::sort(books.begin(), books.end(), [&](const LibraryBook& a, const LibraryBook& b) {
+    auto tiebreak = [&]() {
+      const int t = ciCompare(titleSortKey(a.title), titleSortKey(b.title));
+      if (t != 0) return t < 0;
+      return a.path < b.path;
+    };
+
+    switch (field) {
+      case SortField::Recent: {
+        const bool aHas = a.hasBeenOpened();
+        const bool bHas = b.hasBeenOpened();
+        if (aHas != bHas) return aHas;  // opened books before never-opened
+        if (!aHas) return tiebreak();
+        if (a.openSequence != b.openSequence) {
+          return asc ? (a.openSequence < b.openSequence) : (a.openSequence > b.openSequence);
+        }
+        return tiebreak();
+      }
+      case SortField::Title: {
+        const int c = ciCompare(titleSortKey(a.title), titleSortKey(b.title));
+        if (c != 0) return asc ? (c < 0) : (c > 0);
+        return a.path < b.path;
+      }
+      case SortField::Author: {
+        const bool aHas = !a.author.empty();
+        const bool bHas = !b.author.empty();
+        if (aHas != bHas) return aHas;
+        if (!aHas) return tiebreak();
+        const int c = ciCompare(authorSurname(a.author), authorSurname(b.author));
+        if (c != 0) return asc ? (c < 0) : (c > 0);
+        const int c2 = ciCompare(a.author, b.author);
+        if (c2 != 0) return asc ? (c2 < 0) : (c2 > 0);
+        return tiebreak();
+      }
+      case SortField::Progress: {
+        const bool aHas = a.hasProgress();
+        const bool bHas = b.hasProgress();
+        if (aHas != bHas) return aHas;
+        if (!aHas) return tiebreak();
+        const uint8_t pa = a.progressPercent();
+        const uint8_t pb = b.progressPercent();
+        if (pa != pb) return asc ? (pa < pb) : (pa > pb);
+        return tiebreak();
+      }
+    }
+    return tiebreak();
+  });
 }

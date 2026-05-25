@@ -240,6 +240,13 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
                             "removeReadBooksFromRecents", StrId::STR_CAT_SYSTEM),
         SettingInfo::Toggle(StrId::STR_MOVE_FINISHED_TO_READ, &CrossPointSettings::moveFinishedToReadFolder,
                             "moveFinishedToReadFolder", StrId::STR_CAT_SYSTEM),
+        SettingInfo::Enum(StrId::STR_LIBRARY_SORT_FIELD, &CrossPointSettings::librarySortField,
+                          {StrId::STR_SORT_RECENT, StrId::STR_SORT_TITLE, StrId::STR_SORT_AUTHOR,
+                           StrId::STR_SORT_PROGRESS},
+                          "librarySortField", StrId::STR_CAT_SYSTEM),
+        SettingInfo::Enum(StrId::STR_LIBRARY_SORT_DIRECTION, &CrossPointSettings::librarySortDirection,
+                          {StrId::STR_DESCENDING, StrId::STR_ASCENDING}, "librarySortDirection",
+                          StrId::STR_CAT_SYSTEM),
 
         // --- KOReader Sync (web-only, uses KOReaderCredentialStore) ---
         SettingInfo::DynamicString(

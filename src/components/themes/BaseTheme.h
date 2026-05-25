@@ -88,12 +88,41 @@ class BaseTheme {
   void drawSubHeader(const GfxRenderer& renderer, Rect rect, const char* label,
                      const char* rightLabel = nullptr) const;
   void drawTabBar(const GfxRenderer& renderer, Rect rect, const std::vector<TabInfo>& tabs, bool selected) const;
-  void drawRecentBookCover(GfxRenderer& renderer, Rect rect, const std::vector<RecentBook>& recentBooks,
-                           int selectorIndex, bool& coverRendered, bool& coverBufferStored,
-                           bool& bufferRestored, std::function<bool()> storeCoverBuffer) const;
   void drawButtonMenu(GfxRenderer& renderer, Rect rect, int buttonCount, int selectedIndex,
                       const std::function<std::string(int index)>& buttonLabel,
                       const std::function<UIIcon(int index)>& rowIcon) const;
+  // Right-side row glyphs for popup-menu rows. Drawn as filled polygons so
+  // they don't depend on font glyph coverage (the UI .cpfonts don't ship
+  // U+2191/U+2193/U+25B6).
+  enum class PopupMenuGlyph : uint8_t {
+    None,
+    ArrowUp,        // active sort field, ascending
+    ArrowDown,      // active sort field, descending
+    ChevronRight,   // row expands into a submenu
+  };
+
+  // Bordered popup-menu panel with offset shadow. Renders `itemCount` rows
+  // inside `rect`, starting from the top, using theme-controlled geometry
+  // from data->popupMenu. The selected row gets data->popupMenu.selectionStyle
+  // (independent of the global selection.style used for tiles/list rows).
+  //
+  // `rowGlyph` is optional — when non-null, the returned glyph per row is
+  // drawn right-aligned within the row (e.g. ArrowUp for the active sort
+  // field, ChevronRight for an expandable entry). Return None to leave the
+  // slot blank.
+  //
+  // `selectedIndex < 0` skips the row highlight entirely. `mutedIndex >= 0`
+  // places a dithered light-gray wash on that row (cascading-menu hint for
+  // "this is the parent of the open submenu"); -1 disables. Gated by
+  // popupMenu.subPanelMutedFill.
+  //
+  // `rect` is the panel footprint including its border but NOT including the
+  // shadow (the shadow extends popupMenu.shadowOffset{X,Y} past the
+  // bottom-right corner — callers must reserve space for it).
+  void drawPopupMenu(GfxRenderer& renderer, Rect rect, int itemCount, int selectedIndex,
+                     const std::function<std::string(int index)>& rowLabel,
+                     const std::function<PopupMenuGlyph(int index)>& rowGlyph = nullptr,
+                     int mutedIndex = -1) const;
   Rect drawPopup(const GfxRenderer& renderer, const char* message) const;
   void fillPopupProgress(const GfxRenderer& renderer, const Rect& layout, int progress) const;
   void drawStatusBar(GfxRenderer& renderer, float bookProgress, int currentPage, int pageCount, std::string title,

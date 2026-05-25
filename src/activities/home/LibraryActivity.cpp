@@ -82,7 +82,10 @@ void LibraryActivity::onEnter() {
   lockNextBackRelease = mappedInput.isPressed(MappedInputManager::Button::Back);
 
   view = View::Library;
-  menuSelected = 0;
+  popupLevel = PopupLevel::Top;
+  popupTopSel = 0;
+  popupSortSel = SETTINGS.librarySortField;
+  popupFilesSel = 0;
 
   // The on-disk library.bin survives onExit; load it back into memory.
   LIBRARY_INDEX.loadFromFile();
@@ -91,6 +94,11 @@ void LibraryActivity::onEnter() {
   // and refreshes progress. New EPUBs trigger a blocking "Indexing library..."
   // popup; the popup never appears when nothing has changed.
   LIBRARY_INDEX.refreshFromSdCard(&renderer);
+
+  // Apply persisted sort. LibraryIndex no longer pre-sorts in
+  // refreshFromSdCard — order is the LibraryActivity's responsibility now.
+  LIBRARY_INDEX.sortBy(static_cast<LibraryIndex::SortField>(SETTINGS.librarySortField),
+                      static_cast<LibraryIndex::SortDirection>(SETTINGS.librarySortDirection));
 
   // Clamp selection in case the previous page no longer exists.
   const int pages = totalPages();
@@ -138,13 +146,15 @@ void LibraryActivity::loop() {
   }
 
   if (mappedInput.wasPressed(MappedInputManager::Button::Back)) {
-    if (view == View::Menu) {
+    // Back always collapses the popup entirely (matches the prototype),
+    // regardless of which level is open. From Library, Back opens the
+    // popup ("Menu" footer label = the Back front button).
+    if (view == View::Popup) {
       view = View::Library;
+      popupLevel = PopupLevel::Top;
       requestUpdate();
     } else {
-      // From Library, single-tap Back opens the Menu (matches the
-      // prototype's "Menu" footer label = the Back front button).
-      toggleMenu();
+      togglePopup();
     }
     return;
   }
@@ -174,10 +184,22 @@ void LibraryActivity::loop() {
 
 // ---- Navigation -------------------------------------------------------------
 
+int LibraryActivity::popupItemsAt(PopupLevel level) const {
+  switch (level) {
+    case PopupLevel::Top:      return POPUP_TOP_ITEMS;
+    case PopupLevel::SortSub:  return POPUP_SORT_ITEMS;
+    case PopupLevel::FilesSub: return POPUP_FILES_ITEMS;
+  }
+  return 0;
+}
+
 void LibraryActivity::moveUp() {
-  if (view == View::Menu) {
-    if (menuSelected > 0) {
-      menuSelected--;
+  if (view == View::Popup) {
+    int& sel = (popupLevel == PopupLevel::Top)       ? popupTopSel
+               : (popupLevel == PopupLevel::SortSub) ? popupSortSel
+                                                     : popupFilesSel;
+    if (sel > 0) {
+      sel--;
       requestUpdate();
     }
     return;
@@ -195,9 +217,12 @@ void LibraryActivity::moveUp() {
 }
 
 void LibraryActivity::moveDown() {
-  if (view == View::Menu) {
-    if (menuSelected < MENU_ITEMS - 1) {
-      menuSelected++;
+  if (view == View::Popup) {
+    int& sel = (popupLevel == PopupLevel::Top)       ? popupTopSel
+               : (popupLevel == PopupLevel::SortSub) ? popupSortSel
+                                                     : popupFilesSel;
+    if (sel < popupItemsAt(popupLevel) - 1) {
+      sel++;
       requestUpdate();
     }
     return;
@@ -234,7 +259,18 @@ void LibraryActivity::moveDown() {
 }
 
 void LibraryActivity::moveLeft() {
-  if (view == View::Menu) return;  // Left/Right are no-ops in the menu.
+  if (view == View::Popup) {
+    // Left in a sub-panel pops back to the top panel; Left in the top
+    // panel closes the popup (matches the prototype).
+    if (popupLevel == PopupLevel::SortSub || popupLevel == PopupLevel::FilesSub) {
+      popupLevel = PopupLevel::Top;
+      requestUpdate();
+    } else {
+      view = View::Library;
+      requestUpdate();
+    }
+    return;
+  }
   const int col = currentCol();
   if (col > 0) {
     librarySelected--;
@@ -243,7 +279,31 @@ void LibraryActivity::moveLeft() {
 }
 
 void LibraryActivity::moveRight() {
-  if (view == View::Menu) return;
+  if (view == View::Popup) {
+    // Right at the top enters the selected submenu, or activates Settings.
+    if (popupLevel == PopupLevel::Top) {
+      switch (popupTopSel) {
+        case 0:  // Sort
+          popupLevel = PopupLevel::SortSub;
+          popupSortSel = SETTINGS.librarySortField;
+          requestUpdate();
+          break;
+        case 1:  // Files
+          popupLevel = PopupLevel::FilesSub;
+          popupFilesSel = 0;
+          requestUpdate();
+          break;
+        case 2:  // Settings — opens directly
+          activityManager.goToSettings();
+          break;
+        default:
+          break;
+      }
+    }
+    // No-op in submenus (sort rows have no further depth; files rows open
+    // their activity via Confirm, not Right).
+    return;
+  }
   const int col = currentCol();
   if (col < COLS - 1) {
     const int candidate = librarySelected + 1;
@@ -255,8 +315,8 @@ void LibraryActivity::moveRight() {
 }
 
 void LibraryActivity::doSelect() {
-  if (view == View::Menu) {
-    openMenuOption(menuSelected);
+  if (view == View::Popup) {
+    activatePopupItem();
     return;
   }
   const LibraryBook* book = LIBRARY_INDEX.getAt(libraryPage, librarySelected, PER_PAGE);
@@ -269,26 +329,79 @@ void LibraryActivity::doSelect() {
   activityManager.goToReader(book->path);
 }
 
-void LibraryActivity::toggleMenu() {
-  view = (view == View::Menu) ? View::Library : View::Menu;
-  if (view == View::Menu) menuSelected = 0;
+void LibraryActivity::togglePopup() {
+  view = (view == View::Popup) ? View::Library : View::Popup;
+  if (view == View::Popup) {
+    popupLevel = PopupLevel::Top;
+    popupTopSel = 0;
+  }
   requestUpdate();
 }
 
-void LibraryActivity::openMenuOption(int idx) {
-  switch (idx) {
-    case 0:
-      activityManager.goToFileBrowser();
+void LibraryActivity::activatePopupItem() {
+  switch (popupLevel) {
+    case PopupLevel::Top:
+      // Confirm at the top mirrors Right: enter Sort/Files submenu or open
+      // Settings.
+      switch (popupTopSel) {
+        case 0:
+          popupLevel = PopupLevel::SortSub;
+          popupSortSel = SETTINGS.librarySortField;
+          requestUpdate();
+          break;
+        case 1:
+          popupLevel = PopupLevel::FilesSub;
+          popupFilesSel = 0;
+          requestUpdate();
+          break;
+        case 2:
+          activityManager.goToSettings();
+          break;
+      }
       break;
-    case 1:
-      activityManager.goToFileTransfer();
+    case PopupLevel::SortSub: {
+      // If the row matches the active field, flip direction. Otherwise
+      // switch the active field and keep the persisted direction.
+      const uint8_t newField = static_cast<uint8_t>(popupSortSel);
+      uint8_t newDirection = SETTINGS.librarySortDirection;
+      if (newField == SETTINGS.librarySortField) {
+        newDirection = (SETTINGS.librarySortDirection == CrossPointSettings::LIB_SORT_ASC)
+                           ? CrossPointSettings::LIB_SORT_DESC
+                           : CrossPointSettings::LIB_SORT_ASC;
+      }
+      setSort(newField, newDirection);
       break;
-    case 2:
-      activityManager.goToSettings();
-      break;
-    default:
+    }
+    case PopupLevel::FilesSub:
+      switch (popupFilesSel) {
+        case 0:
+          activityManager.goToFileBrowser();
+          break;
+        case 1:
+          activityManager.goToFileTransfer();
+          break;
+      }
       break;
   }
+}
+
+void LibraryActivity::applySort() {
+  LIBRARY_INDEX.sortBy(static_cast<LibraryIndex::SortField>(SETTINGS.librarySortField),
+                      static_cast<LibraryIndex::SortDirection>(SETTINGS.librarySortDirection));
+  libraryPage = 0;
+  librarySelected = 0;
+  requestUpdate();
+}
+
+void LibraryActivity::setSort(uint8_t field, uint8_t direction) {
+  const bool changed =
+      (field != SETTINGS.librarySortField) || (direction != SETTINGS.librarySortDirection);
+  if (changed) {
+    SETTINGS.librarySortField = field;
+    SETTINGS.librarySortDirection = direction;
+    SETTINGS.saveToFile();
+  }
+  applySort();
 }
 
 // ---- Render -----------------------------------------------------------------
@@ -323,36 +436,42 @@ void LibraryActivity::declareText(TextCollector& tc) {
   const int captionCompactFont = libFont(FontRole::CaptionCompact);
   const int accentCompactFont = libFont(FontRole::AccentCompact);
 
-  if (view == View::Menu) {
-    // Menu view chrome — default sizes, this view is roomy.
-    tc.use(titleFont, EpdFontFamily::BOLD, tr(STR_LIBRARY_MENU_TITLE));
-    tc.use(captionFont, EpdFontFamily::ITALIC, tr(STR_LIBRARY_MENU_SUBTITLE));
-    tc.use(headingFont, EpdFontFamily::ITALIC, "I.II.III.");
-    tc.use(titleFont, EpdFontFamily::BOLD, tr(STR_BROWSE_FILES));
-    tc.use(titleFont, EpdFontFamily::BOLD, tr(STR_FILE_TRANSFER));
-    tc.use(titleFont, EpdFontFamily::BOLD, tr(STR_SETTINGS_TITLE));
-    tc.use(captionFont, EpdFontFamily::ITALIC, tr(STR_LIBRARY_MENU_BROWSE_HINT));
-    tc.use(captionFont, EpdFontFamily::ITALIC, tr(STR_LIBRARY_MENU_TRANSFER_HINT));
-    tc.use(captionFont, EpdFontFamily::ITALIC, tr(STR_LIBRARY_MENU_SETTINGS_HINT));
-  } else {
-    // Library shelf view.
-    // Header — default caption (header subtitle is short, doesn't need compact).
-    tc.use(titleFont, EpdFontFamily::BOLD, tr(STR_LIBRARY));
-    if (!LIBRARY_INDEX.isEmpty()) {
-      tc.use(captionFont, EpdFontFamily::ITALIC, tr(STR_LIBRARY_SORTED_RECENT));
-      tc.use(captionFont, EpdFontFamily::ITALIC, "0123456789 · /");
-      // Page rail "1 / 12" — uses the compact accent face.
-      tc.use(accentCompactFont, EpdFontFamily::ITALIC, "0123456789 /");
+  (void)headingFont;  // (kept for future popup chrome that may need numerals)
+
+  // The library shelf always paints underneath — the popup floats above it,
+  // so the shelf glyphs need to be declared regardless of view.
+  tc.use(titleFont, EpdFontFamily::BOLD, tr(STR_LIBRARY));
+  if (!LIBRARY_INDEX.isEmpty()) {
+    tc.use(captionFont, EpdFontFamily::ITALIC, tr(STR_LIBRARY_SORTED_RECENT));
+    tc.use(captionFont, EpdFontFamily::ITALIC, tr(STR_LIBRARY_SORTED_TITLE));
+    tc.use(captionFont, EpdFontFamily::ITALIC, tr(STR_LIBRARY_SORTED_AUTHOR));
+    tc.use(captionFont, EpdFontFamily::ITALIC, tr(STR_LIBRARY_SORTED_PROGRESS));
+    tc.use(captionFont, EpdFontFamily::ITALIC, "0123456789 ()ascde · /");
+    // Page rail "1 / 12" — uses the compact accent face.
+    tc.use(accentCompactFont, EpdFontFamily::ITALIC, "0123456789 /");
+  }
+  for (int slot = 0; slot < PER_PAGE; ++slot) {
+    const LibraryBook* book = LIBRARY_INDEX.getAt(libraryPage, slot, PER_PAGE);
+    if (book == nullptr) continue;
+    tc.use(captionCompactFont, EpdFontFamily::BOLD, book->title);
+    if (!book->author.empty()) {
+      tc.use(captionCompactFont, EpdFontFamily::ITALIC, book->author);
     }
-    // Book grid — dense, uses the compact caption face.
-    for (int slot = 0; slot < PER_PAGE; ++slot) {
-      const LibraryBook* book = LIBRARY_INDEX.getAt(libraryPage, slot, PER_PAGE);
-      if (book == nullptr) continue;
-      tc.use(captionCompactFont, EpdFontFamily::BOLD, book->title);
-      if (!book->author.empty()) {
-        tc.use(captionCompactFont, EpdFontFamily::ITALIC, book->author);
-      }
-    }
+  }
+
+  if (view == View::Popup) {
+    // Popup row labels — body face inside the panels. (No annotation glyphs
+    // here: the popup primitive paints triangles via fillPolygon, not text.)
+    const int popupBodyFont = libFont(GUI.getData()->popupMenu.fontRole);
+    tc.use(popupBodyFont, EpdFontFamily::BOLD, tr(STR_SORT));
+    tc.use(popupBodyFont, EpdFontFamily::BOLD, tr(STR_FILES));
+    tc.use(popupBodyFont, EpdFontFamily::BOLD, tr(STR_SETTINGS_TITLE));
+    tc.use(popupBodyFont, EpdFontFamily::BOLD, tr(STR_SORT_RECENT));
+    tc.use(popupBodyFont, EpdFontFamily::BOLD, tr(STR_SORT_TITLE));
+    tc.use(popupBodyFont, EpdFontFamily::BOLD, tr(STR_SORT_AUTHOR));
+    tc.use(popupBodyFont, EpdFontFamily::BOLD, tr(STR_SORT_PROGRESS));
+    tc.use(popupBodyFont, EpdFontFamily::BOLD, tr(STR_BROWSE_FILES));
+    tc.use(popupBodyFont, EpdFontFamily::BOLD, tr(STR_FILE_TRANSFER));
   }
 
   // Button hints — italic body labels, compact face so the label has
@@ -360,30 +479,43 @@ void LibraryActivity::declareText(TextCollector& tc) {
   tc.use(bodyCompactFont, EpdFontFamily::ITALIC, tr(STR_MENU_LABEL));
   tc.use(bodyCompactFont, EpdFontFamily::ITALIC, tr(STR_BACK));
   tc.use(bodyCompactFont, EpdFontFamily::ITALIC, tr(STR_SELECT));
+  tc.use(bodyCompactFont, EpdFontFamily::ITALIC, tr(STR_ENTER));
+  tc.use(bodyCompactFont, EpdFontFamily::ITALIC, tr(STR_CLOSE));
   tc.use(bodyCompactFont, EpdFontFamily::ITALIC, tr(STR_DIR_LEFT));
   tc.use(bodyCompactFont, EpdFontFamily::ITALIC, tr(STR_DIR_RIGHT));
 }
 
 void LibraryActivity::renderPasses() {
   renderHeader();
-  if (view == View::Library) {
-    if (LIBRARY_INDEX.isEmpty()) {
-      renderEmptyState();
-    } else {
-      renderLibraryShelf();
-      renderPageRail();
-    }
+  if (LIBRARY_INDEX.isEmpty()) {
+    renderEmptyState();
   } else {
-    renderMenuView();
+    renderLibraryShelf();
+    renderPageRail();
+  }
+  if (view == View::Popup) {
+    renderPopup();
   }
 
-  // Footer button hints — delegate to the active theme so they match the
-  // rest of the device's chrome. Folio paints hairline-italic hints, Lyra
-  // paints rounded white-filled hints, Classic paints sharp boxes, etc.
-  const char* backLabel = (view == View::Menu) ? tr(STR_BACK) : tr(STR_MENU_LABEL);
-  const char* leftLabel = (view == View::Menu) ? "" : tr(STR_DIR_LEFT);
-  const char* rightLabel = (view == View::Menu) ? "" : tr(STR_DIR_RIGHT);
-  const auto labels = mappedInput.mapLabels(backLabel, tr(STR_SELECT), leftLabel, rightLabel);
+  // Footer hints follow the prototype: Library view shows Menu/Select/Left/
+  // Right; popup view shows Close/Select/Back/Enter. In the prototype, hints
+  // that won't do anything from the current depth render dimmed — the
+  // firmware's button-hint primitive doesn't expose a dimmed state, so we
+  // hide those labels entirely (empty string) instead.
+  const char* btn1 = tr(STR_MENU_LABEL);
+  const char* btn2 = tr(STR_SELECT);
+  const char* btn3 = tr(STR_DIR_LEFT);
+  const char* btn4 = tr(STR_DIR_RIGHT);
+  if (view == View::Popup) {
+    const bool inSub = (popupLevel != PopupLevel::Top);
+    // At top level, Sort/Files have submenus; Settings (index 2) does not.
+    const bool topHasSub = (popupLevel == PopupLevel::Top) && (popupTopSel == 0 || popupTopSel == 1);
+    btn1 = tr(STR_CLOSE);
+    btn2 = tr(STR_SELECT);
+    btn3 = inSub ? tr(STR_BACK) : "";
+    btn4 = (!inSub && topHasSub) ? tr(STR_ENTER) : "";
+  }
+  const auto labels = mappedInput.mapLabels(btn1, btn2, btn3, btn4);
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
 }
 
@@ -404,14 +536,24 @@ void LibraryActivity::renderHeader() {
 
   // Title and subtitle — match FolioTheme::drawHeader's positions so the
   // Library reads identically whether or not Folio is the active theme.
-  const bool inMenu = (view == View::Menu);
-  const char* title = inMenu ? tr(STR_LIBRARY_MENU_TITLE) : tr(STR_LIBRARY);
+  const char* title = tr(STR_LIBRARY);
 
   std::string subtitleText;
-  if (inMenu) {
-    subtitleText = tr(STR_LIBRARY_MENU_SUBTITLE);
-  } else if (!LIBRARY_INDEX.isEmpty()) {
-    subtitleText = std::string(tr(STR_LIBRARY_SORTED_RECENT)) + "  ·  " +
+  if (!LIBRARY_INDEX.isEmpty()) {
+    StrId sortedKey = StrId::STR_LIBRARY_SORTED_RECENT;
+    switch (SETTINGS.librarySortField) {
+      case CrossPointSettings::LIB_SORT_TITLE:    sortedKey = StrId::STR_LIBRARY_SORTED_TITLE; break;
+      case CrossPointSettings::LIB_SORT_AUTHOR:   sortedKey = StrId::STR_LIBRARY_SORTED_AUTHOR; break;
+      case CrossPointSettings::LIB_SORT_PROGRESS: sortedKey = StrId::STR_LIBRARY_SORTED_PROGRESS; break;
+      case CrossPointSettings::LIB_SORT_RECENT:
+      default:                                    sortedKey = StrId::STR_LIBRARY_SORTED_RECENT; break;
+    }
+    // Direction marker uses ASCII so it renders in any font. The popup-menu
+    // primitive paints proper triangle glyphs for the in-popup arrows; the
+    // subtitle stays light-touch text.
+    const char* arrow =
+        (SETTINGS.librarySortDirection == CrossPointSettings::LIB_SORT_ASC) ? "(asc)" : "(desc)";
+    subtitleText = std::string(I18n::getInstance().get(sortedKey)) + " " + arrow + "  ·  " +
                    std::to_string(libraryPage + 1) + " / " + std::to_string(totalPages());
   }
 
@@ -722,54 +864,106 @@ void LibraryActivity::renderEmptyState() {
   renderer.drawText(font, (screenW - textW) / 2, y, msg, true, EpdFontFamily::ITALIC);
 }
 
-void LibraryActivity::renderMenuView() {
+void LibraryActivity::renderPopup() {
+  // Cascading popup over the library shelf. Two panels: a top panel pinned
+  // above the footer hints (Sort / Files / Settings), and an optional sub
+  // panel that slides out to the right when in SortSub or FilesSub. Panel
+  // chrome and selection treatment come from the theme's popupMenu group;
+  // LibraryActivity owns only the widths and the anchor.
+  constexpr int POPUP_TOP_W = 168;
+  constexpr int POPUP_SUB_W = 220;
+
+  const auto& pm = GUI.getData()->popupMenu;
   const int screenW = renderer.getScreenWidth();
   const int screenH = renderer.getScreenHeight();
-  const int areaY = HEADER_HEIGHT + CONTENT_PAD_Y + 22;
-  const int areaH = screenH - HEADER_HEIGHT - FOOTER_HEIGHT - CONTENT_PAD_Y * 2 - 44;
 
-  // Three items, evenly distributed in the available area.
-  const int gap = 20;
-  const int itemH = (areaH - gap * (MENU_ITEMS - 1)) / MENU_ITEMS;
-  const int itemX = CONTENT_PAD_X + 12;
-  const int itemW = screenW - (CONTENT_PAD_X + 12) * 2;
+  const int topItems = POPUP_TOP_ITEMS;
+  const int topH = topItems * pm.rowHeight + 2 * pm.borderThickness;
+  const int topX = CONTENT_PAD_X + 12;
+  // Anchor above the footer hints, leaving a small breathing gap. Shadow
+  // offset doesn't count toward the panel rect — drawPopupMenu paints it
+  // outside the rect — but we keep clear of the footer regardless.
+  const int topY = screenH - FOOTER_HEIGHT - topH - pm.shadowOffsetY - 6;
 
-  const char* romanLabels[MENU_ITEMS] = {"I.", "II.", "III."};
-  const char* labels[MENU_ITEMS] = {tr(STR_BROWSE_FILES), tr(STR_FILE_TRANSFER), tr(STR_SETTINGS_TITLE)};
-  const char* metas[MENU_ITEMS] = {tr(STR_LIBRARY_MENU_BROWSE_HINT), tr(STR_LIBRARY_MENU_TRANSFER_HINT),
-                                   tr(STR_LIBRARY_MENU_SETTINGS_HINT)};
+  // Sub panel rect (only computed when needed).
+  const bool hasSub = (popupLevel != PopupLevel::Top);
+  const int subItems =
+      (popupLevel == PopupLevel::SortSub) ? POPUP_SORT_ITEMS : POPUP_FILES_ITEMS;
+  const int subH = subItems * pm.rowHeight + 2 * pm.borderThickness;
+  const int subX = topX + POPUP_TOP_W + pm.panelGap;
+  // Align the bottom of the sub panel with the bottom of the top panel —
+  // the prototype anchors both panels at the same baseline.
+  const int subY = topY + topH - subH;
 
-  const int titleFont = libFont(FontRole::Title);
-  const int headingFont = libFont(FontRole::Heading);
-  const int captionFont = libFont(FontRole::Caption);
-
-  const bool invertText = GUI.getData()->selection.textInverted;
-  for (int i = 0; i < MENU_ITEMS; ++i) {
-    const int y = areaY + i * (itemH + gap);
-    const Rect item{itemX, y, itemW, itemH};
-    const bool selected = (i == menuSelected);
-    if (selected) {
-      GUI.drawSelectionBackground(renderer, item);
+  // ---- Top panel ----------------------------------------------------------
+  const Rect topRect{topX, topY, POPUP_TOP_W, topH};
+  const int topSelected = (popupLevel == PopupLevel::Top) ? popupTopSel : -1;
+  // When a submenu is open, dim-highlight the owning row on the top panel
+  // (Sort owns SortSub, Files owns FilesSub) so the user can see which
+  // entry their submenu hangs off.
+  const int topMuted = (popupLevel == PopupLevel::SortSub)    ? 0
+                       : (popupLevel == PopupLevel::FilesSub) ? 1
+                                                              : -1;
+  auto topLabel = [](int i) -> std::string {
+    switch (i) {
+      case 0: return tr(STR_SORT);
+      case 1: return tr(STR_FILES);
+      case 2: return tr(STR_SETTINGS_TITLE);
     }
-    const bool textBlack = !(selected && invertText);
+    return "";
+  };
+  auto topGlyph = [](int i) -> BaseTheme::PopupMenuGlyph {
+    // Sort + Files expand into submenus; Settings opens directly.
+    if (i == 0 || i == 1) return BaseTheme::PopupMenuGlyph::ChevronRight;
+    return BaseTheme::PopupMenuGlyph::None;
+  };
+  GUI.drawPopupMenu(renderer, topRect, topItems, topSelected, topLabel, topGlyph,
+                   /*mutedIndex=*/topMuted);
 
-    // Numeral (heading-sized italic, dimmer feel than the label).
-    const int numW = renderer.getTextWidth(headingFont, romanLabels[i], EpdFontFamily::ITALIC);
-    renderer.drawText(headingFont, item.x + 16, item.y + 16, romanLabels[i], textBlack, EpdFontFamily::ITALIC);
+  // ---- Sub panel ----------------------------------------------------------
+  if (!hasSub) {
+    // Avoid a -Wunused-but-set warning in builds that don't reference subX/subY/subH.
+    (void)subX;
+    (void)subY;
+    (void)subH;
+    return;
+  }
 
-    // Label — title-sized bold serif (matches the prototype's 28-px primary).
-    const int labelX = item.x + 16 + numW + 14;
-    renderer.drawText(titleFont, labelX, item.y + 14, labels[i], textBlack, EpdFontFamily::BOLD);
+  // Clamp sub panel width so it doesn't escape the screen.
+  int subW = POPUP_SUB_W;
+  if (subX + subW + pm.shadowOffsetX > screenW - CONTENT_PAD_X) {
+    subW = screenW - CONTENT_PAD_X - pm.shadowOffsetX - subX;
+  }
+  const Rect subRect{subX, subY, subW, subH};
 
-    // Hairline rule beneath the label (cover-type motif).
-    const int ruleY = item.y + 14 + renderer.getLineHeight(titleFont) + 4;
-    renderer.drawLine(labelX, ruleY, labelX + 30, ruleY, textBlack);
-
-    // Meta line (caption italic, secondary).
-    renderer.drawText(captionFont, labelX, ruleY + 6, metas[i], textBlack, EpdFontFamily::ITALIC);
-
-    if (selected) {
-      GUI.drawSelectionForeground(renderer, item);
-    }
+  if (popupLevel == PopupLevel::SortSub) {
+    auto sortLabel = [](int i) -> std::string {
+      switch (i) {
+        case 0: return tr(STR_SORT_RECENT);
+        case 1: return tr(STR_SORT_TITLE);
+        case 2: return tr(STR_SORT_AUTHOR);
+        case 3: return tr(STR_SORT_PROGRESS);
+      }
+      return "";
+    };
+    // Triangle on the currently active sort field, blank on others (keeps
+    // label baselines aligned across rows, matches the prototype).
+    const int activeField = SETTINGS.librarySortField;
+    const bool ascending = (SETTINGS.librarySortDirection == CrossPointSettings::LIB_SORT_ASC);
+    auto sortGlyph = [activeField, ascending](int i) -> BaseTheme::PopupMenuGlyph {
+      if (i != activeField) return BaseTheme::PopupMenuGlyph::None;
+      return ascending ? BaseTheme::PopupMenuGlyph::ArrowUp : BaseTheme::PopupMenuGlyph::ArrowDown;
+    };
+    GUI.drawPopupMenu(renderer, subRect, POPUP_SORT_ITEMS, popupSortSel, sortLabel, sortGlyph);
+  } else {
+    // FilesSub
+    auto filesLabel = [](int i) -> std::string {
+      switch (i) {
+        case 0: return tr(STR_BROWSE_FILES);
+        case 1: return tr(STR_FILE_TRANSFER);
+      }
+      return "";
+    };
+    GUI.drawPopupMenu(renderer, subRect, POPUP_FILES_ITEMS, popupFilesSel, filesLabel);
   }
 }

@@ -24,8 +24,13 @@ struct LibraryBook {
   // Total spine entries — needed to compute percentage without re-opening
   // the EPUB. Zero means "unknown" (treat as unread for display purposes).
   uint16_t spineCount = 0;
+  // Monotonic open counter, bumped by noteBookOpened() each time the reader
+  // launches this book. 0 = never opened. Used by the Recently Opened sort.
+  // No RTC on the device, so a counter is cheaper than an absolute timestamp.
+  uint32_t openSequence = 0;
 
   bool hasProgress() const { return progressSpineIndex > 0 && spineCount > 0; }
+  bool hasBeenOpened() const { return openSequence > 0; }
 
   // 0..100. Returns 0 when unread/unknown.
   uint8_t progressPercent() const {
@@ -41,6 +46,19 @@ class LibraryIndex {
   bool loaded = false;
 
  public:
+  // Sort options for the library shelf. Plain enums so this header has no
+  // dependency on CrossPointSettings. LibraryActivity maps from settings.
+  enum class SortField : uint8_t {
+    Recent = 0,    // by openSequence (unread sinks to the end)
+    Title = 1,     // alphabetic, leading articles ignored
+    Author = 2,    // surname first, empty author sinks to the end
+    Progress = 3,  // by progressPercent, unread sinks to the end
+  };
+  enum class SortDirection : uint8_t {
+    Descending = 0,
+    Ascending = 1,
+  };
+
   static LibraryIndex& getInstance() { return instance; }
 
   // Loads /.crosspoint/library.bin if present. Returns true if anything was loaded.
@@ -67,6 +85,18 @@ class LibraryIndex {
   // Cheap — opens the 6-byte progress file. Persists library.bin if changed.
   // Called by LibraryActivity after returning from the reader.
   void refreshProgress(const std::string& path);
+
+  // Bump the matching book's openSequence to (max openSequence across the
+  // index) + 1 and persist library.bin. No-op when the path isn't indexed
+  // (e.g. a book opened directly from the file browser). Cheap: one O(N)
+  // scan + one library.bin rewrite. Called only when the reader is
+  // actually entered, not on page turns.
+  void noteBookOpened(const std::string& path);
+
+  // Reorder `books` in place per the requested field and direction. Pure
+  // function of the books vector + settings inputs — no Settings coupling.
+  // LibraryActivity calls this on entry and after popup-menu changes.
+  void sortBy(SortField field, SortDirection direction);
 
   // Drop the in-memory books vector and release its storage. The on-disk
   // /.crosspoint/library.bin is preserved. The next loadFromFile() call

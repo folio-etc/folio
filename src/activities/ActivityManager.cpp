@@ -6,6 +6,7 @@
 
 #include <algorithm>
 
+#include "LibraryIndex.h"
 #include "OpdsServerStore.h"
 #include "boot_sleep/BootActivity.h"
 #include "boot_sleep/SleepActivity.h"
@@ -210,6 +211,10 @@ void ActivityManager::goToBrowser() {
 }
 
 void ActivityManager::goToReader(std::string path) {
+  // Bump the recency counter so "Recently Opened" sort reflects this open.
+  // No-op when the path isn't indexed (e.g. a book opened from the file
+  // browser that's outside /Books).
+  LIBRARY_INDEX.noteBookOpened(path);
   replaceActivity(std::make_unique<ReaderActivity>(renderer, mappedInput, std::move(path)));
 }
 

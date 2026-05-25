@@ -12,12 +12,9 @@
 #include <string>
 #include <vector>
 
-#include "I18n.h"
-#include "RecentBooksStore.h"
 #include "components/UITheme.h"
 #include "components/icons/book.h"
 #include "components/icons/book24.h"
-#include "components/icons/cover.h"
 #include "components/icons/file24.h"
 #include "components/icons/folder.h"
 #include "components/icons/folder24.h"
@@ -542,6 +539,130 @@ void BaseTheme::drawSelectionForeground(const GfxRenderer& renderer, Rect rect) 
 
 void BaseTheme::drawSelectionFrame(const GfxRenderer& renderer, Rect rect) {
   drawSelectionRect(renderer, rect, SelectionFill::None, SelectionBorder::Double);
+}
+
+// ============================================================================
+// Popup menu (cascading contextual menu, e.g. Library Sort/Files/Settings)
+// ============================================================================
+
+void BaseTheme::drawPopupMenu(GfxRenderer& renderer, Rect rect, int itemCount, int selectedIndex,
+                              const std::function<std::string(int index)>& rowLabel,
+                              const std::function<PopupMenuGlyph(int index)>& rowGlyph, int mutedIndex) const {
+  if (itemCount <= 0) return;
+  const auto& pm = data->popupMenu;
+
+  // ---- Drop shadow ---------------------------------------------------------
+  if (pm.shadowOffsetX != 0 || pm.shadowOffsetY != 0) {
+    if (pm.cornerRadius > 0) {
+      renderer.fillRoundedRect(rect.x + pm.shadowOffsetX, rect.y + pm.shadowOffsetY, rect.width, rect.height,
+                               pm.cornerRadius, Color::Black);
+    } else {
+      renderer.fillRect(rect.x + pm.shadowOffsetX, rect.y + pm.shadowOffsetY, rect.width, rect.height, true);
+    }
+  }
+
+  // ---- Panel fill (white) --------------------------------------------------
+  if (pm.cornerRadius > 0) {
+    renderer.fillRoundedRect(rect.x, rect.y, rect.width, rect.height, pm.cornerRadius, Color::White);
+  } else {
+    renderer.fillRect(rect.x, rect.y, rect.width, rect.height, false);
+  }
+
+  // ---- Panel border --------------------------------------------------------
+  if (pm.borderThickness > 0) {
+    if (pm.cornerRadius > 0) {
+      renderer.drawRoundedRect(rect.x, rect.y, rect.width, rect.height, pm.borderThickness, pm.cornerRadius, true);
+    } else {
+      renderer.drawRect(rect.x, rect.y, rect.width, rect.height, pm.borderThickness, true);
+    }
+  }
+
+  // ---- Rows ----------------------------------------------------------------
+  const int labelFontId = getFontForRole(pm.fontRole);
+  const int annotFontId = getFontForRole(pm.annotationFontRole);
+  const int labelLineHeight = renderer.getLineHeight(labelFontId);
+  const int innerX = rect.x + pm.borderThickness;
+  const int innerW = rect.width - 2 * pm.borderThickness;
+
+  for (int i = 0; i < itemCount; ++i) {
+    const Rect rowRect{innerX, rect.y + pm.borderThickness + i * pm.rowHeight, innerW, pm.rowHeight};
+
+    const bool isSelected = (i == selectedIndex);
+    const bool isMuted = (i == mutedIndex) && pm.subPanelMutedFill;
+
+    // Background pass.
+    if (isMuted && !isSelected) {
+      renderer.fillRectDither(rowRect.x, rowRect.y, rowRect.width, rowRect.height, Color::LightGray);
+    }
+    if (isSelected) {
+      switch (pm.selectionStyle) {
+        case PopupMenuSelectionStyle::SolidFill:
+          if (pm.selectionCornerRadius > 0) {
+            renderer.fillRoundedRect(rowRect.x, rowRect.y, rowRect.width, rowRect.height, pm.selectionCornerRadius,
+                                     Color::Black);
+          } else {
+            renderer.fillRect(rowRect.x, rowRect.y, rowRect.width, rowRect.height, true);
+          }
+          break;
+        case PopupMenuSelectionStyle::RoundedFill:
+          renderer.fillRoundedRect(rowRect.x, rowRect.y, rowRect.width, rowRect.height,
+                                   pm.selectionCornerRadius > 0 ? pm.selectionCornerRadius : 4, Color::Black);
+          break;
+        case PopupMenuSelectionStyle::BorderOnly:
+          renderer.drawRect(rowRect.x, rowRect.y, rowRect.width, rowRect.height, 1, true);
+          break;
+      }
+    }
+
+    const bool textBlack = !(isSelected && pm.selectionTextInverted);
+
+    // Label — vertically centered within the row.
+    std::string label = rowLabel ? rowLabel(i) : std::string{};
+    if (!label.empty()) {
+      const int labelY = rowRect.y + (rowRect.height - labelLineHeight) / 2;
+      renderer.drawText(labelFontId, rowRect.x + pm.paddingX, labelY, label.c_str(), textBlack);
+    }
+
+    // Optional right-aligned glyph. Drawn as a filled triangle so it doesn't
+    // depend on the font having ↑/↓/▶ in its glyph set.
+    if (rowGlyph) {
+      const PopupMenuGlyph glyph = rowGlyph(i);
+      if (glyph != PopupMenuGlyph::None) {
+        // Glyph metrics — sized off the row height so it scales with theme.
+        // Body of the glyph hugs the trailing edge with a paddingX gutter.
+        const int glyphSize = std::max(6, rowRect.height / 3);
+        const int gx = rowRect.x + rowRect.width - pm.paddingX - glyphSize;
+        const int gy = rowRect.y + (rowRect.height - glyphSize) / 2;
+        switch (glyph) {
+          case PopupMenuGlyph::ArrowUp: {
+            const int xs[3] = {gx + glyphSize / 2, gx, gx + glyphSize};
+            const int ys[3] = {gy, gy + glyphSize, gy + glyphSize};
+            renderer.fillPolygon(xs, ys, 3, textBlack);
+            break;
+          }
+          case PopupMenuGlyph::ArrowDown: {
+            const int xs[3] = {gx, gx + glyphSize, gx + glyphSize / 2};
+            const int ys[3] = {gy, gy, gy + glyphSize};
+            renderer.fillPolygon(xs, ys, 3, textBlack);
+            break;
+          }
+          case PopupMenuGlyph::ChevronRight: {
+            // Slightly narrower than the up/down arrows to read as "expand"
+            // rather than "direction".
+            const int w = (glyphSize * 2) / 3;
+            const int cx = rowRect.x + rowRect.width - pm.paddingX - w;
+            const int xs[3] = {cx, cx + w, cx};
+            const int ys[3] = {gy, gy + glyphSize / 2, gy + glyphSize};
+            renderer.fillPolygon(xs, ys, 3, textBlack);
+            break;
+          }
+          case PopupMenuGlyph::None:
+            break;
+        }
+      }
+    }
+    (void)annotFontId;  // annotation font reserved for future text glyphs
+  }
 }
 
 // ============================================================================
@@ -1365,272 +1486,3 @@ void BaseTheme::drawKeyboardKey(const GfxRenderer& renderer, Rect rect, const ch
 }
 
 bool BaseTheme::showsFileIcons() const { return data->showsFileIcons; }
-
-// ============================================================================
-// drawRecentBookCover — three layouts (Default / Card / CardRounded).
-// MenuActivity is going away soon, so this is kept intact but reduced.
-// ============================================================================
-
-namespace {
-
-void drawDefaultCover(GfxRenderer& renderer, Rect rect, const ThemeData& data,
-                      const std::vector<RecentBook>& recentBooks, int selectorIndex, bool& coverRendered,
-                      bool& coverBufferStored, bool& bufferRestored,
-                      const std::function<bool()>& storeCoverBuffer) {
-  const auto& m = data;
-  const bool hasContinueReading = !recentBooks.empty();
-  const bool bookSelected = hasContinueReading && selectorIndex == 0;
-  const int baseHeight = rect.height;
-  int bookWidth = rect.width / 2;
-  bool hasCoverImage = false;
-
-  if (hasContinueReading && !recentBooks[0].coverBmpPath.empty()) {
-    const std::string coverBmpPath = UITheme::getCoverThumbPath(recentBooks[0].coverBmpPath, m.home.coverHeight);
-    FsFile file;
-    if (Storage.openFileForRead("HOME", coverBmpPath, file)) {
-      Bitmap bitmap(file);
-      if (bitmap.parseHeaders() == BmpReaderError::Ok) {
-        hasCoverImage = true;
-        const int imgWidth = bitmap.getWidth();
-        const int imgHeight = bitmap.getHeight();
-        if (imgWidth > 0 && imgHeight > 0) {
-          const float aspectRatio = static_cast<float>(imgWidth) / static_cast<float>(imgHeight);
-          bookWidth = static_cast<int>(baseHeight * aspectRatio);
-          const int maxWidth = static_cast<int>(rect.width * 0.9f);
-          if (bookWidth > maxWidth) bookWidth = maxWidth;
-        }
-      }
-    }
-  }
-  const int bookX = rect.x + (rect.width - bookWidth) / 2;
-  const int bookY = rect.y;
-  const int bookHeight = baseHeight;
-  const int bookmarkWidth = bookWidth / 8;
-  const int bookmarkHeight = bookHeight / 5;
-  const int bookmarkX = bookX + bookWidth - bookmarkWidth - 10;
-  const int bookmarkY = bookY + 5;
-
-  if (hasContinueReading && !recentBooks[0].coverBmpPath.empty() && !coverRendered) {
-    const std::string coverBmpPath = UITheme::getCoverThumbPath(recentBooks[0].coverBmpPath, m.home.coverHeight);
-    FsFile file;
-    if (Storage.openFileForRead("HOME", coverBmpPath, file)) {
-      Bitmap bitmap(file);
-      if (bitmap.parseHeaders() == BmpReaderError::Ok) {
-        renderer.drawBitmap(bitmap, bookX, bookY, bookWidth, bookHeight);
-        renderer.drawRect(bookX, bookY, bookWidth, bookHeight);
-        coverBufferStored = storeCoverBuffer();
-        coverRendered = coverBufferStored;
-        if (bookSelected) {
-          renderer.drawRect(bookX + 1, bookY + 1, bookWidth - 2, bookHeight - 2);
-          renderer.drawRect(bookX + 2, bookY + 2, bookWidth - 4, bookHeight - 4);
-        }
-      }
-    }
-  }
-  if (!bufferRestored && !coverRendered) {
-    if (bookSelected)
-      renderer.fillRect(bookX, bookY, bookWidth, bookHeight);
-    else
-      renderer.drawRect(bookX, bookY, bookWidth, bookHeight);
-    if (hasContinueReading) {
-      const int notchDepth = bookmarkHeight / 3;
-      const int centerX = bookmarkX + bookmarkWidth / 2;
-      const int xPoints[5] = {bookmarkX, bookmarkX + bookmarkWidth, bookmarkX + bookmarkWidth, centerX, bookmarkX};
-      const int yPoints[5] = {bookmarkY, bookmarkY, bookmarkY + bookmarkHeight,
-                              bookmarkY + bookmarkHeight - notchDepth, bookmarkY + bookmarkHeight};
-      renderer.fillPolygon(xPoints, yPoints, 5, !bookSelected);
-    }
-  }
-  if (bufferRestored && bookSelected && coverRendered) {
-    renderer.drawRect(bookX + 1, bookY + 1, bookWidth - 2, bookHeight - 2);
-    renderer.drawRect(bookX + 2, bookY + 2, bookWidth - 4, bookHeight - 4);
-  }
-
-  if (hasContinueReading) {
-    const std::string& lastBookTitle = recentBooks[0].title;
-    const std::string& lastBookAuthor = recentBooks[0].author;
-    auto lines = renderer.wrappedText(UI_12_FONT_ID, lastBookTitle.c_str(), bookWidth - 40, 3);
-    int totalTextHeight = renderer.getLineHeight(UI_12_FONT_ID) * static_cast<int>(lines.size());
-    if (!lastBookAuthor.empty()) totalTextHeight += renderer.getLineHeight(UI_10_FONT_ID) * 3 / 2;
-    int titleYStart = bookY + (bookHeight - totalTextHeight) / 2;
-    const auto truncatedAuthor = lastBookAuthor.empty()
-                                     ? std::string{}
-                                     : renderer.truncatedText(UI_10_FONT_ID, lastBookAuthor.c_str(), bookWidth - 40);
-    if (coverRendered) {
-      constexpr int boxPadding = 8;
-      int maxTextWidth = 0;
-      for (const auto& line : lines) {
-        const int lineWidth = renderer.getTextWidth(UI_12_FONT_ID, line.c_str());
-        if (lineWidth > maxTextWidth) maxTextWidth = lineWidth;
-      }
-      if (!truncatedAuthor.empty()) {
-        const int authorWidth = renderer.getTextWidth(UI_10_FONT_ID, truncatedAuthor.c_str());
-        if (authorWidth > maxTextWidth) maxTextWidth = authorWidth;
-      }
-      const int boxWidth = maxTextWidth + boxPadding * 2;
-      const int boxHeight = totalTextHeight + boxPadding * 2;
-      const int boxX = rect.x + (rect.width - boxWidth) / 2;
-      const int boxY = titleYStart - boxPadding;
-      renderer.fillRect(boxX, boxY, boxWidth, boxHeight, bookSelected);
-      renderer.drawRect(boxX, boxY, boxWidth, boxHeight, !bookSelected);
-    }
-    for (const auto& line : lines) {
-      renderer.drawCenteredText(UI_12_FONT_ID, titleYStart, line.c_str(), !bookSelected);
-      titleYStart += renderer.getLineHeight(UI_12_FONT_ID);
-    }
-    if (!truncatedAuthor.empty()) {
-      titleYStart += renderer.getLineHeight(UI_10_FONT_ID) / 2;
-      renderer.drawCenteredText(UI_10_FONT_ID, titleYStart, truncatedAuthor.c_str(), !bookSelected);
-    }
-    const int continueY = bookY + bookHeight - renderer.getLineHeight(UI_10_FONT_ID) * 3 / 2;
-    const char* continueText = tr(STR_CONTINUE_READING);
-    if (coverRendered) {
-      const int continueTextWidth = renderer.getTextWidth(UI_10_FONT_ID, continueText);
-      constexpr int continuePadding = 6;
-      const int continueBoxWidth = continueTextWidth + continuePadding * 2;
-      const int continueBoxHeight = renderer.getLineHeight(UI_10_FONT_ID) + continuePadding;
-      const int continueBoxX = rect.x + (rect.width - continueBoxWidth) / 2;
-      const int continueBoxY = continueY - continuePadding / 2;
-      renderer.fillRect(continueBoxX, continueBoxY, continueBoxWidth, continueBoxHeight, bookSelected);
-      renderer.drawRect(continueBoxX, continueBoxY, continueBoxWidth, continueBoxHeight, !bookSelected);
-    }
-    renderer.drawCenteredText(UI_10_FONT_ID, continueY, continueText, !bookSelected);
-  } else {
-    const int y = bookY + (bookHeight - renderer.getLineHeight(UI_12_FONT_ID) - renderer.getLineHeight(UI_10_FONT_ID)) / 2;
-    renderer.drawCenteredText(UI_12_FONT_ID, y, "No open book");
-    renderer.drawCenteredText(UI_10_FONT_ID, y + renderer.getLineHeight(UI_12_FONT_ID), "Start reading below");
-  }
-}
-
-void drawCardCover(GfxRenderer& renderer, Rect rect, const ThemeData& data,
-                   const std::vector<RecentBook>& recentBooks, int selectorIndex, bool& coverRendered,
-                   bool& coverBufferStored, bool& /*bufferRestored*/,
-                   const std::function<bool()>& storeCoverBuffer) {
-  const auto& m = data;
-  const bool rounded = data.cover.style == CoverStyle::CardRounded;
-  const int coverRadius = data.cover.cornerRadius;
-  const int rowRadius = data.selection.cornerRadius;
-  const int tileWidth = rect.width - 2 * m.layout.contentSidePadding;
-  const int tileHeight = rect.height;
-  const int tileY = rect.y;
-  const int tileX = m.layout.contentSidePadding;
-  const int imgY = rounded ? (tileY + (tileHeight - m.home.coverHeight) / 2) : (tileY + kSelectionHPad);
-  int coverWidth = m.home.coverHeight * 0.6;
-
-  if (recentBooks.empty()) {
-    if (rounded) {
-      renderer.fillRoundedRect(tileX, tileY, tileWidth, tileHeight, rowRadius, Color::LightGray);
-      renderer.drawCenteredText(UI_12_FONT_ID, rect.y + rect.height / 2 - renderer.getLineHeight(UI_12_FONT_ID) / 2,
-                                tr(STR_NO_OPEN_BOOK));
-    } else {
-      constexpr int padding = 48;
-      renderer.drawText(UI_12_FONT_ID, rect.x + padding,
-                        rect.y + rect.height / 2 - renderer.getLineHeight(UI_12_FONT_ID) - 2, tr(STR_NO_OPEN_BOOK),
-                        true, EpdFontFamily::BOLD);
-      renderer.drawText(UI_10_FONT_ID, rect.x + padding, rect.y + rect.height / 2 + 2, tr(STR_START_READING), true);
-    }
-    return;
-  }
-
-  const RecentBook& book = recentBooks[0];
-  if (!coverRendered) {
-    std::string coverPath = book.coverBmpPath;
-    bool hasCover = !coverPath.empty();
-    int coverX = rounded ? (tileX + (tileWidth - coverWidth) / 2) : (tileX + kSelectionHPad);
-    if (hasCover) {
-      const std::string coverBmpPath = UITheme::getCoverThumbPath(coverPath, m.home.coverHeight);
-      FsFile file;
-      if (Storage.openFileForRead("HOME", coverBmpPath, file)) {
-        Bitmap bitmap(file);
-        if (bitmap.parseHeaders() == BmpReaderError::Ok) {
-          coverWidth = bitmap.getWidth();
-          coverX = rounded ? (tileX + (tileWidth - coverWidth) / 2) : (tileX + kSelectionHPad);
-          renderer.drawBitmap(bitmap, coverX, imgY, coverWidth, m.home.coverHeight);
-          if (rounded) {
-            renderer.maskRoundedRectOutsideCorners(coverX, imgY, coverWidth, m.home.coverHeight, coverRadius,
-                                                   Color::LightGray);
-          }
-        } else {
-          hasCover = false;
-        }
-      }
-    }
-    if (rounded) {
-      renderer.drawRoundedRect(coverX, imgY, coverWidth, m.home.coverHeight, 1, coverRadius, true);
-    } else {
-      renderer.drawRect(coverX, imgY, coverWidth, m.home.coverHeight, true);
-    }
-    if (!hasCover) {
-      renderer.fillRect(coverX, imgY + m.home.coverHeight / 3, coverWidth, 2 * m.home.coverHeight / 3, true);
-      renderer.drawIcon(CoverIcon, coverX + 24, imgY + 24, 32, 32);
-      if (rounded) {
-        renderer.maskRoundedRectOutsideCorners(coverX, imgY, coverWidth, m.home.coverHeight, coverRadius,
-                                               Color::LightGray);
-      }
-    }
-    coverBufferStored = storeCoverBuffer();
-    coverRendered = coverBufferStored;
-  }
-
-  const bool bookSelected = (selectorIndex == 0);
-  // Selection wash (Lyra) or rounded slate (RoundedRaff) around the cover.
-  if (rounded) {
-    renderer.fillRoundedRect(tileX, tileY, tileWidth, imgY - tileY, rowRadius, true, true, false, false,
-                             Color::LightGray);
-    renderer.fillRectDither(tileX, imgY, (tileWidth - coverWidth) / 2, m.home.coverHeight, Color::LightGray);
-    renderer.fillRectDither(tileX + (tileWidth + coverWidth) / 2, imgY, (tileWidth - coverWidth) / 2, m.home.coverHeight,
-                            Color::LightGray);
-    renderer.fillRoundedRect(tileX, imgY + m.home.coverHeight, tileWidth,
-                             tileHeight - (imgY - tileY + m.home.coverHeight), rowRadius, false, false, true, true,
-                             Color::LightGray);
-  } else if (bookSelected) {
-    renderer.fillRoundedRect(tileX, tileY, tileWidth, kSelectionHPad, data.selection.cornerRadius, true, true, false,
-                             false, Color::LightGray);
-    renderer.fillRectDither(tileX, tileY + kSelectionHPad, kSelectionHPad, m.home.coverHeight, Color::LightGray);
-    renderer.fillRectDither(tileX + kSelectionHPad + coverWidth, tileY + kSelectionHPad,
-                            tileWidth - kSelectionHPad - coverWidth, m.home.coverHeight, Color::LightGray);
-    renderer.fillRoundedRect(tileX, tileY + m.home.coverHeight + kSelectionHPad, tileWidth, kSelectionHPad,
-                             data.selection.cornerRadius, false, false, true, true, Color::LightGray);
-  }
-
-  if (rounded) {
-    // RoundedRaff doesn't draw the title here — it renders via drawHeader.
-    return;
-  }
-
-  const int textWidth = tileWidth - 2 * kSelectionHPad - m.layout.verticalSpacing - coverWidth;
-  auto titleLines = renderer.wrappedText(UI_12_FONT_ID, book.title.c_str(), textWidth, 3, EpdFontFamily::BOLD);
-  auto author = renderer.truncatedText(UI_10_FONT_ID, book.author.c_str(), textWidth);
-  const int titleLineHeight = renderer.getLineHeight(UI_12_FONT_ID);
-  const int titleBlockHeight = titleLineHeight * static_cast<int>(titleLines.size());
-  const int authorHeight = book.author.empty() ? 0 : (renderer.getLineHeight(UI_10_FONT_ID) * 3 / 2);
-  const int totalBlockHeight = titleBlockHeight + authorHeight;
-  int titleY = tileY + tileHeight / 2 - totalBlockHeight / 2;
-  const int textX = tileX + kSelectionHPad + coverWidth + m.layout.verticalSpacing;
-  for (const auto& line : titleLines) {
-    renderer.drawText(UI_12_FONT_ID, textX, titleY, line.c_str(), true, EpdFontFamily::BOLD);
-    titleY += titleLineHeight;
-  }
-  if (!book.author.empty()) {
-    titleY += renderer.getLineHeight(UI_10_FONT_ID) / 2;
-    renderer.drawText(UI_10_FONT_ID, textX, titleY, author.c_str(), true);
-  }
-}
-
-}  // namespace
-
-void BaseTheme::drawRecentBookCover(GfxRenderer& renderer, Rect rect, const std::vector<RecentBook>& recentBooks,
-                                    const int selectorIndex, bool& coverRendered, bool& coverBufferStored,
-                                    bool& bufferRestored, std::function<bool()> storeCoverBuffer) const {
-  switch (data->cover.style) {
-    case CoverStyle::Default:
-      drawDefaultCover(renderer, rect, *data, recentBooks, selectorIndex, coverRendered, coverBufferStored,
-                       bufferRestored, storeCoverBuffer);
-      break;
-    case CoverStyle::Card:
-    case CoverStyle::CardRounded:
-      drawCardCover(renderer, rect, *data, recentBooks, selectorIndex, coverRendered, coverBufferStored, bufferRestored,
-                    storeCoverBuffer);
-      break;
-  }
-}

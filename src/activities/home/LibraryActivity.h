@@ -12,27 +12,33 @@
 
 class LibraryActivity final : public Activity {
  public:
-  // Toggled by the Menu button. The library is the default view; Menu replaces
-  // the content area with a three-item list (Browse Files, File Transfer,
-  // Settings).
-  enum class View { Library, Menu };
+  // The library is the default view. Back opens a cascading popup anchored
+  // above the footer (Sort / Files / Settings); Sort and Files expand to a
+  // sub-panel to the right, Settings opens directly.
+  enum class View { Library, Popup };
+  enum class PopupLevel { Top, SortSub, FilesSub };
 
  private:
   // ---- Layout constants ---------------------------------------------------
   static constexpr int COLS = 3;
   static constexpr int ROWS = 3;
   static constexpr int PER_PAGE = COLS * ROWS;
-  static constexpr int MENU_ITEMS = 3;
+  static constexpr int POPUP_TOP_ITEMS = 3;    // Sort / Files / Settings
+  static constexpr int POPUP_SORT_ITEMS = 4;   // Recent / Title / Author / Progress
+  static constexpr int POPUP_FILES_ITEMS = 2;  // Browse Files / File Transfer
 
   // ---- View state ---------------------------------------------------------
   View view = View::Library;
+  PopupLevel popupLevel = PopupLevel::Top;
 
   // Library grid position
   int libraryPage = 0;          // 0-indexed
   int librarySelected = 0;      // 0..PER_PAGE-1 within current page
 
-  // Menu position
-  int menuSelected = 0;         // 0..MENU_ITEMS-1
+  // Popup row selection per level
+  int popupTopSel = 0;
+  int popupSortSel = 0;
+  int popupFilesSel = 0;
 
   // True when the Confirm release that brought us into this activity should
   // not also trigger an open-book (typical when launched from a parent menu).
@@ -54,8 +60,13 @@ class LibraryActivity final : public Activity {
   void moveLeft();
   void moveRight();
   void doSelect();
-  void toggleMenu();
-  void openMenuOption(int idx);
+  void togglePopup();
+  void activatePopupItem();
+  // Re-sort the index from current settings and reset selection to the top.
+  void applySort();
+  // Persist the active sort field/direction and re-sort.
+  void setSort(uint8_t field, uint8_t direction);
+  int popupItemsAt(PopupLevel level) const;
 
   // ---- Rendering helpers --------------------------------------------------
   // Body of the render: header + library shelf or menu + footer hints.
@@ -65,7 +76,7 @@ class LibraryActivity final : public Activity {
   void renderHeader();
   void renderLibraryShelf();
   void renderPageRail();
-  void renderMenuView();
+  void renderPopup();
   void renderBookTile(int slotIndex, const LibraryBook& book, bool selected);
   void renderEmptyState();
 
