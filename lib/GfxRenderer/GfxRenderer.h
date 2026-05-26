@@ -216,7 +216,23 @@ class GfxRenderer {
   // subsequent calls memcpy-style rasterize from cached pixels. Returns
   // true on success. Currently 1-bit BMPs only — higher-bpp images fall
   // through to the SD-backed drawBitmap path.
+  //
+  // Opaque=false (default): writes only the black-source pixels into the
+  // framebuffer, leaving white-source pixels showing whatever was painted
+  // underneath. Cheapest when the caller already laid down a known
+  // background.
+  //
+  // Opaque=true: writes both inks. Use when the bitmap is known to fully
+  // cover its destination rect — saves the caller from pre-filling a white
+  // substrate (e.g. Library covers, where this drops a 9,600-pixel
+  // fillRect per tile, ~86 KB framebuffer writes per paint).
+  //
+  // The compile-time switch on `Opaque` means each specialization carries
+  // exactly one inner-write code path — no runtime dispatch. Bodies live
+  // in the .cpp via explicit instantiation for both specializations.
+  template <bool Opaque = false>
   bool drawCachedBitmap(const char* path, int x, int y, int maxWidth, int maxHeight) const;
+  template <bool Opaque = false>
   bool drawCachedBitmap(CachedBitmap* handle, int x, int y, int maxWidth, int maxHeight) const;
 
   // Look the cache up by path, decoding on miss. Returns an opaque handle

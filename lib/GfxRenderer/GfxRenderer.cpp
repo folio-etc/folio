@@ -1099,11 +1099,20 @@ void GfxRenderer::buildScaledBitmap(CachedBitmap* entry, int targetW, int target
   imageCacheBytes_ += scaledBytes;
 }
 
+// Path overload — looks up the cache handle and forwards to the handle
+// overload of the same specialization.
+template <bool Opaque>
 bool GfxRenderer::drawCachedBitmap(const char* path, const int x, const int y, const int maxWidth,
                                    const int maxHeight) const {
-  return drawCachedBitmap(lookupCachedBitmap(path), x, y, maxWidth, maxHeight);
+  return drawCachedBitmap<Opaque>(lookupCachedBitmap(path), x, y, maxWidth, maxHeight);
 }
 
+// Handle overload — does the actual blit. `Opaque=false` (the default)
+// writes only the black-source pixels, leaving white-source pixels showing
+// whatever was underneath; `Opaque=true` writes both inks so the caller
+// can skip a substrate fillRect. The `if constexpr` switch ensures each
+// specialization carries exactly one inner-write branch.
+template <bool Opaque>
 bool GfxRenderer::drawCachedBitmap(CachedBitmap* entry, const int x, const int y,
                                    const int maxWidth, const int maxHeight) const {
   if (entry == nullptr) return false;
@@ -1151,9 +1160,20 @@ bool GfxRenderer::drawCachedBitmap(CachedBitmap* entry, const int x, const int y
     const uint8_t* srcRow = entry->scaledPixels.get() + sy * scaledStride;
 
     for (int sx = sx0; sx < sx1; ++sx) {
-      if (!(srcRow[sx / 8] & (1 << (7 - (sx % 8))))) {
+      const bool srcSet = (srcRow[sx / 8] & (1 << (7 - (sx % 8)))) != 0;
+      if constexpr (Opaque) {
         const uint32_t byteIndex = static_cast<uint32_t>(phyY) * panelWidthBytes + (phyX / 8);
-        frameBuffer[byteIndex] &= ~(1 << (7 - (phyX % 8)));
+        const uint8_t fbBit = 1 << (7 - (phyX % 8));
+        if (srcSet) {
+          frameBuffer[byteIndex] |= fbBit;
+        } else {
+          frameBuffer[byteIndex] &= ~fbBit;
+        }
+      } else {
+        if (!srcSet) {
+          const uint32_t byteIndex = static_cast<uint32_t>(phyY) * panelWidthBytes + (phyX / 8);
+          frameBuffer[byteIndex] &= ~(1 << (7 - (phyX % 8)));
+        }
       }
       phyX += dxPerSx;
       phyY += dyPerSx;
@@ -1162,6 +1182,11 @@ bool GfxRenderer::drawCachedBitmap(CachedBitmap* entry, const int x, const int y
 
   return true;
 }
+
+template bool GfxRenderer::drawCachedBitmap<false>(const char*, int, int, int, int) const;
+template bool GfxRenderer::drawCachedBitmap<true>(const char*, int, int, int, int) const;
+template bool GfxRenderer::drawCachedBitmap<false>(CachedBitmap*, int, int, int, int) const;
+template bool GfxRenderer::drawCachedBitmap<true>(CachedBitmap*, int, int, int, int) const;
 
 void GfxRenderer::clearImageCache() const {
   imageCache_.clear();

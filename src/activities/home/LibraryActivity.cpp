@@ -675,29 +675,22 @@ void LibraryActivity::renderBookTile(int slotIndex, const LibraryBook& book, boo
     frameH = drawnH;
   }
 
-  // Drop shadow first — the white substrate fill below overpaints the part
-  // underneath the cover, leaving only the offset L-shape visible. Drawing
-  // a full rounded rect (vs. two offset lines) means the shadow's curve
-  // naturally matches the cover's when coverBorderRadius > 0.
+
+  /** Cover draw **/
+  // 1. Draw drop shadow 
   if (lib.coverDropShadowOffsetX > 0 || lib.coverDropShadowOffsetY > 0) {
     renderer.fillRoundedRect(frameX + lib.coverDropShadowOffsetX, frameY + lib.coverDropShadowOffsetY,
                              frameW, frameH, lib.coverBorderRadius,
                              invertText ? Color::White : Color::Black);
   }
 
-  // White substrate. drawCachedBitmap only writes black pixels, so the white
-  // fill keeps the selection background showing in the slot margins around
-  // the cover — and overpaints the shadow rect everywhere except the
-  // offset L-shape poking out the bottom-right.
-  renderer.fillRect(frameX, frameY, frameW, frameH, false);
-
+  // 2. Draw cover bitmap
   bool drewCover = false;
   if (haveThumb) {
-    drewCover = renderer.drawCachedBitmap(thumbHandle, frameX, frameY, frameW, frameH);
+    drewCover = renderer.drawCachedBitmap<true>(thumbHandle, frameX, frameY, frameW, frameH);
   }
   if (!drewCover) {
-    // Fallback: title-only "cover" — first line of the title centered inside
-    // the (already-filled) frame.
+    renderer.fillRect(frameX, frameY, frameW, frameH, false);
     const std::string trunc =
         renderer.truncatedText(captionFont, book.title.c_str(), COVER_W - 12, EpdFontFamily::BOLD);
     const int tw = renderer.getTextWidth(captionFont, trunc.c_str(), EpdFontFamily::BOLD);
@@ -705,21 +698,19 @@ void LibraryActivity::renderBookTile(int slotIndex, const LibraryBook& book, boo
                       trunc.c_str(), true, EpdFontFamily::BOLD);
   }
 
-  // Clip the (square) bitmap to the rounded shape — drawCachedBitmap paints
-  // black into the corner pixels outside the curve, which would poke past
-  // the rounded border. Mask color is the backdrop: black when the selection
-  // inverts text (dark fill behind the tile), white otherwise.
+  // 3. Mask cover bitmap if rounded 
   if (lib.coverBorderRadius > 0) {
     renderer.maskRoundedRectOutsideCorners(frameX, frameY, frameW, frameH, lib.coverBorderRadius,
                                            invertText ? Color::Black : Color::White);
   }
 
-  // Border last, on top of the bitmap. drawRoundedRect with radius 0
-  // degenerates to a plain rectangle, preserving Folio's square look.
+  // 4. Draw border
   if (lib.coverBorderWidth > 0) {
     renderer.drawRoundedRect(frameX, frameY, frameW, frameH, lib.coverBorderWidth, lib.coverBorderRadius,
                              !invertText);
   }
+  /** ----------- **/
+  
 
   // ---- Text area (fixed-height, title + author centered vertically) -----
   // Card height is fixed (see TILE_CONTENT_H), so the title + author block
@@ -776,15 +767,14 @@ void LibraryActivity::renderBookTile(int slotIndex, const LibraryBook& book, boo
   if (book.hasProgress()) {
     const int barY = textAreaY + TILE_TEXT_AREA_H + TILE_PROGRESS_MARGIN_TOP;
     const int barX = cell.x + (cell.width - COVER_W) / 2;
-    // Substrate fill in the *opposite* of the ink color so the bar's empty
-    // portion always reads as a clean background-of-ink, regardless of
-    // what's painted behind the tile. Without this, Lyra's LightGray
-    // selection wash shows through the empty part of the bar (noisy
-    // dither under the progress indicator) and Classic/RoundedRaff's
-    // black selection bg makes the bar's empty area indistinguishable
-    // from the surrounding selection.
+
+    // Draw background 
     renderer.fillRect(barX, barY, COVER_W, TILE_PROGRESS_TOTAL_H, !textBlack);
+
+    //Draw border
     renderer.drawRect(barX, barY, COVER_W, TILE_PROGRESS_TOTAL_H, textBlack);
+
+    // Draw progress
     const int fillW = (COVER_W - 4) * book.progressPercent() / 100;
     if (fillW > 0) {
       renderer.fillRect(barX + 2, barY + 2, fillW, TILE_PROGRESS_HEIGHT - 2, textBlack);
