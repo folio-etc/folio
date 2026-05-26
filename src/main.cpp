@@ -607,12 +607,17 @@ void loop() {
     return;
   }
 
-  // Refresh screen when power button is short-pressed with FORCE_REFRESH setting.
-  if (SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::FORCE_REFRESH &&
-      mappedInputManager.wasReleased(MappedInputManager::Button::Power)) {
-    LOG_DBG("MAIN", "Manual screen refresh triggered");
-    RenderLock lock;
-    renderer.displayBuffer(HalDisplay::HALF_REFRESH);
+  // Power-button short-press dispatch. Activities may override via
+  // Activity::handlePowerShortPress() — if the active activity consumes the
+  // press, the global FORCE_REFRESH behavior is suppressed for this release.
+  if (mappedInputManager.wasReleased(MappedInputManager::Button::Power)) {
+    Activity* active = activityManager.getCurrentActivity();
+    const bool consumed = active && active->handlePowerShortPress();
+    if (!consumed && SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::FORCE_REFRESH) {
+      LOG_DBG("MAIN", "Manual screen refresh triggered");
+      RenderLock lock;
+      renderer.displayBuffer(HalDisplay::HALF_REFRESH);
+    }
   }
 
   // Refresh the battery icon when USB is plugged or unplugged.

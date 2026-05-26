@@ -74,6 +74,11 @@ class ActivityManager {
   void begin();
   void loop();
 
+  // Raw pointer to the currently-running activity (or nullptr if none).
+  // Lifetime is tied to ActivityManager; callers must not retain across loop
+  // iterations because activity navigation may delete the object.
+  Activity* getCurrentActivity() const { return currentActivity.get(); }
+
   // Will replace currentActivity and drop all activities on stack
   void replaceActivity(std::unique_ptr<Activity>&& newActivity);
 
