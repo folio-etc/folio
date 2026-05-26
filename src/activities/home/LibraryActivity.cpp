@@ -689,6 +689,8 @@ void LibraryActivity::renderBookTile(int slotIndex, const LibraryBook& book, boo
   if (haveThumb) {
     drewCover = renderer.drawCachedBitmap<true>(thumbHandle, frameX, frameY, frameW, frameH);
   }
+
+  // 2a. Fallback cover for books without covers
   if (!drewCover) {
     renderer.fillRect(frameX, frameY, frameW, frameH, false);
     const std::string trunc =
