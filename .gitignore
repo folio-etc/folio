@@ -7,6 +7,7 @@ lib/I18n/I18nKeys.h
 lib/I18n/I18nStrings.h
 lib/I18n/I18nStrings.cpp
 *.generated.h
+*.generated.cpp
 .vs
 build
 **/__pycache__/
@@ -14,8 +15,15 @@ build
 /.cache
 .history/
 /.venv
+**/.venv/
 *.local*
-*.cpfont
+
+# Built-in fonts (exclude these)
+assets/**/*.cpfont
+
+# Theme fonts (include these)
+!themes/**/fonts/*.cpfont
+
 lib/EpdFont/scripts/downloaded_fonts/
 lib/EpdFont/scripts/instanced_fonts/
 lib/EpdFont/scripts/output/
