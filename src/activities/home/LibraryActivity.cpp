@@ -694,12 +694,17 @@ void LibraryActivity::renderBookTile(int slotIndex, const LibraryBook& book, boo
     // — e.g. a 100×180 thumb against 80×120 truncates to drawnH=120 but
     // re-scaling against (66,120) shrinks targetH to 118, leaving a 2-px
     // strip of shadow visible inside the bottom of the cover.
-    drewCover = renderer.drawCachedBitmap<true>(thumbHandle, frameX, frameY, coverAreaW, COVER_H);
+    drewCover = renderer.drawCachedBitmap<true>(thumbHandle, frameX, frameY, coverAreaW, COVER_H,
+                                                lib.coverBorderRadius);
   }
 
   // 2a. Fallback cover for books without covers
   if (!drewCover) {
-    renderer.fillRect(frameX, frameY, frameW, frameH, false);
+    if (lib.coverBorderRadius > 0) {
+      renderer.fillRoundedRect(frameX, frameY, frameW, frameH, lib.coverBorderRadius, Color::White);
+    } else {
+      renderer.fillRect(frameX, frameY, frameW, frameH, false);
+    }
     const std::string trunc =
         renderer.truncatedText(captionFont, book.title.c_str(), COVER_W - 12, EpdFontFamily::BOLD);
     const int tw = renderer.getTextWidth(captionFont, trunc.c_str(), EpdFontFamily::BOLD);
@@ -707,13 +712,7 @@ void LibraryActivity::renderBookTile(int slotIndex, const LibraryBook& book, boo
                       trunc.c_str(), true, EpdFontFamily::BOLD);
   }
 
-  // 3. Mask cover bitmap if rounded 
-  if (lib.coverBorderRadius > 0) {
-    renderer.maskRoundedRectOutsideCorners(frameX, frameY, frameW, frameH, lib.coverBorderRadius,
-                                           invertText ? Color::Black : Color::White);
-  }
-
-  // 4. Draw border
+  // 3. Draw border
   if (lib.coverBorderWidth > 0) {
     renderer.drawRoundedRect(frameX, frameY, frameW, frameH, lib.coverBorderWidth, lib.coverBorderRadius,
                              !invertText);
