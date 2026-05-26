@@ -86,19 +86,18 @@ void PopupMenu::render(GfxRenderer& renderer, Rect rect, bool showSelection,
     if (isMuted && !isSelected) {
       renderer.fillRoundedRect(rowRect.x, rowRect.y, rowRect.width, rowRect.height, pm.selectionCornerRadius, Color::LightGray);
     }
+
     if (isSelected) {
       switch (pm.selectionStyle) {
         case PopupMenuSelectionStyle::SolidFill:
-          if (pm.selectionCornerRadius > 0) {
-            renderer.fillRoundedRect(rowRect.x, rowRect.y, rowRect.width, rowRect.height, pm.selectionCornerRadius,
-                                     Color::Black);
-          } else {
-            renderer.fillRect(rowRect.x, rowRect.y, rowRect.width, rowRect.height, true);
-          }
+          renderer.fillRoundedRect(rowRect.x, rowRect.y, rowRect.width, rowRect.height, 
+              pm.selectionCornerRadius, Color::Black);
+
           break;
         case PopupMenuSelectionStyle::RoundedFill:
-          renderer.fillRoundedRect(rowRect.x, rowRect.y, rowRect.width, rowRect.height,
-                                   pm.selectionCornerRadius > 0 ? pm.selectionCornerRadius : 4, Color::Black);
+          renderer.fillRoundedRect(rowRect.x, rowRect.y, rowRect.width, rowRect.height, 
+              pm.selectionCornerRadius > 0 ? pm.selectionCornerRadius : 4, Color::Black);
+
           break;
         case PopupMenuSelectionStyle::BorderOnly:
           renderer.drawRect(rowRect.x, rowRect.y, rowRect.width, rowRect.height, 1, true);
