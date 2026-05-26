@@ -117,6 +117,21 @@ popup:
     fillInverted: false
     outlineInverted: false
 
+popupMenu:
+  rowHeight: 42
+  borderThickness: 2
+  cornerRadius: 18
+  shadowOffsetX: 0
+  shadowOffsetY: 0
+  paddingX: 16
+  panelGap: 6
+  selectionStyle: rounded-fill
+  selectionCornerRadius: 16
+  selectionTextInverted: true
+  subPanelMutedFill: true
+  fontRole: body
+  annotationFontRole: body
+
 textField:
   horizontalPadding: 8
   normalThickness: 2
