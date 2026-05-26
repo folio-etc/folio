@@ -49,11 +49,20 @@ class SdThemeLoader {
   char nameBuf_[48] = "";
   std::vector<ThemeInfo> themeList_;
 
+  // One LoadedFont per unique .cpfont path. Multiple theme roles that point
+  // at the same file share a single SdCardFont instance — each role still
+  // gets its own fontId registered with the renderer (see registeredFontIds_).
+  // This dedup is what keeps theme RAM bounded when every role bundles an
+  // SD font: e.g. RoundedRaff has 8 roles backed by 4 unique files, so
+  // dedup roughly halves the resident font footprint.
   struct LoadedFont {
-    int fontId;
+    char path[128];
     std::unique_ptr<SdCardFont> font;
   };
   std::vector<LoadedFont> loadedFonts_;
+  // Every fontId we asked the renderer to register, in registration order.
+  // clearFonts() walks this to unregister; loadedFonts_ owns the SdCardFonts.
+  std::vector<int> registeredFontIds_;
 
   // Scan one root directory for .cptheme files.
   void scanRoot(const char* rootPath);

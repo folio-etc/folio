@@ -1,5 +1,6 @@
 #include "SdThemeLoader.h"
 
+#include <Arduino.h>
 #include <EpdFontFamily.h>
 #include <GfxRenderer.h>
 #include <HalStorage.h>
@@ -359,6 +360,8 @@ void SdThemeLoader::loadThemeFonts(const char* themeId, const ThemeFontSpec& fon
                                    GfxRenderer& renderer) {
   if (!themeData_) return;
 
+  LOG_INF(LOG_TAG, "loadThemeFonts: heap free=%u, maxAlloc=%u", ESP.getFreeHeap(), ESP.getMaxAllocHeap());
+
   static constexpr const char* kRoleNames[] = {
       "title", "heading", "body", "caption", "accent",
       "body-compact", "caption-compact", "accent-compact"};
@@ -374,24 +377,58 @@ void SdThemeLoader::loadThemeFonts(const char* themeId, const ThemeFontSpec& fon
 
     // Try loading an SD card font file first.
     if (role.file[0] != '\0') {
-      char fontPath[256];
+      char fontPath[128];
       snprintf(fontPath, sizeof(fontPath), "%s/%s/%s", CACHE_ROOT, themeId, role.file);
 
       if (Storage.exists(fontPath)) {
-        auto font = std::make_unique<SdCardFont>();
-        if (font->load(fontPath)) {
+        // Reuse an already-loaded SdCardFont if another role pointed at the
+        // same file. Each role still gets its own fontId so the renderer can
+        // map role → font; only the heavy backing instance is shared.
+        SdCardFont* sharedFont = nullptr;
+        for (auto& lf : loadedFonts_) {
+          if (strcmp(lf.path, fontPath) == 0) {
+            sharedFont = lf.font.get();
+            break;
+          }
+        }
+
+        if (!sharedFont) {
+          auto font = makeUniqueNoThrow<SdCardFont>();
+          if (!font) {
+            LOG_ERR(LOG_TAG, "OOM: SdCardFont for %s", fontPath);
+          } else if (!font->load(fontPath)) {
+            LOG_ERR(LOG_TAG, "Failed to load font %s", fontPath);
+          } else {
+            LoadedFont entry;
+            strncpy(entry.path, fontPath, sizeof(entry.path) - 1);
+            entry.path[sizeof(entry.path) - 1] = '\0';
+            entry.font = std::move(font);
+            sharedFont = entry.font.get();
+            loadedFonts_.push_back(std::move(entry));
+            LOG_INF(LOG_TAG, "Loaded %s (heap free=%u, maxAlloc=%u)", fontPath, ESP.getFreeHeap(),
+                    ESP.getMaxAllocHeap());
+          }
+        }
+
+        if (sharedFont) {
           const int fontId = computeBundledFontId(themeId, kRoleNames[i]);
-          renderer.registerSdCardFont(fontId, font.get());
-          EpdFontFamily family(font->getEpdFont(0), font->getEpdFont(1),
-                               font->getEpdFont(2), font->getEpdFont(3));
+          renderer.registerSdCardFont(fontId, sharedFont);
+          // Resolve each slot through SdCardFont::resolveStyle() so missing
+          // styles are backed by the closest present style instead of nullptr.
+          // A .cpfont with only italic present (e.g. Nunito_7) would otherwise
+          // hand a null `regular` pointer to EpdFontFamily, and the renderer
+          // would deref it the first time any text drew in REGULAR style.
+          EpdFontFamily family(sharedFont->getEpdFont(sharedFont->resolveStyle(0)),
+                               sharedFont->getEpdFont(sharedFont->resolveStyle(1)),
+                               sharedFont->getEpdFont(sharedFont->resolveStyle(2)),
+                               sharedFont->getEpdFont(sharedFont->resolveStyle(3)));
           renderer.insertFont(fontId, family);
 
           *fontIdSlots[i] = fontId;
-          loadedFonts_.push_back({fontId, std::move(font)});
-          LOG_DBG(LOG_TAG, "Loaded bundled font %s -> id=%d", fontPath, fontId);
+          registeredFontIds_.push_back(fontId);
+          LOG_DBG(LOG_TAG, "Bound role '%s' -> %s (id=%d)", kRoleNames[i], fontPath, fontId);
           continue;
         }
-        LOG_ERR(LOG_TAG, "Failed to load font %s", fontPath);
       }
     }
 
@@ -406,9 +443,10 @@ void SdThemeLoader::loadThemeFonts(const char* themeId, const ThemeFontSpec& fon
 }
 
 void SdThemeLoader::clearFonts(GfxRenderer& renderer) {
-  for (auto& lf : loadedFonts_) {
-    renderer.removeFont(lf.fontId);
+  for (int fontId : registeredFontIds_) {
+    renderer.removeFont(fontId);
   }
+  registeredFontIds_.clear();
   loadedFonts_.clear();
 }
 
