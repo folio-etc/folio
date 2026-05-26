@@ -84,7 +84,7 @@ void PopupMenu::render(GfxRenderer& renderer, Rect rect, bool showSelection,
 
     // Background pass.
     if (isMuted && !isSelected) {
-      renderer.fillRectDither(rowRect.x, rowRect.y, rowRect.width, rowRect.height, Color::LightGray);
+      renderer.fillRoundedRect(rowRect.x, rowRect.y, rowRect.width, rowRect.height, pm.selectionCornerRadius, Color::LightGray);
     }
     if (isSelected) {
       switch (pm.selectionStyle) {
