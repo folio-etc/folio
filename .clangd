@@ -1,2 +1,56 @@
 CompileFlags:
-    Add: [-std=c++2a]
+    Add:
+        - -std=c++2a
+        # Make newlib's sys/config.h take the RISC-V branch so
+        # _READ_WRITE_RETURN_TYPE (and similar arch-conditional typedefs) get
+        # defined. Without this, host clangd (arm64-apple-darwin) parses
+        # newlib's unistd.h and reports cascades of "unknown type name" errors.
+        - -D__riscv
+        - -D__riscv_xlen=32
+        # Apple clang reserves __block for its blocks extension; newlib uses
+        # it as a parameter name (e.g. sys/unistd.h's encrypt() prototype).
+        # Disable the extension so the headers parse.
+        - -fno-blocks
+        # Quiet remaining cross-compiler flag mismatches.
+        - -Wno-unknown-warning-option
+        - -Wno-unused-command-line-argument
+    Remove:
+        # GCC-only flags that clangd rejects with drv_unknown_argument.
+        - -fstrict-volatile-bitfields
+        - -fno-tree-switch-conversion
+        - -fno-jump-tables
+        - -freorder-blocks
+        - -fno-shrink-wrap
+        - -free
+        - -mlongcalls
+        # RISC-V machine flags clangd's host backend cannot codegen for.
+        - -march=*
+        - -mabi=*
+        # PlatformIO adds picolibc and newlib include dirs side-by-side. The
+        # real gcc driver picks one via multilib selection; clangd does not,
+        # so picolibc's _ansi.h shadows newlib's, which then cascades into
+        # incomplete-type errors for _reent. Drop picolibc — the ESP
+        # framework targets newlib via .../newlib/platform_include/.
+        # NOTE: this absolute prefix is machine-specific (clangd's Remove
+        # only supports trailing `*` globs). Update the home-directory
+        # prefix if PlatformIO is not installed under /Users/rmercado.
+        - -I/Users/rmercado/.platformio/packages/toolchain-riscv32-esp/picolibc*
+
+Diagnostics:
+    Suppress:
+        # These fire on every translation unit because the cross-compiler
+        # flags above are unknown to host clangd. They are not actionable.
+        - drv_unknown_argument
+        - drv_unsupported_option_argument
+        # Host (arm64-apple-darwin) has 64-bit long/pointers; target
+        # (riscv32) has 32-bit. ssize_t/ptrdiff_t end up with mismatched
+        # underlying types between newlib and lwip/Arduino headers. The
+        # real GCC build accepts these as compatible typedefs.
+        - redefinition_different_typedef
+        # Same root cause — int-vs-long mismatches in casts that are
+        # identity casts on the real 32-bit target.
+        - pointer_to_smaller_int
+        # __attribute__((section(".foo"))) uses ELF section names; host
+        # clangd is in Mach-O mode and demands "segment,section". The flash
+        # placement attributes work correctly under the real GCC toolchain.
+        - attribute_section_invalid_for_target
