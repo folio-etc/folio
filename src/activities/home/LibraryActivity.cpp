@@ -687,7 +687,14 @@ void LibraryActivity::renderBookTile(int slotIndex, const LibraryBook& book, boo
   // 2. Draw cover bitmap
   bool drewCover = false;
   if (haveThumb) {
-    drewCover = renderer.drawCachedBitmap<true>(thumbHandle, frameX, frameY, frameW, frameH);
+    // Pass the original cover-area constraints (not frameW/frameH) so
+    // drawCachedBitmap's internal fit-to-box arrives at the same drawnW ×
+    // drawnH we computed above. Feeding it the already-truncated frame
+    // dims would introduce a fresh binding constraint via int truncation
+    // — e.g. a 100×180 thumb against 80×120 truncates to drawnH=120 but
+    // re-scaling against (66,120) shrinks targetH to 118, leaving a 2-px
+    // strip of shadow visible inside the bottom of the cover.
+    drewCover = renderer.drawCachedBitmap<true>(thumbHandle, frameX, frameY, coverAreaW, COVER_H);
   }
 
   // 2a. Fallback cover for books without covers
