@@ -229,10 +229,19 @@ class GfxRenderer {
   // background.
   //
   // Opaque=true: writes both inks.
+  //
+  // cornerRadius > 0: skip pixels in the four corner [0, r) × [0, r) boxes
+  // that fall outside the rounded shape (same `tx²+ty² > rr²` test as
+  // maskRoundedRectOutsideCorners). Leaves whatever was painted underneath
+  // visible in those corners — cheaper and more correct for drop-shadowed
+  // covers than drawing rectangular then masking with the background color
+  // (a mask paints over the shadow; a skip lets it show through).
   template <bool Opaque = false>
-  bool drawCachedBitmap(const char* path, int x, int y, int maxWidth, int maxHeight) const;
+  bool drawCachedBitmap(const char* path, int x, int y, int maxWidth, int maxHeight,
+                        int cornerRadius = 0) const;
   template <bool Opaque = false>
-  bool drawCachedBitmap(CachedBitmap* handle, int x, int y, int maxWidth, int maxHeight) const;
+  bool drawCachedBitmap(CachedBitmap* handle, int x, int y, int maxWidth, int maxHeight,
+                        int cornerRadius = 0) const;
 
   // Look the cache up by path, decoding on miss. Returns an opaque handle
   // suitable for reuse across getCachedBitmapDimensions + drawCachedBitmap

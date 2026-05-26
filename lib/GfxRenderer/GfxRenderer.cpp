@@ -1249,8 +1249,8 @@ void GfxRenderer::buildScaledBitmap(CachedBitmap* entry, int targetW, int target
 // overload of the same specialization.
 template <bool Opaque>
 bool GfxRenderer::drawCachedBitmap(const char* path, const int x, const int y, const int maxWidth,
-                                   const int maxHeight) const {
-  return drawCachedBitmap<Opaque>(lookupCachedBitmap(path), x, y, maxWidth, maxHeight);
+                                   const int maxHeight, const int cornerRadius) const {
+  return drawCachedBitmap<Opaque>(lookupCachedBitmap(path), x, y, maxWidth, maxHeight, cornerRadius);
 }
 
 // Handle overload — does the actual blit. `Opaque=false` (the default)
@@ -1260,7 +1260,8 @@ bool GfxRenderer::drawCachedBitmap(const char* path, const int x, const int y, c
 // specialization carries exactly one inner-write branch.
 template <bool Opaque>
 bool GfxRenderer::drawCachedBitmap(CachedBitmap* entry, const int x, const int y,
-                                   const int maxWidth, const int maxHeight) const {
+                                   const int maxWidth, const int maxHeight,
+                                   const int cornerRadius) const {
   if (entry == nullptr) return false;
 
   if (fontCacheManager_ && fontCacheManager_->isScanning()) return true;
@@ -1278,6 +1279,33 @@ bool GfxRenderer::drawCachedBitmap(CachedBitmap* entry, const int x, const int y
   if (!entry->scaledPixels || entry->scaledWidth != targetW || entry->scaledHeight != targetH)
     buildScaledBitmap(entry, targetW, targetH);
   if (!entry->scaledPixels) return false;
+
+  // Corner-skip table. When r > 0, pixels in the four [0, r) × [0, r) corner
+  // boxes that fall outside the rounded shape are left untouched — same
+  // pixel test as maskRoundedRectOutsideCorners, applied here so the blit
+  // never writes those pixels (no follow-up mask needed; any drop shadow
+  // underneath remains visible). r is clamped to half the smaller drawn
+  // dimension so opposite corners can't overlap.
+  constexpr int kMaxCornerR = 32;
+  int8_t skipPerRow[kMaxCornerR];
+  const int rMax = std::min(kMaxCornerR, std::min(targetW / 2, targetH / 2));
+  const int r = std::max(0, std::min(cornerRadius, rMax));
+  const bool rounded = r > 0;
+  if (rounded) {
+    const int rr = r - 1;
+    const int rr2 = rr * rr;
+    for (int dy = 0; dy < r; ++dy) {
+      const int ty = rr - dy;
+      const int ty2 = ty * ty;
+      int skip = 0;
+      while (skip < r) {
+        const int tx = rr - skip;
+        if (tx * tx + ty2 > rr2) ++skip;
+        else break;
+      }
+      skipPerRow[dy] = static_cast<int8_t>(skip);
+    }
+  }
 
   const int scaledStride = (targetW + 7) / 8;
   const int screenW = getScreenWidth();
@@ -1309,15 +1337,29 @@ bool GfxRenderer::drawCachedBitmap(CachedBitmap* entry, const int x, const int y
       const int32_t byteStep = static_cast<int32_t>(dyPerSx) * panelStride;
 
       for (int sy = sy0; sy < sy1; ++sy) {
+        int rowSx0 = sx0;
+        int rowSx1 = sx1;
+        if (rounded) {
+          int skip = 0;
+          if (sy < r) skip = skipPerRow[sy];
+          else if (sy >= targetH - r) skip = skipPerRow[targetH - 1 - sy];
+          if (skip > 0) {
+            rowSx0 = std::max(sx0, skip);
+            rowSx1 = std::min(sx1, targetW - skip);
+            if (rowSx0 >= rowSx1) continue;
+          }
+        }
+
         const int phyX = phyX0 + (sy - sy0) * dxPerSy;
         const uint8_t bitMask = static_cast<uint8_t>(0x80u >> (phyX & 7));
-        int32_t byteIndex = static_cast<int32_t>(phyY0) * panelStride + (phyX >> 3);
+        int32_t byteIndex = static_cast<int32_t>(phyY0) * panelStride + (phyX >> 3)
+                            + static_cast<int32_t>(rowSx0 - sx0) * byteStep;
 
         const uint8_t* srcRow = entry->scaledPixels.get() + sy * scaledStride;
-        int sx = sx0;
-        while (sx < sx1) {
+        int sx = rowSx0;
+        while (sx < rowSx1) {
           const int bitOffset = sx & 7;
-          const int run = std::min(8 - bitOffset, sx1 - sx);
+          const int run = std::min(8 - bitOffset, rowSx1 - sx);
           uint8_t srcByte = srcRow[sx >> 3];
           uint8_t srcMask = static_cast<uint8_t>(0x80u >> bitOffset);
           for (int b = 0; b < run; ++b) {
@@ -1343,15 +1385,28 @@ bool GfxRenderer::drawCachedBitmap(CachedBitmap* entry, const int x, const int y
       const int dyPerSy = (orientation == LandscapeCounterClockwise) ? 1 : -1;
 
       for (int sy = sy0; sy < sy1; ++sy) {
+        int rowSx0 = sx0;
+        int rowSx1 = sx1;
+        if (rounded) {
+          int skip = 0;
+          if (sy < r) skip = skipPerRow[sy];
+          else if (sy >= targetH - r) skip = skipPerRow[targetH - 1 - sy];
+          if (skip > 0) {
+            rowSx0 = std::max(sx0, skip);
+            rowSx1 = std::min(sx1, targetW - skip);
+            if (rowSx0 >= rowSx1) continue;
+          }
+        }
+
         const int phyY = phyY0 + (sy - sy0) * dyPerSy;
         const int32_t rowBase = static_cast<int32_t>(phyY) * panelStride;
-        int phyX = phyX0;
+        int phyX = phyX0 + (rowSx0 - sx0) * dxPerSx;
 
         const uint8_t* srcRow = entry->scaledPixels.get() + sy * scaledStride;
-        int sx = sx0;
-        while (sx < sx1) {
+        int sx = rowSx0;
+        while (sx < rowSx1) {
           const int bitOffset = sx & 7;
-          const int run = std::min(8 - bitOffset, sx1 - sx);
+          const int run = std::min(8 - bitOffset, rowSx1 - sx);
           uint8_t srcByte = srcRow[sx >> 3];
           uint8_t srcMask = static_cast<uint8_t>(0x80u >> bitOffset);
           for (int b = 0; b < run; ++b) {
@@ -1377,10 +1432,10 @@ bool GfxRenderer::drawCachedBitmap(CachedBitmap* entry, const int x, const int y
   return true;
 }
 
-template bool GfxRenderer::drawCachedBitmap<false>(const char*, int, int, int, int) const;
-template bool GfxRenderer::drawCachedBitmap<true>(const char*, int, int, int, int) const;
-template bool GfxRenderer::drawCachedBitmap<false>(CachedBitmap*, int, int, int, int) const;
-template bool GfxRenderer::drawCachedBitmap<true>(CachedBitmap*, int, int, int, int) const;
+template bool GfxRenderer::drawCachedBitmap<false>(const char*, int, int, int, int, int) const;
+template bool GfxRenderer::drawCachedBitmap<true>(const char*, int, int, int, int, int) const;
+template bool GfxRenderer::drawCachedBitmap<false>(CachedBitmap*, int, int, int, int, int) const;
+template bool GfxRenderer::drawCachedBitmap<true>(CachedBitmap*, int, int, int, int, int) const;
 
 void GfxRenderer::clearImageCache() const {
   imageCache_.clear();
