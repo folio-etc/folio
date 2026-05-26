@@ -18,8 +18,7 @@
 #include "components/ui/ButtonHints/ButtonHints.h"
 #include "components/themes/BaseTheme.h"
 #include "components/themes/ThemeData.generated.h"
-#include "components/themes/ThemeData.h"
-#include "fontIds.h"
+#include "components/ui/CascadingPopupMenu/CascadingPopupMenu.h"
 
 namespace {
 constexpr char LOG_TAG[] = "LIBA";
@@ -82,11 +81,7 @@ void LibraryActivity::onEnter() {
   lockNextConfirmRelease = mappedInput.isPressed(MappedInputManager::Button::Confirm);
   lockNextBackRelease = mappedInput.isPressed(MappedInputManager::Button::Back);
 
-  view = View::Library;
-  popupLevel = PopupLevel::Top;
-  popupTopSel = 0;
-  popupSortSel = SETTINGS.librarySortField;
-  popupFilesSel = 0;
+  initPopup();
 
   // The on-disk library.bin survives onExit; load it back into memory.
   LIBRARY_INDEX.loadFromFile();
@@ -128,6 +123,57 @@ void LibraryActivity::onExit() {
   LIBRARY_INDEX.unload();
 }
 
+void LibraryActivity::initPopup() {
+  // Configure the cascading popup. Top rows: Sort (→ submenu), Files (→
+  // submenu), Settings (leaf). The cascade derives chevron glyphs and the
+  // muted-owning-row indicator from this config — LibraryActivity only owns
+  // the labels and the action dispatch.
+  std::vector<CascadingPopupMenu::SubmenuConfig> subs;
+  subs.resize(POPUP_TOP_COUNT);
+
+  // Sort submenu: 4 rows; pre-select the active sort field on entry; show a
+  // direction arrow on the active field row.
+  subs[POPUP_TOP_SORT].itemCount = POPUP_SORT_COUNT;
+  subs[POPUP_TOP_SORT].rowLabel = [](int i) -> const char* {
+    switch (i) {
+      case 0: return tr(STR_SORT_RECENT);
+      case 1: return tr(STR_SORT_TITLE);
+      case 2: return tr(STR_SORT_AUTHOR);
+      case 3: return tr(STR_SORT_PROGRESS);
+    }
+    return "";
+  };
+  subs[POPUP_TOP_SORT].rowGlyph = [](int i) -> PopupMenu::Glyph {
+    if (i != SETTINGS.librarySortField) return PopupMenu::Glyph::None;
+    return (SETTINGS.librarySortDirection == CrossPointSettings::LIB_SORT_ASC)
+               ? PopupMenu::Glyph::ArrowUp
+               : PopupMenu::Glyph::ArrowDown;
+  };
+  subs[POPUP_TOP_SORT].initialSelection = []() { return static_cast<int>(SETTINGS.librarySortField); };
+
+  // Files submenu: 2 rows; always opens at row 0.
+  subs[POPUP_TOP_FILES].itemCount = POPUP_FILES_COUNT;
+  subs[POPUP_TOP_FILES].rowLabel = [](int i) -> const char* {
+    switch (i) {
+      case 0: return tr(STR_BROWSE);
+      case 1: return tr(STR_TRANSFER);
+    }
+    return "";
+  };
+
+  // Settings is a leaf — no submenu config needed (itemCount=0 default).
+  popup_.configure(
+      [](int i) -> const char* {
+        switch (i) {
+          case POPUP_TOP_SORT: return tr(STR_SORT);
+          case POPUP_TOP_FILES: return tr(STR_FILES);
+          case POPUP_TOP_SETTINGS: return tr(STR_SETTINGS_TITLE);
+        }
+        return "";
+      },
+      std::move(subs));
+}
+
 // ---- Input ------------------------------------------------------------------
 
 void LibraryActivity::loop() {
@@ -147,16 +193,13 @@ void LibraryActivity::loop() {
   }
 
   if (mappedInput.wasPressed(MappedInputManager::Button::Back)) {
-    // Back always collapses the popup entirely (matches the prototype),
-    // regardless of which level is open. From Library, Back opens the
-    // popup ("Menu" footer label = the Back front button).
-    if (view == View::Popup) {
-      view = View::Library;
-      popupLevel = PopupLevel::Top;
-      requestUpdate();
+    if(popup_.isOpen()) {
+      popup_.moveLeft();
     } else {
-      togglePopup();
+      popup_.open();
     }
+
+    requestUpdate();
     return;
   }
 
@@ -185,24 +228,9 @@ void LibraryActivity::loop() {
 
 // ---- Navigation -------------------------------------------------------------
 
-int LibraryActivity::popupItemsAt(PopupLevel level) const {
-  switch (level) {
-    case PopupLevel::Top:      return POPUP_TOP_ITEMS;
-    case PopupLevel::SortSub:  return POPUP_SORT_ITEMS;
-    case PopupLevel::FilesSub: return POPUP_FILES_ITEMS;
-  }
-  return 0;
-}
-
 void LibraryActivity::moveUp() {
-  if (view == View::Popup) {
-    int& sel = (popupLevel == PopupLevel::Top)       ? popupTopSel
-               : (popupLevel == PopupLevel::SortSub) ? popupSortSel
-                                                     : popupFilesSel;
-    if (sel > 0) {
-      sel--;
-      requestUpdate();
-    }
+  if (popup_.isOpen()) {
+    if (popup_.moveUp() != CascadingPopupMenu::Nav::Ignored) requestUpdate();
     return;
   }
   const int row = currentRow();
@@ -218,14 +246,8 @@ void LibraryActivity::moveUp() {
 }
 
 void LibraryActivity::moveDown() {
-  if (view == View::Popup) {
-    int& sel = (popupLevel == PopupLevel::Top)       ? popupTopSel
-               : (popupLevel == PopupLevel::SortSub) ? popupSortSel
-                                                     : popupFilesSel;
-    if (sel < popupItemsAt(popupLevel) - 1) {
-      sel++;
-      requestUpdate();
-    }
+  if (popup_.isOpen()) {
+    if (popup_.moveDown() != CascadingPopupMenu::Nav::Ignored) requestUpdate();
     return;
   }
   const int row = currentRow();
@@ -260,18 +282,10 @@ void LibraryActivity::moveDown() {
 }
 
 void LibraryActivity::moveLeft() {
-  if (view == View::Popup) {
-    // Left in a sub-panel pops back to the top panel; Left in the top
-    // panel closes the popup (matches the prototype).
-    if (popupLevel == PopupLevel::SortSub || popupLevel == PopupLevel::FilesSub) {
-      popupLevel = PopupLevel::Top;
-      requestUpdate();
-    } else {
-      view = View::Library;
-      requestUpdate();
-    }
+  if (popup_.isOpen()) {
     return;
   }
+
   const int col = currentCol();
   if (col > 0) {
     librarySelected--;
@@ -280,31 +294,10 @@ void LibraryActivity::moveLeft() {
 }
 
 void LibraryActivity::moveRight() {
-  if (view == View::Popup) {
-    // Right at the top enters the selected submenu, or activates Settings.
-    if (popupLevel == PopupLevel::Top) {
-      switch (popupTopSel) {
-        case 0:  // Sort
-          popupLevel = PopupLevel::SortSub;
-          popupSortSel = SETTINGS.librarySortField;
-          requestUpdate();
-          break;
-        case 1:  // Files
-          popupLevel = PopupLevel::FilesSub;
-          popupFilesSel = 0;
-          requestUpdate();
-          break;
-        case 2:  // Settings — opens directly
-          activityManager.goToSettings();
-          break;
-        default:
-          break;
-      }
-    }
-    // No-op in submenus (sort rows have no further depth; files rows open
-    // their activity via Confirm, not Right).
+  if (popup_.isOpen()) {
     return;
   }
+
   const int col = currentCol();
   if (col < COLS - 1) {
     const int candidate = librarySelected + 1;
@@ -316,10 +309,17 @@ void LibraryActivity::moveRight() {
 }
 
 void LibraryActivity::doSelect() {
-  if (view == View::Popup) {
-    activatePopupItem();
+  if (popup_.isOpen()) {
+    const auto nav = popup_.activate();
+    if (nav == CascadingPopupMenu::Nav::EnteredSubmenu) {
+      requestUpdate();
+    } else if (nav == CascadingPopupMenu::Nav::LeafActivated ||
+               nav == CascadingPopupMenu::Nav::SubItemActivated) {
+      dispatchPopupActivation(nav);
+    }
     return;
   }
+
   const LibraryBook* book = LIBRARY_INDEX.getAt(libraryPage, librarySelected, PER_PAGE);
   if (book == nullptr) return;
   LOG_DBG(LOG_TAG, "Opening book: %s", book->path.c_str());
@@ -330,59 +330,34 @@ void LibraryActivity::doSelect() {
   activityManager.goToReader(book->path);
 }
 
-void LibraryActivity::togglePopup() {
-  view = (view == View::Popup) ? View::Library : View::Popup;
-  if (view == View::Popup) {
-    popupLevel = PopupLevel::Top;
-    popupTopSel = 0;
-  }
-  requestUpdate();
-}
-
-void LibraryActivity::activatePopupItem() {
-  switch (popupLevel) {
-    case PopupLevel::Top:
-      // Confirm at the top mirrors Right: enter Sort/Files submenu or open
-      // Settings.
-      switch (popupTopSel) {
-        case 0:
-          popupLevel = PopupLevel::SortSub;
-          popupSortSel = SETTINGS.librarySortField;
-          requestUpdate();
-          break;
-        case 1:
-          popupLevel = PopupLevel::FilesSub;
-          popupFilesSel = 0;
-          requestUpdate();
-          break;
-        case 2:
-          activityManager.goToSettings();
-          break;
-      }
-      break;
-    case PopupLevel::SortSub: {
-      // If the row matches the active field, flip direction. Otherwise
-      // switch the active field and keep the persisted direction.
-      const uint8_t newField = static_cast<uint8_t>(popupSortSel);
-      uint8_t newDirection = SETTINGS.librarySortDirection;
-      if (newField == SETTINGS.librarySortField) {
-        newDirection = (SETTINGS.librarySortDirection == CrossPointSettings::LIB_SORT_ASC)
-                           ? CrossPointSettings::LIB_SORT_DESC
-                           : CrossPointSettings::LIB_SORT_ASC;
-      }
-      setSort(newField, newDirection);
-      break;
+void LibraryActivity::dispatchPopupActivation(CascadingPopupMenu::Nav navResult) {
+  const int top = popup_.topSelectedIndex();
+  if (navResult == CascadingPopupMenu::Nav::LeafActivated) {
+    // Only Settings is a leaf at the top level.
+    if (top == POPUP_TOP_SETTINGS) {
+      activityManager.goToSettings();
     }
-    case PopupLevel::FilesSub:
-      switch (popupFilesSel) {
-        case 0:
-          activityManager.goToFileBrowser();
-          break;
-        case 1:
-          activityManager.goToFileTransfer();
-          break;
-      }
-      break;
+    return;
+  }
+  // SubItemActivated: dispatch by which submenu the user is in.
+  const int sub = popup_.subSelectedIndex();
+  if (top == POPUP_TOP_SORT) {
+    // If the user re-confirms the active sort field, flip direction;
+    // otherwise switch the active field and keep the persisted direction.
+    const uint8_t newField = static_cast<uint8_t>(sub);
+    uint8_t newDirection = SETTINGS.librarySortDirection;
+    if (newField == SETTINGS.librarySortField) {
+      newDirection = (SETTINGS.librarySortDirection == CrossPointSettings::LIB_SORT_ASC)
+                         ? CrossPointSettings::LIB_SORT_DESC
+                         : CrossPointSettings::LIB_SORT_ASC;
+    }
+    setSort(newField, newDirection);
+  } else if (top == POPUP_TOP_FILES) {
+    if (sub == POPUP_FILES_BROWSE) {
+      activityManager.goToFileBrowser();
+    } else if (sub == POPUP_FILES_TRANSFER) {
+      activityManager.goToFileTransfer();
+    }
   }
 }
 
@@ -460,20 +435,9 @@ void LibraryActivity::declareText(TextCollector& tc) {
     }
   }
 
-  if (view == View::Popup) {
-    // Popup row labels — body face inside the panels. (No annotation glyphs
-    // here: the popup primitive paints triangles via fillPolygon, not text.)
-    const int popupBodyFont = libFont(GUI.getData()->popupMenu.fontRole);
-    tc.use(popupBodyFont, EpdFontFamily::BOLD, tr(STR_SORT));
-    tc.use(popupBodyFont, EpdFontFamily::BOLD, tr(STR_FILES));
-    tc.use(popupBodyFont, EpdFontFamily::BOLD, tr(STR_SETTINGS_TITLE));
-    tc.use(popupBodyFont, EpdFontFamily::BOLD, tr(STR_SORT_RECENT));
-    tc.use(popupBodyFont, EpdFontFamily::BOLD, tr(STR_SORT_TITLE));
-    tc.use(popupBodyFont, EpdFontFamily::BOLD, tr(STR_SORT_AUTHOR));
-    tc.use(popupBodyFont, EpdFontFamily::BOLD, tr(STR_SORT_PROGRESS));
-    tc.use(popupBodyFont, EpdFontFamily::BOLD, tr(STR_BROWSE_FILES));
-    tc.use(popupBodyFont, EpdFontFamily::BOLD, tr(STR_FILE_TRANSFER));
-  }
+  // Popup row labels are owned by the cascade — it walks the configured
+  // top + submenu rows itself. No-op when closed.
+  popup_.declareText(tc);
 
   // Button hints — italic body labels, compact face so the label has
   // breathing room inside the 106-px Folio hint box.
@@ -494,30 +458,19 @@ void LibraryActivity::renderPasses() {
     renderLibraryShelf();
     renderPageRail();
   }
-  if (view == View::Popup) {
+  if (popup_.isOpen()) {
     renderPopup();
   }
 
-  // Footer hints follow the prototype: Library view shows Menu/Select/Left/
-  // Right; popup view shows Close/Select/Back/Enter. In the prototype, hints
-  // that won't do anything from the current depth render dimmed — the
-  // firmware's button-hint primitive doesn't expose a dimmed state, so we
-  // hide those labels entirely (empty string) instead.
-  const char* btn1 = tr(STR_MENU_LABEL);
-  const char* btn2 = tr(STR_SELECT);
-  const char* btn3 = tr(STR_DIR_LEFT);
-  const char* btn4 = tr(STR_DIR_RIGHT);
-  if (view == View::Popup) {
-    const bool inSub = (popupLevel != PopupLevel::Top);
-    // At top level, Sort/Files have submenus; Settings (index 2) does not.
-    const bool topHasSub = (popupLevel == PopupLevel::Top) && (popupTopSel == 0 || popupTopSel == 1);
-    btn1 = tr(STR_CLOSE);
-    btn2 = tr(STR_SELECT);
-    btn3 = inSub ? tr(STR_BACK) : "";
-    btn4 = (!inSub && topHasSub) ? tr(STR_ENTER) : "";
+  // Library-view footer hints. When the popup is open the cascade owns the
+  // hint scheme (Close/Back, Select/Enter — see CascadingPopupMenu::renderFooterHints).
+  if (popup_.isOpen()) {
+    popup_.renderFooterHints(renderer, mappedInput);
+  } else {
+    const auto labels = mappedInput.mapLabels(tr(STR_MENU_LABEL), tr(STR_SELECT), tr(STR_DIR_LEFT),
+                                              tr(STR_DIR_RIGHT));
+    ButtonHints::render(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
   }
-  const auto labels = mappedInput.mapLabels(btn1, btn2, btn3, btn4);
-  ButtonHints::render(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
 }
 
 void LibraryActivity::renderHeader() {
@@ -866,105 +819,14 @@ void LibraryActivity::renderEmptyState() {
 }
 
 void LibraryActivity::renderPopup() {
-  // Cascading popup over the library shelf. Two panels: a top panel pinned
-  // above the footer hints (Sort / Files / Settings), and an optional sub
-  // panel that slides out to the right when in SortSub or FilesSub. Panel
-  // chrome and selection treatment come from the theme's popupMenu group;
-  // LibraryActivity owns only the widths and the anchor.
-  constexpr int POPUP_TOP_W = 168;
-  constexpr int POPUP_SUB_W = 220;
-
-  const auto& pm = GUI.getData()->popupMenu;
+  // Cascading popup over the library shelf, anchored above the footer hints.
+  // The cascade computes its own panel widths and heights from the active
+  // theme's metrics and the registered submenus — LibraryActivity just
+  // supplies the anchor point and the available right edge for the sub-panel.
   const int screenW = renderer.getScreenWidth();
   const int screenH = renderer.getScreenHeight();
-
-  const int topItems = POPUP_TOP_ITEMS;
-  const int topH = topItems * pm.rowHeight + 2 * pm.borderThickness;
-  const int topX = CONTENT_PAD_X + 12;
-  // Anchor above the footer hints, leaving a small breathing gap. Shadow
-  // offset doesn't count toward the panel rect — drawPopupMenu paints it
-  // outside the rect — but we keep clear of the footer regardless.
-  const int topY = screenH - FOOTER_HEIGHT - topH - pm.shadowOffsetY - 6;
-
-  // Sub panel rect (only computed when needed).
-  const bool hasSub = (popupLevel != PopupLevel::Top);
-  const int subItems =
-      (popupLevel == PopupLevel::SortSub) ? POPUP_SORT_ITEMS : POPUP_FILES_ITEMS;
-  const int subH = subItems * pm.rowHeight + 2 * pm.borderThickness;
-  const int subX = topX + POPUP_TOP_W + pm.panelGap;
-  // Align the bottom of the sub panel with the bottom of the top panel —
-  // the prototype anchors both panels at the same baseline.
-  const int subY = topY + topH - subH;
-
-  // ---- Top panel ----------------------------------------------------------
-  const Rect topRect{topX, topY, POPUP_TOP_W, topH};
-  const int topSelected = (popupLevel == PopupLevel::Top) ? popupTopSel : -1;
-  // When a submenu is open, dim-highlight the owning row on the top panel
-  // (Sort owns SortSub, Files owns FilesSub) so the user can see which
-  // entry their submenu hangs off.
-  const int topMuted = (popupLevel == PopupLevel::SortSub)    ? 0
-                       : (popupLevel == PopupLevel::FilesSub) ? 1
-                                                              : -1;
-  auto topLabel = [](int i) -> std::string {
-    switch (i) {
-      case 0: return tr(STR_SORT);
-      case 1: return tr(STR_FILES);
-      case 2: return tr(STR_SETTINGS_TITLE);
-    }
-    return "";
-  };
-  auto topGlyph = [](int i) -> BaseTheme::PopupMenuGlyph {
-    // Sort + Files expand into submenus; Settings opens directly.
-    if (i == 0 || i == 1) return BaseTheme::PopupMenuGlyph::ChevronRight;
-    return BaseTheme::PopupMenuGlyph::None;
-  };
-  GUI.drawPopupMenu(renderer, topRect, topItems, topSelected, topLabel, topGlyph,
-                   /*mutedIndex=*/topMuted);
-
-  // ---- Sub panel ----------------------------------------------------------
-  if (!hasSub) {
-    // Avoid a -Wunused-but-set warning in builds that don't reference subX/subY/subH.
-    (void)subX;
-    (void)subY;
-    (void)subH;
-    return;
-  }
-
-  // Clamp sub panel width so it doesn't escape the screen.
-  int subW = POPUP_SUB_W;
-  if (subX + subW + pm.shadowOffsetX > screenW - CONTENT_PAD_X) {
-    subW = screenW - CONTENT_PAD_X - pm.shadowOffsetX - subX;
-  }
-  const Rect subRect{subX, subY, subW, subH};
-
-  if (popupLevel == PopupLevel::SortSub) {
-    auto sortLabel = [](int i) -> std::string {
-      switch (i) {
-        case 0: return tr(STR_SORT_RECENT);
-        case 1: return tr(STR_SORT_TITLE);
-        case 2: return tr(STR_SORT_AUTHOR);
-        case 3: return tr(STR_SORT_PROGRESS);
-      }
-      return "";
-    };
-    // Triangle on the currently active sort field, blank on others (keeps
-    // label baselines aligned across rows, matches the prototype).
-    const int activeField = SETTINGS.librarySortField;
-    const bool ascending = (SETTINGS.librarySortDirection == CrossPointSettings::LIB_SORT_ASC);
-    auto sortGlyph = [activeField, ascending](int i) -> BaseTheme::PopupMenuGlyph {
-      if (i != activeField) return BaseTheme::PopupMenuGlyph::None;
-      return ascending ? BaseTheme::PopupMenuGlyph::ArrowUp : BaseTheme::PopupMenuGlyph::ArrowDown;
-    };
-    GUI.drawPopupMenu(renderer, subRect, POPUP_SORT_ITEMS, popupSortSel, sortLabel, sortGlyph);
-  } else {
-    // FilesSub
-    auto filesLabel = [](int i) -> std::string {
-      switch (i) {
-        case 0: return tr(STR_BROWSE_FILES);
-        case 1: return tr(STR_FILE_TRANSFER);
-      }
-      return "";
-    };
-    GUI.drawPopupMenu(renderer, subRect, POPUP_FILES_ITEMS, popupFilesSel, filesLabel);
-  }
+  const int leftX = CONTENT_PAD_X + 12;
+  const int bottomLimit = screenH - FOOTER_HEIGHT - 6;
+  const int rightLimit = screenW - CONTENT_PAD_X;
+  popup_.render(renderer, leftX, bottomLimit, rightLimit);
 }

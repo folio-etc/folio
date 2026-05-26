@@ -1,44 +1,43 @@
 #pragma once
 #include <I18n.h>
 
-#include <cstddef>
 #include <cstdint>
-#include <memory>
 #include <string>
 
 #include "LibraryIndex.h"
 #include "activities/Activity.h"
 #include "components/themes/BaseTheme.h"  // for Rect
+#include "components/ui/CascadingPopupMenu/CascadingPopupMenu.h"
 
 class LibraryActivity final : public Activity {
- public:
-  // The library is the default view. Back opens a cascading popup anchored
-  // above the footer (Sort / Files / Settings); Sort and Files expand to a
-  // sub-panel to the right, Settings opens directly.
-  enum class View { Library, Popup };
-  enum class PopupLevel { Top, SortSub, FilesSub };
-
  private:
   // ---- Layout constants ---------------------------------------------------
   static constexpr int COLS = 3;
   static constexpr int ROWS = 3;
   static constexpr int PER_PAGE = COLS * ROWS;
-  static constexpr int POPUP_TOP_ITEMS = 3;    // Sort / Files / Settings
-  static constexpr int POPUP_SORT_ITEMS = 4;   // Recent / Title / Author / Progress
-  static constexpr int POPUP_FILES_ITEMS = 2;  // Browse Files / File Transfer
+
+  // Top-panel row indices for the cascading popup. The activity dispatches
+  // leaf actions and sort logic against these indices.
+  static constexpr int POPUP_TOP_SORT = 0;
+  static constexpr int POPUP_TOP_FILES = 1;
+  static constexpr int POPUP_TOP_SETTINGS = 2;
+  static constexpr int POPUP_TOP_COUNT = 3;
+
+  static constexpr int POPUP_FILES_BROWSE = 0;
+  static constexpr int POPUP_FILES_TRANSFER = 1;
+  static constexpr int POPUP_FILES_COUNT = 2;
+
+  static constexpr int POPUP_SORT_COUNT = 4;  // Recent / Title / Author / Progress
 
   // ---- View state ---------------------------------------------------------
-  View view = View::Library;
-  PopupLevel popupLevel = PopupLevel::Top;
-
   // Library grid position
   int libraryPage = 0;          // 0-indexed
   int librarySelected = 0;      // 0..PER_PAGE-1 within current page
 
-  // Popup row selection per level
-  int popupTopSel = 0;
-  int popupSortSel = 0;
-  int popupFilesSel = 0;
+  // The cascading popup (Sort / Files / Settings). Owns its own selection
+  // state, level, and chrome — LibraryActivity routes button presses to it
+  // and dispatches LeafActivated / SubItemActivated results.
+  CascadingPopupMenu popup_;
 
   // True when the Confirm release that brought us into this activity should
   // not also trigger an open-book (typical when launched from a parent menu).
@@ -55,18 +54,20 @@ class LibraryActivity final : public Activity {
   int currentCol() const { return librarySelected % COLS; }
   int totalPages() const { return LIBRARY_INDEX.totalPages(PER_PAGE); }
 
+  void initPopup();
+
   void moveUp();
   void moveDown();
   void moveLeft();
   void moveRight();
   void doSelect();
-  void togglePopup();
-  void activatePopupItem();
+  // Dispatches the activity action for an active popup row (leaf or submenu
+  // item). Reads popup_.topSelectedIndex() / subSelectedIndex() to decide.
+  void dispatchPopupActivation(CascadingPopupMenu::Nav navResult);
   // Re-sort the index from current settings and reset selection to the top.
   void applySort();
   // Persist the active sort field/direction and re-sort.
   void setSort(uint8_t field, uint8_t direction);
-  int popupItemsAt(PopupLevel level) const;
 
   // ---- Rendering helpers --------------------------------------------------
   // Body of the render: header + library shelf or menu + footer hints.
