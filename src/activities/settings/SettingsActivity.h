@@ -158,7 +158,6 @@ class SettingsActivity final : public Activity {
 
   bool preserveQuickResumeTimeoutOn = false;
   bool quickResumeTimeoutAutoEnabled = false;
-  bool themeChangedThisSession = false;
 
   static constexpr int categoryCount = 4;
   static const StrId categoryNames[categoryCount];

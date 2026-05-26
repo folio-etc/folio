@@ -390,10 +390,6 @@ void setup() {
   I18N.setLanguage(static_cast<Language>(SETTINGS.language));
   KOREADER_STORE.loadFromFile();
   OPDS_STORE.loadFromFile();
-  // Discover SD card themes before loading the active theme so the theme
-  // loader can find .cptheme bundles referenced in settings.
-  SD_THEMES.discoverThemes();
-  UITheme::getInstance().reload(renderer);
   ButtonNavigator::setMappedInputManager(mappedInputManager);
 
   const auto wakeupReason = gpio.getWakeupReason();
@@ -471,6 +467,16 @@ void setup() {
       activityManager.goToBoot();
       break;
   }
+
+  // Discover and load the active SD theme AFTER the splash has been painted so
+  // the user sees boot progress during the slow path (cold-boot extraction +
+  // multi-font load on a heavy theme like RoundedRaff takes ~9s). The boot
+  // activity itself uses only builtin UI fonts and is theme-agnostic, so it
+  // renders correctly before the SD theme is resident. activityManager.goHome
+  // and the reader routing below run AFTER this, so the next activity sees
+  // the fully-loaded theme.
+  SD_THEMES.discoverThemes();
+  UITheme::getInstance().reload(renderer);
 
   if (recoveryFirmwareMode) {
     // Skip normal home/reader routing: jump straight into the SD firmware picker.

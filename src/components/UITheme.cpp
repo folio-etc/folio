@@ -4,11 +4,8 @@
 #include <GfxRenderer.h>
 #include <Logging.h>
 
-#include "MappedInputManager.h"
-#include "RecentBooksStore.h"
 #include "SdThemeLoader.h"
 #include "components/themes/BaseTheme.h"
-#include "components/themes/ThemeData.h"
 
 UITheme UITheme::instance;
 
