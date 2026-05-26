@@ -211,19 +211,19 @@ void LibraryActivity::loop() {
     return;
   }
 
-  if (mappedInput.wasReleased(MappedInputManager::Button::Up)) {
+  if (mappedInput.wasPressed(MappedInputManager::Button::Up)) {
     moveUp();
     return;
   }
-  if (mappedInput.wasReleased(MappedInputManager::Button::Down)) {
+  if (mappedInput.wasPressed(MappedInputManager::Button::Down)) {
     moveDown();
     return;
   }
-  if (mappedInput.wasReleased(MappedInputManager::Button::Left)) {
+  if (mappedInput.wasPressed(MappedInputManager::Button::Left)) {
     moveLeft();
     return;
   }
-  if (mappedInput.wasReleased(MappedInputManager::Button::Right)) {
+  if (mappedInput.wasPressed(MappedInputManager::Button::Right)) {
     moveRight();
     return;
   }

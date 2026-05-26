@@ -1145,38 +1145,86 @@ bool GfxRenderer::drawCachedBitmap(CachedBitmap* entry, const int x, const int y
   int phyX0, phyY0;
   rotateCoordinates(orientation, x + sx0, y + sy0, &phyX0, &phyY0, panelWidth, panelHeight);
 
-  int dxPerSx, dyPerSx, dxPerSy, dyPerSy;
+  // Per-orientation specializations:
+  //   Portrait/PortraitInverted: phyX is constant within a row → hoist
+  //     the dst byte column and bitMask out of the inner loop; the
+  //     framebuffer write stride is ±panelWidthBytes per source-x step.
+  //   LandscapeClockwise/CCW: phyY is constant within a row → hoist
+  //     the dst row base; only the column varies, marching ±1 per step.
+  // Source bits are walked byte-by-byte with a single shifting mask so
+  // each pixel costs an AND + branch instead of recomputing (0x80 >> n).
+  const int32_t panelStride = static_cast<int32_t>(panelWidthBytes);
+
   switch (orientation) {
-    case Portrait:                  dxPerSx =  0; dyPerSx = -1; dxPerSy =  1; dyPerSy =  0; break;
-    case LandscapeClockwise:        dxPerSx = -1; dyPerSx =  0; dxPerSy =  0; dyPerSy = -1; break;
-    case PortraitInverted:          dxPerSx =  0; dyPerSx =  1; dxPerSy = -1; dyPerSy =  0; break;
-    case LandscapeCounterClockwise: dxPerSx =  1; dyPerSx =  0; dxPerSy =  0; dyPerSy =  1; break;
-  }
+    case Portrait:
+    case PortraitInverted: {
+      const int dyPerSx = (orientation == Portrait) ? -1 : 1;
+      const int dxPerSy = (orientation == Portrait) ? 1 : -1;
+      const int32_t byteStep = static_cast<int32_t>(dyPerSx) * panelStride;
 
-  for (int sy = sy0; sy < sy1; ++sy) {
-    const int rowOff = sy - sy0;
-    int phyX = phyX0 + rowOff * dxPerSy;
-    int phyY = phyY0 + rowOff * dyPerSy;
-    const uint8_t* srcRow = entry->scaledPixels.get() + sy * scaledStride;
+      for (int sy = sy0; sy < sy1; ++sy) {
+        const int phyX = phyX0 + (sy - sy0) * dxPerSy;
+        const uint8_t bitMask = static_cast<uint8_t>(0x80u >> (phyX & 7));
+        int32_t byteIndex = static_cast<int32_t>(phyY0) * panelStride + (phyX >> 3);
 
-    for (int sx = sx0; sx < sx1; ++sx) {
-      const bool srcSet = (srcRow[sx / 8] & (1 << (7 - (sx % 8)))) != 0;
-      if constexpr (Opaque) {
-        const uint32_t byteIndex = static_cast<uint32_t>(phyY) * panelWidthBytes + (phyX / 8);
-        const uint8_t fbBit = 1 << (7 - (phyX % 8));
-        if (srcSet) {
-          frameBuffer[byteIndex] |= fbBit;
-        } else {
-          frameBuffer[byteIndex] &= ~fbBit;
-        }
-      } else {
-        if (!srcSet) {
-          const uint32_t byteIndex = static_cast<uint32_t>(phyY) * panelWidthBytes + (phyX / 8);
-          frameBuffer[byteIndex] &= ~(1 << (7 - (phyX % 8)));
+        const uint8_t* srcRow = entry->scaledPixels.get() + sy * scaledStride;
+        int sx = sx0;
+        while (sx < sx1) {
+          const int bitOffset = sx & 7;
+          const int run = std::min(8 - bitOffset, sx1 - sx);
+          uint8_t srcByte = srcRow[sx >> 3];
+          uint8_t srcMask = static_cast<uint8_t>(0x80u >> bitOffset);
+          for (int b = 0; b < run; ++b) {
+            const bool srcSet = (srcByte & srcMask) != 0;
+            if constexpr (Opaque) {
+              if (srcSet) frameBuffer[byteIndex] |= bitMask;
+              else        frameBuffer[byteIndex] &= static_cast<uint8_t>(~bitMask);
+            } else {
+              if (!srcSet) frameBuffer[byteIndex] &= static_cast<uint8_t>(~bitMask);
+            }
+            byteIndex += byteStep;
+            srcMask >>= 1;
+          }
+          sx += run;
         }
       }
-      phyX += dxPerSx;
-      phyY += dyPerSx;
+      break;
+    }
+
+    case LandscapeClockwise:
+    case LandscapeCounterClockwise: {
+      const int dxPerSx = (orientation == LandscapeCounterClockwise) ? 1 : -1;
+      const int dyPerSy = (orientation == LandscapeCounterClockwise) ? 1 : -1;
+
+      for (int sy = sy0; sy < sy1; ++sy) {
+        const int phyY = phyY0 + (sy - sy0) * dyPerSy;
+        const int32_t rowBase = static_cast<int32_t>(phyY) * panelStride;
+        int phyX = phyX0;
+
+        const uint8_t* srcRow = entry->scaledPixels.get() + sy * scaledStride;
+        int sx = sx0;
+        while (sx < sx1) {
+          const int bitOffset = sx & 7;
+          const int run = std::min(8 - bitOffset, sx1 - sx);
+          uint8_t srcByte = srcRow[sx >> 3];
+          uint8_t srcMask = static_cast<uint8_t>(0x80u >> bitOffset);
+          for (int b = 0; b < run; ++b) {
+            const bool srcSet = (srcByte & srcMask) != 0;
+            const int32_t byteIndex = rowBase + (phyX >> 3);
+            const uint8_t bitMask = static_cast<uint8_t>(0x80u >> (phyX & 7));
+            if constexpr (Opaque) {
+              if (srcSet) frameBuffer[byteIndex] |= bitMask;
+              else        frameBuffer[byteIndex] &= static_cast<uint8_t>(~bitMask);
+            } else {
+              if (!srcSet) frameBuffer[byteIndex] &= static_cast<uint8_t>(~bitMask);
+            }
+            phyX += dxPerSx;
+            srcMask >>= 1;
+          }
+          sx += run;
+        }
+      }
+      break;
     }
   }
 
