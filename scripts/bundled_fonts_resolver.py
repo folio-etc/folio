@@ -308,6 +308,9 @@ def resolve_bundled_fonts(
             cmd.extend(["--sizes", sizes_str])
             cmd.extend(["--name", family_name])
             cmd.extend(["--output-dir", str(theme_fonts_dir)])
+            # Theme UI rendering quantizes greyscale to BW; pack 1-bit to
+            # halve the on-disk and resident bitmap cost per glyph.
+            cmd.append("--1bit")
 
             print(
                 f"  Generating .cpfont files via fontconvert_sdcard.py ...",

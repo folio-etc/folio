@@ -566,8 +566,13 @@ def extract_ligatures_fonttools(font_path, codepoints):
     return pairs
 
 
-def rasterize_font_style(fontfile, size, intervals, style_id=0, force_autohint=False):
-    """Rasterize all glyphs for one font style. Returns StyleRasterData."""
+def rasterize_font_style(fontfile, size, intervals, style_id=0, force_autohint=False,
+                         is_1bit=False):
+    """Rasterize all glyphs for one font style. Returns StyleRasterData.
+
+    When is_1bit=True, glyphs are packed as 1-bit bitmaps (8 px/byte, any
+    grey value >= 0x20 treated as on). When False, 2-bit greyscale (4 px/byte).
+    """
     import freetype
 
     style_names = {0: "regular", 1: "bold", 2: "italic", 3: "bolditalic"}
@@ -655,36 +660,57 @@ def rasterize_font_style(fontfile, size, intervals, style_id=0, force_autohint=F
                     pixels4g.append(px)
                     px = 0
 
-            # Downsample to 2-bit bitmap
-            pixels2b = []
-            px = 0
-            pitch = (bitmap.width // 2) + (bitmap.width % 2)
-            for y in range(bitmap.rows):
-                for x in range(bitmap.width):
-                    px = px << 2
-                    bm = pixels4g[y * pitch + (x // 2)]
-                    bm = (bm >> ((x % 2) * 4)) & 0xF
+            if is_1bit:
+                # Downsample to 1-bit bitmap (8 px/byte, MSB-first).
+                # Any 4g grey value >= 2 in the nibble is treated as on,
+                # matching the threshold in fontconvert.py:339.
+                pixelsbw = []
+                px = 0
+                pitch = (bitmap.width // 2) + (bitmap.width % 2)
+                for y in range(bitmap.rows):
+                    for x in range(bitmap.width):
+                        px = px << 1
+                        bm = pixels4g[y * pitch + (x // 2)]
+                        if ((x & 1) == 0 and (bm & 0x0E) > 0) or ((x & 1) == 1 and (bm & 0xE0) > 0):
+                            px += 1
+                        if (y * bitmap.width + x) % 8 == 7:
+                            pixelsbw.append(px)
+                            px = 0
+                if (bitmap.width * bitmap.rows) % 8 != 0:
+                    px = px << (8 - (bitmap.width * bitmap.rows) % 8)
+                    pixelsbw.append(px)
+                packed = bytes(pixelsbw)
+            else:
+                # Downsample to 2-bit bitmap
+                pixels2b = []
+                px = 0
+                pitch = (bitmap.width // 2) + (bitmap.width % 2)
+                for y in range(bitmap.rows):
+                    for x in range(bitmap.width):
+                        px = px << 2
+                        bm = pixels4g[y * pitch + (x // 2)]
+                        bm = (bm >> ((x % 2) * 4)) & 0xF
 
-                    if bm >= 12:
-                        px += 3
-                    elif bm >= 8:
-                        px += 2
-                    elif bm >= 4:
-                        px += 1
+                        if bm >= 12:
+                            px += 3
+                        elif bm >= 8:
+                            px += 2
+                        elif bm >= 4:
+                            px += 1
 
-                    if (y * bitmap.width + x) % 4 == 3:
-                        pixels2b.append(px)
-                        px = 0
-            if (bitmap.width * bitmap.rows) % 4 != 0:
-                # Outer parens are for clarity: in Python `*` binds tighter
-                # than `<<`, so the original `px << (4 - … % 4) * 2` already
-                # evaluates as `px << ((4 - … % 4) * 2)`. Match the explicit
-                # bracketing here so the shift width is obvious at a glance,
-                # mirroring the inner-loop style in fontconvert.py.
-                px = px << ((4 - (bitmap.width * bitmap.rows) % 4) * 2)
-                pixels2b.append(px)
+                        if (y * bitmap.width + x) % 4 == 3:
+                            pixels2b.append(px)
+                            px = 0
+                if (bitmap.width * bitmap.rows) % 4 != 0:
+                    # Outer parens are for clarity: in Python `*` binds tighter
+                    # than `<<`, so the original `px << (4 - … % 4) * 2` already
+                    # evaluates as `px << ((4 - … % 4) * 2)`. Match the explicit
+                    # bracketing here so the shift width is obvious at a glance,
+                    # mirroring the inner-loop style in fontconvert.py.
+                    px = px << ((4 - (bitmap.width * bitmap.rows) % 4) * 2)
+                    pixels2b.append(px)
 
-            packed = bytes(pixels2b)
+                packed = bytes(pixels2b)
             glyph = GlyphProps(
                 width=bitmap.width,
                 height=bitmap.rows,
@@ -811,15 +837,19 @@ def style_sections_total_size(sections):
 # --- File writers ---
 
 def generate_cpfont_multistyle(style_fonts, size, intervals, output_path,
-                               force_autohint=False):
+                               force_autohint=False, is_1bit=False):
     """Generate a multi-style v4 .cpfont file.
 
     style_fonts: dict of {style_id: fontfile_path} e.g. {0: "Regular.ttf", 2: "Italic.ttf"}
+
+    When is_1bit=True, glyphs are packed as 1-bit bitmaps and the header
+    `flags` byte clears bit 0 so the runtime dispatches the 1-bit render path
+    (SdCardFont.cpp reads `flags & 1` into EpdFontData.is2Bit).
     """
     MAGIC = b"CPFONT\x00\x00"
     HEADER_SIZE = 32
     STYLE_TOC_ENTRY_SIZE = 32
-    flags = 1  # always 2-bit greyscale
+    flags = 0 if is_1bit else 1
     style_count = len(style_fonts)
 
     # Rasterize each style
@@ -829,7 +859,7 @@ def generate_cpfont_multistyle(style_fonts, size, intervals, output_path,
         print(f"  Rasterizing style {style_id}...", file=sys.stderr)
         raster_data[style_id] = rasterize_font_style(
             fontfile, size, intervals, style_id=style_id,
-            force_autohint=force_autohint)
+            force_autohint=force_autohint, is_1bit=is_1bit)
 
     # Pack binary sections for each style
     packed_sections = {}  # style_id -> tuple of section bytearrays
@@ -927,6 +957,9 @@ def main():
                         help="Font family name for output filenames (default: derived from font filename).")
     parser.add_argument("--force-autohint", dest="force_autohint", action="store_true",
                         help="Force FreeType auto-hinter instead of native font hinting.")
+    parser.add_argument("--1bit", dest="is_1bit", action="store_true",
+                        help="Pack glyphs as 1-bit (8 px/byte) instead of 2-bit greyscale. "
+                             "Used for theme fonts that render only in BW mode.")
     parser.add_argument("-o", "--output", dest="output",
                         help="Output file path (for single-size mode).")
     parser.add_argument("--output-dir", dest="output_dir",
@@ -1039,7 +1072,7 @@ def main():
         print(f"Generating {output_path} (size {sz}, {len(style_fonts)} style(s), v4)...", file=sys.stderr)
         total_size += generate_cpfont_multistyle(
             style_fonts, sz, intervals, output_path,
-            force_autohint=args.force_autohint)
+            force_autohint=args.force_autohint, is_1bit=args.is_1bit)
     print(f"\nTotal: {len(sizes)} files, {total_size / 1024 / 1024:.2f} MB", file=sys.stderr)
 
 
