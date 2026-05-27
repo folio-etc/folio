@@ -28,6 +28,17 @@ const EpdGlyph* EpdFontFamily::getGlyph(const uint32_t cp, const Style style) co
   return getFont(style)->getGlyph(cp);
 }
 
+const EpdGlyph* EpdFontFamily::getGlyph(const uint32_t cp, const Style style, const EpdFontData** outData) const {
+  return getFont(style)->getGlyph(cp, outData);
+}
+
+void EpdFontFamily::setFallback(const EpdFont* fallback) const {
+  if (regular) regular->setFallback(fallback);
+  if (bold) bold->setFallback(fallback);
+  if (italic) italic->setFallback(fallback);
+  if (boldItalic) boldItalic->setFallback(fallback);
+}
+
 int8_t EpdFontFamily::getKerning(const uint32_t leftCp, const uint32_t rightCp, const Style style) const {
   return getFont(style)->getKerning(leftCp, rightCp);
 }

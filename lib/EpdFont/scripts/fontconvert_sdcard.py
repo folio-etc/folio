@@ -92,6 +92,19 @@ def parse_hex_range(s: str) -> tuple[int, int] | None:
     return start, end
 
 
+def _merge_sorted_intervals(intervals):
+    """Sort, dedupe, and merge a list of (start, end) tuples into a minimal
+    interval list. Adjacent intervals (end+1 == next_start) are merged."""
+    intervals = sorted(intervals)
+    merged = []
+    for start, end in intervals:
+        if merged and start <= merged[-1][1] + 1:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+        else:
+            merged.append((start, end))
+    return merged
+
+
 def resolve_intervals(preset_str):
     """Resolve comma-separated preset names into a merged, sorted, deduplicated interval list."""
     all_intervals = []
@@ -112,15 +125,53 @@ def resolve_intervals(preset_str):
     # Always add replacement character
     all_intervals.append((0xFFFD, 0xFFFD))
 
-    # Sort and merge overlapping/adjacent intervals
-    all_intervals.sort()
-    merged = []
-    for start, end in all_intervals:
-        if merged and start <= merged[-1][1] + 1:
-            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
-        else:
-            merged.append((start, end))
-    return merged
+    return _merge_sorted_intervals(all_intervals)
+
+
+def resolve_intervals_from_codepoints_file(path):
+    """Read a newline-separated file of codepoints (hex like ``0x00A0`` or
+    decimal like ``160``; blank lines and ``#`` comments are ignored) and
+    return a merged interval list. The Unicode replacement codepoint (U+FFFD)
+    is always appended so rendered text has a glyph for unknown characters
+    regardless of what the caller passes in."""
+    cps = []
+    with open(path, "r", encoding="utf-8") as f:
+        for line_num, raw in enumerate(f, start=1):
+            line = raw.strip()
+            if not line or line.startswith("#"):
+                continue
+            try:
+                cp = int(line, 16) if line.lower().startswith("0x") else int(line, 0)
+            except ValueError:
+                print(f"Error: {path}:{line_num}: cannot parse codepoint '{line}'",
+                      file=sys.stderr)
+                sys.exit(1)
+            if cp < 0 or cp > 0x10FFFF:
+                print(f"Error: {path}:{line_num}: codepoint U+{cp:X} out of range",
+                      file=sys.stderr)
+                sys.exit(1)
+            cps.append(cp)
+
+    if not cps:
+        print(f"Error: {path}: no codepoints found", file=sys.stderr)
+        sys.exit(1)
+
+    cps.append(0xFFFD)
+    cps = sorted(set(cps))
+
+    # Collapse runs of consecutive codepoints into (start, end) intervals so
+    # the downstream rasterizer iterates by interval rather than per-codepoint.
+    intervals = []
+    run_start = run_prev = cps[0]
+    for cp in cps[1:]:
+        if cp == run_prev + 1:
+            run_prev = cp
+            continue
+        intervals.append((run_start, run_prev))
+        run_start = run_prev = cp
+    intervals.append((run_start, run_prev))
+
+    return _merge_sorted_intervals(intervals)
 
 
 GlyphProps = namedtuple("GlyphProps", [
@@ -862,6 +913,9 @@ def main():
                         help="Path to the font file (single-style mode).")
     parser.add_argument("--intervals", dest="intervals",
                         help="Comma-separated interval presets (e.g., 'latin-ext,greek,cyrillic').")
+    parser.add_argument("--codepoints-file", dest="codepoints_file",
+                        help="Path to a newline-separated codepoint file "
+                             "(hex 0x... or decimal). Bypasses --intervals.")
     parser.add_argument("--size", type=int, dest="size",
                         help="Single font size to generate.")
     parser.add_argument("--sizes", dest="sizes",
@@ -913,13 +967,21 @@ def main():
     is_multistyle = len(style_fonts) > 0
     fontfile = args.fontfile
 
-    # Require --intervals
-    if not args.intervals:
-        print("Error: --intervals is required (e.g., --intervals latin-ext,greek,cyrillic)", file=sys.stderr)
+    # Require either --intervals or --codepoints-file (mutually compatible —
+    # if both are given, --codepoints-file wins so callers can pin a known set).
+    if not args.intervals and not args.codepoints_file:
+        print("Error: --intervals or --codepoints-file is required", file=sys.stderr)
         print(f"Available presets: {', '.join(sorted(INTERVAL_PRESETS.keys()))}", file=sys.stderr)
         sys.exit(1)
 
-    intervals = resolve_intervals(args.intervals)
+    if args.codepoints_file:
+        if not os.path.isfile(args.codepoints_file):
+            print(f"Error: codepoints file not found: {args.codepoints_file}",
+                  file=sys.stderr)
+            sys.exit(1)
+        intervals = resolve_intervals_from_codepoints_file(args.codepoints_file)
+    else:
+        intervals = resolve_intervals(args.intervals)
 
     # Determine sizes
     if args.sizes:

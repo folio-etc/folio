@@ -18,11 +18,8 @@ build
 **/.venv/
 *.local*
 
-# Built-in fonts (exclude these)
 assets/**/*.cpfont
-
-# Theme fonts (include these)
-!themes/**/fonts/*.cpfont
+themes/**/fonts/*.cpfont
 
 lib/EpdFont/scripts/downloaded_fonts/
 lib/EpdFont/scripts/instanced_fonts/

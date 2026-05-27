@@ -69,7 +69,6 @@ EpdFont notoserif8ItalicFont(&notoserif_8_italic);
 EpdFont notoserif8BoldItalicFont(&notoserif_8_bolditalic);
 EpdFontFamily notoserif8FontFamily(&notoserif8RegularFont, &notoserif8BoldFont, &notoserif8ItalicFont,
                                    &notoserif8BoldItalicFont);
-#ifndef OMIT_FONTS
 EpdFont notoserif10RegularFont(&notoserif_10_regular);
 EpdFont notoserif10BoldFont(&notoserif_10_bold);
 EpdFont notoserif10ItalicFont(&notoserif_10_italic);
@@ -119,8 +118,6 @@ EpdFont notosans18ItalicFont(&notosans_18_italic);
 EpdFont notosans18BoldItalicFont(&notosans_18_bolditalic);
 EpdFontFamily notosans18FontFamily(&notosans18RegularFont, &notosans18BoldFont, &notosans18ItalicFont,
                                    &notosans18BoldItalicFont);
-
-#endif  // OMIT_FONTS
 
 EpdFont smallFont(&notosans_8_regular);
 EpdFontFamily smallFontFamily(&smallFont);
@@ -311,7 +308,6 @@ void setupDisplayAndFonts(bool seamless = false) {
   renderer.insertFont(NOTOSERIF_5_FONT_ID, notoserif5FontFamily);
   renderer.insertFont(NOTOSERIF_6_FONT_ID, notoserif6FontFamily);
   renderer.insertFont(NOTOSERIF_8_FONT_ID, notoserif8FontFamily);
-#ifndef OMIT_FONTS
   renderer.insertFont(NOTOSERIF_10_FONT_ID, notoserif10FontFamily);
   renderer.insertFont(NOTOSERIF_12_FONT_ID, notoserif12FontFamily);
   renderer.insertFont(NOTOSERIF_16_FONT_ID, notoserif16FontFamily);
@@ -321,7 +317,6 @@ void setupDisplayAndFonts(bool seamless = false) {
   renderer.insertFont(NOTOSANS_14_FONT_ID, notosans14FontFamily);
   renderer.insertFont(NOTOSANS_16_FONT_ID, notosans16FontFamily);
   renderer.insertFont(NOTOSANS_18_FONT_ID, notosans18FontFamily);
-#endif  // OMIT_FONTS
   renderer.insertFont(UI_10_FONT_ID, ui10FontFamily);
   renderer.insertFont(UI_12_FONT_ID, ui12FontFamily);
   renderer.insertFont(SMALL_FONT_ID, smallFontFamily);
@@ -481,6 +476,13 @@ void setup() {
   // entry to free heap for grayscale BW buffer allocation. The next activity
   // that draws using a theme role triggers an on-demand reload via this hook.
   renderer.setFontMissHandler(&ThemeFontManager::onFontMiss, &renderer);
+  // System-wide glyph fallback: when a registered font's subset (in particular
+  // build-subsetted theme `.cpfont`s using the ~400-codepoint UI union) lacks
+  // a codepoint, EpdFont routes the lookup to notosans14 before substituting
+  // tofu. notosans14 ships with the `builtin` interval preset (Latin Extended-A
+  // + Cyrillic + Vietnamese precomposed), giving global coverage for the
+  // off-UI-subset characters that show up in book titles and metadata.
+  renderer.setGlyphFallbackFont(NOTOSANS_14_FONT_ID);
   UITheme::getInstance().reload(renderer);
 
   if (recoveryFirmwareMode) {

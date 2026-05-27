@@ -103,6 +103,38 @@ void GfxRenderer::insertFont(const int fontId, EpdFontFamily font) {
   auto result = fontMap.insert({fontId, font});
   if (!result.second) {
     LOG_ERR("GFX", "Font ID %d already registered, ignoring duplicate", fontId);
+    return;
+  }
+  // If a glyph fallback is already wired and this isn't it, point the new family at it.
+  // (When the fallback itself is registered later, setGlyphFallbackFont retro-wires.)
+  if (glyphFallbackFontId_ != 0 && fontId != glyphFallbackFontId_) {
+    const auto fbIt = fontMap.find(glyphFallbackFontId_);
+    if (fbIt != fontMap.end()) {
+      result.first->second.setFallback(fbIt->second.getRegular());
+    }
+  }
+}
+
+void GfxRenderer::setGlyphFallbackFont(const int fontId) {
+  glyphFallbackFontId_ = fontId;
+  if (fontId == 0) return;
+  const auto it = fontMap.find(fontId);
+  if (it == fontMap.end()) {
+    LOG_ERR("GFX", "Glyph fallback font %d not registered", fontId);
+    return;
+  }
+  const EpdFont* fallbackFont = it->second.getRegular();
+  if (!fallbackFont) {
+    LOG_ERR("GFX", "Glyph fallback font %d has no regular style", fontId);
+    return;
+  }
+  // Retro-wire fallback into every other registered family. Each family's
+  // setFallback propagates to all four style fonts (which are global EpdFont
+  // instances shared across registrations), so this single pass covers every
+  // EpdFont reachable through the renderer.
+  for (auto& [id, family] : fontMap) {
+    if (id == fontId) continue;
+    family.setFallback(fallbackFont);
   }
 }
 
@@ -144,17 +176,18 @@ enum class TextRotation { None, Rotated90CW };
 
 // Shared glyph rendering logic for normal and rotated text.
 // Coordinate mapping and cursor advance direction are selected at compile time via the template parameter.
+//
+// Callers resolve the glyph + its owning fontData once (via EpdFontFamily::getGlyph(cp, style, &outData))
+// and pass both in. This keeps measurement (drawText's first call) and rendering (this function)
+// referencing the same EpdFontData — important when the glyph came from the system glyph-fallback
+// font, in which case `fontData` is the FALLBACK family's data, not the primary's. Passing it in
+// also avoids a second interval scan / SD-overflow lookup per character.
 template <TextRotation rotation>
 static void renderCharImpl(const GfxRenderer& renderer, GfxRenderer::RenderMode renderMode,
-                           const EpdFontFamily& fontFamily, const uint32_t cp, int cursorX, int cursorY,
-                           const bool pixelState, const EpdFontFamily::Style style) {
-  const EpdGlyph* glyph = fontFamily.getGlyph(cp, style);
-  if (!glyph) {
-    LOG_ERR("GFX", "No glyph for codepoint %d", cp);
-    return;
-  }
+                           const EpdGlyph* glyph, const EpdFontData* fontData, int cursorX, int cursorY,
+                           const bool pixelState) {
+  if (!glyph || !fontData) return;
 
-  const EpdFontData* fontData = fontFamily.getData(style);
   const bool is2Bit = fontData->is2Bit;
   const uint8_t width = glyph->width;
   const uint8_t height = glyph->height;
@@ -310,12 +343,14 @@ void GfxRenderer::drawText(const int fontId, const int x, const int y, const cha
   uint32_t prevCp = 0;
   while ((cp = utf8NextCodepoint(reinterpret_cast<const uint8_t**>(&text)))) {
     if (utf8IsCombiningMark(cp)) {
-      const EpdGlyph* combiningGlyph = font.getGlyph(cp, style);
+      const EpdFontData* combiningData = nullptr;
+      const EpdGlyph* combiningGlyph = font.getGlyph(cp, style, &combiningData);
       if (!combiningGlyph) continue;
       const int raiseBy = combiningMark::raiseAboveBase(combiningGlyph->top, combiningGlyph->height, lastBaseTop);
       const int combiningX = combiningMark::centerOver(lastBaseX, lastBaseLeft, lastBaseWidth, combiningGlyph->left,
                                                        combiningGlyph->width);
-      renderCharImpl<TextRotation::None>(*this, renderMode, font, cp, combiningX, yPos - raiseBy, black, style);
+      renderCharImpl<TextRotation::None>(*this, renderMode, combiningGlyph, combiningData, combiningX,
+                                         yPos - raiseBy, black);
       continue;
     }
 
@@ -324,19 +359,26 @@ void GfxRenderer::drawText(const int fontId, const int x, const int y, const cha
     // Differential rounding: snap (previous advance + current kern) as one unit so
     // identical character pairs always produce the same pixel step regardless of
     // where they fall on the line.
+    //
+    // Kerning across the glyph-fallback boundary naturally degrades to 0: the
+    // primary's kern matrix doesn't list codepoints that aren't in its coverage,
+    // and the fallback's matrix isn't consulted from here. So even when prev/cur
+    // straddle primary and fallback, the lookup returns 0 — no special handling
+    // is needed to suppress cross-font pair kerning.
     if (prevCp != 0) {
       const auto kernFP = font.getKerning(prevCp, cp, style);  // 4.4 fixed-point kern
       lastBaseX += fp4::toPixel(prevAdvanceFP + kernFP);       // snap 12.4 fixed-point to nearest pixel
     }
 
-    const EpdGlyph* glyph = font.getGlyph(cp, style);
+    const EpdFontData* glyphData = nullptr;
+    const EpdGlyph* glyph = font.getGlyph(cp, style, &glyphData);
 
     lastBaseLeft = glyph ? glyph->left : 0;
     lastBaseWidth = glyph ? glyph->width : 0;
     lastBaseTop = glyph ? glyph->top : 0;
     prevAdvanceFP = glyph ? glyph->advanceX : 0;  // 12.4 fixed-point
 
-    renderCharImpl<TextRotation::None>(*this, renderMode, font, cp, lastBaseX, yPos, black, style);
+    renderCharImpl<TextRotation::None>(*this, renderMode, glyph, glyphData, lastBaseX, yPos, black);
     prevCp = cp;
   }
 }
@@ -1877,13 +1919,15 @@ void GfxRenderer::drawTextRotated90CW(const int fontId, const int x, const int y
   uint32_t prevCp = 0;
   while ((cp = utf8NextCodepoint(reinterpret_cast<const uint8_t**>(&text)))) {
     if (utf8IsCombiningMark(cp)) {
-      const EpdGlyph* combiningGlyph = font.getGlyph(cp, style);
+      const EpdFontData* combiningData = nullptr;
+      const EpdGlyph* combiningGlyph = font.getGlyph(cp, style, &combiningData);
       if (!combiningGlyph) continue;
       const int raiseBy = combiningMark::raiseAboveBase(combiningGlyph->top, combiningGlyph->height, lastBaseTop);
       const int combiningX = x - raiseBy;
       const int combiningY = combiningMark::centerOverRotated90CW(lastBaseY, lastBaseLeft, lastBaseWidth,
                                                                   combiningGlyph->left, combiningGlyph->width);
-      renderCharImpl<TextRotation::Rotated90CW>(*this, renderMode, font, cp, combiningX, combiningY, black, style);
+      renderCharImpl<TextRotation::Rotated90CW>(*this, renderMode, combiningGlyph, combiningData, combiningX,
+                                                combiningY, black);
       continue;
     }
 
@@ -1896,14 +1940,15 @@ void GfxRenderer::drawTextRotated90CW(const int fontId, const int x, const int y
       lastBaseY -= fp4::toPixel(prevAdvanceFP + kernFP);       // snap 12.4 fixed-point to nearest pixel
     }
 
-    const EpdGlyph* glyph = font.getGlyph(cp, style);
+    const EpdFontData* glyphData = nullptr;
+    const EpdGlyph* glyph = font.getGlyph(cp, style, &glyphData);
 
     lastBaseLeft = glyph ? glyph->left : 0;
     lastBaseWidth = glyph ? glyph->width : 0;
     lastBaseTop = glyph ? glyph->top : 0;
     prevAdvanceFP = glyph ? glyph->advanceX : 0;  // 12.4 fixed-point
 
-    renderCharImpl<TextRotation::Rotated90CW>(*this, renderMode, font, cp, x, lastBaseY, black, style);
+    renderCharImpl<TextRotation::Rotated90CW>(*this, renderMode, glyph, glyphData, x, lastBaseY, black);
     prevCp = cp;
   }
 }

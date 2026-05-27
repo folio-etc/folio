@@ -33,8 +33,22 @@ except ImportError as exc:
     # when BUNDLED_FONTS is present, so we catch the error here and report it later.
     resolve_bundled_fonts = None  # type: ignore[assignment]
 
+# Import the UI codepoint generator. Theme authors typically invoke this script
+# directly without first running `pio run`, so the codepoints file may not yet
+# exist on disk — we (re)generate it inline before resolving bundled fonts.
+from gen_ui_codepoints import generate as generate_ui_codepoints  # noqa: E402
 
-def build_cptheme(src_dir: str, output_path: str, cache_root: Path | None = None) -> None:
+REPO_ROOT = Path(__file__).parent.parent
+TRANSLATIONS_DIR = REPO_ROOT / "lib" / "I18n" / "translations"
+UI_CODEPOINTS_PATH = REPO_ROOT / "build" / "generated" / "ui_codepoints.txt"
+
+
+def build_cptheme(
+    src_dir: str,
+    output_path: str,
+    cache_root: Path | None = None,
+    codepoints_file: Path | None = None,
+) -> None:
     yml_path = os.path.join(src_dir, "theme.yml")
     if not os.path.isfile(yml_path):
         raise FileNotFoundError(f"No theme.yml found in {src_dir}")
@@ -42,12 +56,19 @@ def build_cptheme(src_dir: str, output_path: str, cache_root: Path | None = None
     with open(yml_path, "r") as f:
         theme = yaml.safe_load(f)
 
-    # Resolve bundled fonts (Google Fonts) if declared.
+    # Resolve bundled fonts (Google Fonts) if declared. Theme bundled fonts are
+    # subset to the UI-language codepoint union — anything outside the subset
+    # (e.g. Cyrillic book titles) falls through to the bundled NotoSans
+    # fallback at render time. Note: this is intentionally distinct from the
+    # reader's own SD font flow (lib/EpdFont/scripts/build-sd-fonts.py), which
+    # uses the full `reading` interval preset for book content.
     bundled_fonts = theme.get("BUNDLED_FONTS")
     if bundled_fonts and resolve_bundled_fonts is not None:
         if cache_root is None:
-            repo_root = Path(__file__).parent.parent
-            cache_root = repo_root / "build" / "bundled_fonts"
+            cache_root = REPO_ROOT / "build" / "bundled_fonts"
+        if codepoints_file is None:
+            codepoints_file = UI_CODEPOINTS_PATH
+            generate_ui_codepoints(TRANSLATIONS_DIR, codepoints_file)
         font_roles = theme.get("fonts", {})
         print(f"Resolving {len(bundled_fonts)} bundled font family/families ...")
         resolve_bundled_fonts(
@@ -55,6 +76,7 @@ def build_cptheme(src_dir: str, output_path: str, cache_root: Path | None = None
             font_roles,
             cache_root,
             Path(src_dir),
+            codepoints_file,
         )
     elif bundled_fonts and resolve_bundled_fonts is None:
         print(
@@ -108,7 +130,14 @@ def main():
     parser.add_argument("--cache-dir",
                         help="Shared build cache root for bundled fonts "
                              "(default: <repo>/build/bundled_fonts/)")
+    parser.add_argument("--codepoints-file",
+                        help="UI codepoints file to subset bundled theme fonts "
+                             "against (default: regenerated inline from "
+                             "lib/I18n/translations/ each run).")
     args = parser.parse_args()
+
+    cache_root = Path(args.cache_dir) if args.cache_dir else None
+    codepoints_file = Path(args.codepoints_file) if args.codepoints_file else None
 
     if args.all:
         themes_root = os.path.join(os.path.dirname(os.path.dirname(__file__)), "themes")
@@ -125,8 +154,7 @@ def main():
             if not os.path.isfile(os.path.join(theme_dir, "theme.yml")):
                 continue
             out = os.path.join(args.dest, f"{entry}.cptheme")
-            cache_root = Path(args.cache_dir) if args.cache_dir else None
-            build_cptheme(theme_dir, out, cache_root)
+            build_cptheme(theme_dir, out, cache_root, codepoints_file)
             count += 1
         print(f"\nBuilt {count} theme(s)")
     elif args.src_dir:
@@ -138,8 +166,7 @@ def main():
         else:
             name = os.path.basename(os.path.normpath(args.src_dir))
             out = f"{name}.cptheme"
-        cache_root = Path(args.cache_dir) if args.cache_dir else None
-        build_cptheme(args.src_dir, out, cache_root)
+        build_cptheme(args.src_dir, out, cache_root, codepoints_file)
     else:
         parser.print_help()
         sys.exit(1)

@@ -94,6 +94,13 @@ class GfxRenderer {
   void* fontMissCtx_ = nullptr;
   std::map<int, EpdFontFamily>::const_iterator resolveFontIt(int fontId) const;
 
+  // ID of the registered EpdFontFamily that serves as the system-wide glyph
+  // fallback. When a font's subset misses a codepoint (typical for theme fonts
+  // built with the UI-codepoint subset), EpdFont::getGlyph routes the lookup to
+  // this family's regular EpdFont before substituting REPLACEMENT_GLYPH. 0 means
+  // no fallback is wired (legacy behavior: missing codepoints render as tofu).
+  int glyphFallbackFontId_ = 0;
+
   // Mutable because drawText() is const but needs to delegate scan-mode
   // recording to the (non-const) FontCacheManager. Same pragmatic compromise
   // as before, concentrated in a single pointer instead of four fields.
@@ -167,6 +174,12 @@ class GfxRenderer {
     fontMissHandler_ = handler;
     fontMissCtx_ = ctx;
   }
+  // Install the system-wide glyph fallback. `fontId` must already be registered
+  // via insertFont. Retro-wires its regular-style EpdFont into every other
+  // registered family so existing fonts inherit the fallback. Subsequent
+  // insertFont calls also pick up the fallback automatically.
+  void setGlyphFallbackFont(int fontId);
+  int getGlyphFallbackFontId() const { return glyphFallbackFontId_; }
   const std::map<int, EpdFontFamily>& getFontMap() const { return fontMap; }
   void registerSdCardFont(int fontId, SdCardFont* font) { sdCardFonts_[fontId] = font; }
   void unregisterSdCardFont(int fontId) { removeFont(fontId); }

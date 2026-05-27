@@ -151,7 +151,7 @@ uint32_t EpdFont::applyLigatures(uint32_t cp, const char*& text) const {
   return cp;
 }
 
-const EpdGlyph* EpdFont::getGlyph(const uint32_t cp) const {
+const EpdGlyph* EpdFont::lookupGlyph(const uint32_t cp) const {
   const int count = data->intervalCount;
   if (count == 0 && !data->glyphMissHandler) return nullptr;
 
@@ -179,8 +179,32 @@ const EpdGlyph* EpdFont::getGlyph(const uint32_t cp) const {
     if (loaded) return loaded;
   }
 
+  return nullptr;
+}
+
+const EpdGlyph* EpdFont::getGlyph(const uint32_t cp, const EpdFontData** outData) const {
+  if (const EpdGlyph* glyph = lookupGlyph(cp)) {
+    if (outData) *outData = data;
+    return glyph;
+  }
+
+  // Fallback: try the bundled flash font for this codepoint before tofu. Single-hop;
+  // fallback's own fallback is not chased to avoid runaway loops if a misconfiguration
+  // wires fonts in a cycle.
+  if (fallback_ && fallback_ != this) {
+    if (const EpdGlyph* glyph = fallback_->lookupGlyph(cp)) {
+      if (outData) *outData = fallback_->data;
+      return glyph;
+    }
+  }
+
+  // Last resort: REPLACEMENT_GLYPH from this font. Skip if we're already looking up
+  // the replacement (avoid recursion).
   if (cp != REPLACEMENT_GLYPH) {
-    return getGlyph(REPLACEMENT_GLYPH);
+    if (const EpdGlyph* glyph = lookupGlyph(REPLACEMENT_GLYPH)) {
+      if (outData) *outData = data;
+      return glyph;
+    }
   }
   return nullptr;
 }

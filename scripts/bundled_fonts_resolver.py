@@ -126,6 +126,7 @@ def resolve_bundled_fonts(
     font_roles: dict[str, Any],
     cache_root: Path,
     theme_dir: Path,
+    codepoints_file: Path,
 ) -> list[str]:
     """Resolve BUNDLED_FONTS + per-role bundled references into .cpfont file paths.
 
@@ -137,10 +138,22 @@ def resolve_bundled_fonts(
             ``bundled:`` key reference a family by name + desired size.
         cache_root: Shared build cache directory for downloaded/instanced TTFs.
         theme_dir: Theme source directory; .cpfont files are written here.
+        codepoints_file: Path to a newline-separated codepoints file (see
+            ``scripts/gen_ui_codepoints.py``). Each generated .cpfont is subset
+            to exactly these codepoints — the resulting files cover the UI
+            language union, not full book content. The reader's own SD fonts
+            (``lib/EpdFont/scripts/build-sd-fonts.py``) deliberately do NOT
+            use this path: they need full ``reading``-preset coverage so book
+            text can render any script.
 
     Returns:
         List of absolute paths to generated .cpfont files.
     """
+    if not codepoints_file.is_file():
+        raise FileNotFoundError(
+            f"UI codepoints file not found: {codepoints_file}. "
+            f"Generate it first via scripts/gen_ui_codepoints.py."
+        )
     # ------------------------------------------------------------------
     # 1. Collect needed sizes per family from font roles.
     # ------------------------------------------------------------------
@@ -287,7 +300,11 @@ def resolve_bundled_fonts(
                 if our_style in style_to_ttf:
                     cmd.extend([f"--{our_style}", style_to_ttf[our_style]])
 
-            cmd.extend(["--intervals", "reading"])
+            # Subset bundled theme fonts to the UI-language codepoint union
+            # supplied by the caller (typically build_cptheme.py). Theme fonts
+            # only need to render UI strings — anything outside the subset
+            # falls through to the bundled NotoSans fallback at render time.
+            cmd.extend(["--codepoints-file", str(codepoints_file)])
             cmd.extend(["--sizes", sizes_str])
             cmd.extend(["--name", family_name])
             cmd.extend(["--output-dir", str(theme_fonts_dir)])
@@ -357,6 +374,12 @@ def main() -> None:
         default=None,
         help="Shared build cache root (default: <repo>/build/bundled_fonts/)",
     )
+    parser.add_argument(
+        "--codepoints-file",
+        required=True,
+        help="UI codepoints file produced by scripts/gen_ui_codepoints.py. "
+             "Theme fonts are subset to exactly these codepoints.",
+    )
     args = parser.parse_args()
 
     repo_root = Path(__file__).parent.parent
@@ -376,7 +399,9 @@ def main() -> None:
         sys.exit(0)
 
     font_roles = theme.get("fonts", {})
-    paths = resolve_bundled_fonts(bundled_fonts, font_roles, cache_root, theme_path)
+    paths = resolve_bundled_fonts(
+        bundled_fonts, font_roles, cache_root, theme_path, Path(args.codepoints_file)
+    )
 
     print(f"\nGenerated {len(paths)} .cpfont file(s):")
     for p in paths:
