@@ -1,6 +1,5 @@
 #include "CascadingPopupMenu.h"
 
-#include <FontCacheManager.h>
 #include <GfxRenderer.h>
 #include <I18n.h>
 
@@ -161,24 +160,6 @@ void CascadingPopupMenu::render(GfxRenderer& renderer, int leftX, int bottomLimi
 
   subMenus_[activeSub_].render(renderer, Rect{subX, subY, subW, subH},
                                /*showSelection=*/true, cfg.rowLabel, cfg.rowGlyph);
-}
-
-void CascadingPopupMenu::declareText(TextCollector& tc) const {
-  if (!open_) return;
-  const auto& pm = GUI.getData()->popupMenu;
-  const int font = GUI.getFontForRole(pm.fontRole);
-  const int topCount = static_cast<int>(subs_.size());
-  for (int i = 0; i < topCount; ++i) {
-    const char* s = topLabel_ ? topLabel_(i) : nullptr;
-    if (s && s[0]) tc.use(font, EpdFontFamily::BOLD, s);
-  }
-  for (const auto& cfg : subs_) {
-    if (cfg.itemCount <= 0 || !cfg.rowLabel) continue;
-    for (int i = 0; i < cfg.itemCount; ++i) {
-      const char* s = cfg.rowLabel(i);
-      if (s && s[0]) tc.use(font, EpdFontFamily::BOLD, s);
-    }
-  }
 }
 
 void CascadingPopupMenu::renderFooterHints(GfxRenderer& renderer,

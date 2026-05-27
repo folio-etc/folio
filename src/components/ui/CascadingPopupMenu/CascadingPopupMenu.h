@@ -4,7 +4,6 @@
 #include <functional>
 #include <vector>
 
-#include <FontCacheManager.h>
 #include <GfxRenderer.h>
 #include <MappedInputManager.h>
 
@@ -102,12 +101,6 @@ class CascadingPopupMenu {
   // The activity routes labels through mappedInput so physical-button
   // remapping still applies.
   void renderFooterHints(GfxRenderer& renderer, const MappedInputManager& mappedInput) const;
-
-  // Register every row label the cascade may paint while open with the font
-  // cache prewarm. Walks the top panel plus every configured submenu (not
-  // just the active one) so entering a submenu doesn't trigger a glyph miss.
-  // No-op when the popup is closed.
-  void declareText(TextCollector& tc) const;
 
  private:
   bool open_ = false;

@@ -121,7 +121,7 @@ class LibraryActivity final : public Activity {
   void onExit() override;
   void loop() override;
   void render(RenderLock&&) override;
-  void declareText(TextCollector& tc) override;
+  bool wantsPrewarmRender() const override { return true; }
 
   // Power-button override: short-press advances linearly through the
   // library (delegates to moveNext()), wrapping at the end.

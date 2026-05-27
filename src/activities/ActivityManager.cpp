@@ -45,17 +45,20 @@ void ActivityManager::renderTaskLoop() {
     if (currentActivity) {
       HalPowerManager::Lock powerLock;  // Ensure we don't go into low-power mode while rendering
 
-      // Declarative prewarm pass. Ask the activity to enumerate the text
-      // it'll draw, then batched-load any missing glyphs into the font
-      // cache LRU before the actual render. Activities that don't override
-      // declareText() produce an empty collector — no-op. Activities that
-      // do override pay a hash-compare on stable paints (when content
-      // hasn't changed since the last declaration) and a batched SD read
-      // on first paint / scene change.
+      // Dry-run prewarm pass for activities that opt in via
+      // wantsPrewarmRender(). The first render() runs with GfxRenderer's
+      // prewarm collector installed — drawText routes into the collector,
+      // every drawing primitive short-circuits, no framebuffer writes
+      // happen. The collector then fans out per-font prewarmCache() calls,
+      // warming the font cache LRU for the real render that follows.
+      // Stable scenes short-circuit inside SdCardFont via the prewarm
+      // hash, so only the first paint of a new scene pays the SD-read cost.
       auto* fcm = renderer.getFontCacheManager();
-      if (fcm != nullptr) {
+      if (fcm != nullptr && currentActivity->wantsPrewarmRender()) {
         TextCollector tc;
-        currentActivity->declareText(tc);
+        renderer.setPrewarmCollector(&tc);
+        currentActivity->render(RenderLock(RenderLock::DryRun{}));
+        renderer.setPrewarmCollector(nullptr);
         tc.applyTo(*fcm);
       }
 
@@ -320,6 +323,11 @@ RenderLock::RenderLock([[maybe_unused]] Activity&) {
   xSemaphoreTake(activityManager.renderingMutex, portMAX_DELAY);
   isLocked = true;
 }
+
+// Dry-run ctor: intentionally does not touch the rendering mutex. Used to
+// satisfy the render(RenderLock&&) signature for a prewarm-only pass that
+// runs inside the real render's already-held lock.
+RenderLock::RenderLock([[maybe_unused]] DryRun) {}
 
 RenderLock::~RenderLock() {
   if (isLocked) {

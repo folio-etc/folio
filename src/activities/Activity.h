@@ -1,5 +1,4 @@
 #pragma once
-#include <FontCacheManager.h>  // for TextCollector
 #include <Logging.h>
 
 #include <cassert>
@@ -35,21 +34,18 @@ class Activity {
 
   virtual void render(RenderLock&&) {}
 
-  // Declarative prewarm hook — called by the render pipeline immediately
-  // before each render(). Override to enumerate the text this paint will
-  // draw via `tc.use(fontId, style, text)` calls; the framework then
-  // batched-loads any missing glyphs into the font cache LRU so the
-  // upcoming drawText calls hit warm.
+  // Opt-in to the dry-run render pass. When true, the render pipeline calls
+  // render() twice per paint: first with a TextCollector intercepting every
+  // drawText (and short-circuiting every drawing primitive), then with the
+  // real lock so the second pass paints from a warm font cache.
   //
-  // This is a *pure data API* — declareText must not draw or mutate the
-  // framebuffer (drawText/drawRect/etc. should not be called here). Only
-  // the (fontId, style, text) declarations matter; SdCardFont's idempotent
-  // prewarm hashes the resulting codepoint set and short-circuits when it
-  // matches the prior paint, so stable scenes cost only the hash compare.
-  //
-  // Default implementation declares nothing — activities that render only
-  // embedded (flash) fonts don't need to override.
-  virtual void declareText(TextCollector&) {}
+  // The dry-run is guaranteed to see every tr()/drawText call by
+  // construction, so there's no drift risk against the real render. The
+  // cost is a second pass through render()'s layout code (no SD reads
+  // beyond the prewarm itself, no framebuffer writes), which is cheap on
+  // a stable scene because SdCardFont's idempotent prewarm hashes the
+  // resulting codepoint set and short-circuits.
+  virtual bool wantsPrewarmRender() const { return false; }
 
   // If immediate is true, the update will be triggered immediately.
   // Otherwise, it will be deferred until the end of the current loop iteration.

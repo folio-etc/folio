@@ -472,71 +472,9 @@ void LibraryActivity::setSort(uint8_t field, uint8_t direction) {
 // ---- Render -----------------------------------------------------------------
 
 void LibraryActivity::render(RenderLock&&) {
-  // Single-pass render. ActivityManager called declareText() just before
-  // this, so the font cache LRU already holds the glyphs this paint needs.
-  // Anything the declaration missed (rare punctuation in a book title,
-  // CJK, etc.) lazy-loads into the LRU via SdCardFont::onGlyphMiss — those
-  // entries also persist across paints, so a one-off slow first paint is
-  // the worst case for unforeseen glyphs.
   renderer.clearScreen();
   renderPasses();
   renderer.displayBuffer();
-}
-
-void LibraryActivity::declareText(TextCollector& tc) {
-  // Enumerate exactly the text this paint will draw. The framework
-  // batched-loads any glyphs we haven't cached yet; SdCardFont's idempotent
-  // prewarm short-circuits when the same content was declared last paint
-  // (i.e. selection movement on the same shelf page).
-  //
-  // Library uses Compact variants for the dense book-grid text (titles,
-  // authors, page rail) and default sizes for header/menu chrome — the
-  // user installs separate compact + default .cpfont files for the
-  // contrast. When only one is installed, the Compact lookup falls through
-  // to the default font so the screen still renders.
-  const int titleFont = libFont(FontRole::Title);
-  const int headingFont = libFont(FontRole::Heading);
-  const int bodyCompactFont = libFont(FontRole::BodyCompact);
-  const int captionFont = libFont(FontRole::Caption);
-  const int captionCompactFont = libFont(FontRole::CaptionCompact);
-  const int accentCompactFont = libFont(FontRole::AccentCompact);
-
-  (void)headingFont;  // (kept for future popup chrome that may need numerals)
-
-  // The library shelf always paints underneath — the popup floats above it,
-  // so the shelf glyphs need to be declared regardless of view.
-  tc.use(titleFont, EpdFontFamily::BOLD, tr(STR_LIBRARY));
-  if (!LIBRARY_INDEX.isEmpty()) {
-    tc.use(captionFont, EpdFontFamily::ITALIC, tr(STR_LIBRARY_SORTED_RECENT));
-    tc.use(captionFont, EpdFontFamily::ITALIC, tr(STR_LIBRARY_SORTED_TITLE));
-    tc.use(captionFont, EpdFontFamily::ITALIC, tr(STR_LIBRARY_SORTED_AUTHOR));
-    tc.use(captionFont, EpdFontFamily::ITALIC, tr(STR_LIBRARY_SORTED_PROGRESS));
-    tc.use(captionFont, EpdFontFamily::ITALIC, "0123456789 ()ascde · /");
-    // Page rail "1 / 12" — uses the compact accent face.
-    tc.use(accentCompactFont, EpdFontFamily::ITALIC, "0123456789 /");
-  }
-  for (int slot = 0; slot < PER_PAGE; ++slot) {
-    const LibraryBook* book = LIBRARY_INDEX.getAt(libraryPage, slot, PER_PAGE);
-    if (book == nullptr) continue;
-    tc.use(captionCompactFont, EpdFontFamily::BOLD, book->title);
-    if (!book->author.empty()) {
-      tc.use(captionCompactFont, EpdFontFamily::ITALIC, book->author);
-    }
-  }
-
-  // Popup row labels are owned by the cascade — it walks the configured
-  // top + submenu rows itself. No-op when closed.
-  popup_.declareText(tc);
-
-  // Button hints — italic body labels, compact face so the label has
-  // breathing room inside the 106-px Folio hint box.
-  tc.use(bodyCompactFont, EpdFontFamily::ITALIC, tr(STR_MENU_LABEL));
-  tc.use(bodyCompactFont, EpdFontFamily::ITALIC, tr(STR_BACK));
-  tc.use(bodyCompactFont, EpdFontFamily::ITALIC, tr(STR_SELECT));
-  tc.use(bodyCompactFont, EpdFontFamily::ITALIC, tr(STR_ENTER));
-  tc.use(bodyCompactFont, EpdFontFamily::ITALIC, tr(STR_CLOSE));
-  tc.use(bodyCompactFont, EpdFontFamily::ITALIC, tr(STR_DIR_LEFT));
-  tc.use(bodyCompactFont, EpdFontFamily::ITALIC, tr(STR_DIR_RIGHT));
 }
 
 void LibraryActivity::renderPasses() {

@@ -323,6 +323,14 @@ void GfxRenderer::drawText(const int fontId, const int x, const int y, const cha
     return;
   }
 
+  // Dry-run pass: route the draw into the active TextCollector instead of
+  // rasterizing. The collector batches all draws across the render() pass
+  // and applies them as a single prewarmCache() per font afterwards.
+  if (prewarmCollector_) {
+    prewarmCollector_->use(fontId, style, text);
+    return;
+  }
+
   if (fontCacheManager_ && fontCacheManager_->isScanning()) {
     fontCacheManager_->recordText(text, fontId, style);
     return;
@@ -380,6 +388,7 @@ void GfxRenderer::drawText(const int fontId, const int x, const int y, const cha
 }
 
 void GfxRenderer::drawLine(int x1, int y1, int x2, int y2, const bool state) const {
+  if (prewarmCollector_) return;
   if (fontCacheManager_ && fontCacheManager_->isScanning()) return;
   if (x1 == x2) {
     if (y2 < y1) {
@@ -602,6 +611,7 @@ template <Color C>
 void GfxRenderer::fillRectImpl(const int x, const int y, const int width, const int height) const {
   if constexpr (C == Color::Clear) return;
   if (width <= 0 || height <= 0) return;
+  if (prewarmCollector_) return;
   if (fontCacheManager_ && fontCacheManager_->isScanning()) return;
 
   // Clip in logical space.
@@ -742,6 +752,7 @@ template void GfxRenderer::fillRectImpl<Color::DarkGray>(int, int, int, int) con
 
 void GfxRenderer::drawCircle(const int cx, const int cy, const int radius, const Color color) const {
   if (radius <= 0 || color == Color::Clear) return;
+  if (prewarmCollector_) return;
   // Midpoint circle algorithm — plots the 8-way symmetric outline.
   int x = radius;
   int y = 0;
@@ -767,6 +778,7 @@ void GfxRenderer::drawCircle(const int cx, const int cy, const int radius, const
 
 void GfxRenderer::fillCircle(const int cx, const int cy, const int radius, const Color color) const {
   if (radius <= 0 || color == Color::Clear) return;
+  if (prewarmCollector_) return;
   // Midpoint circle — fill horizontal spans for each scanline pair.
   int x = radius;
   int y = 0;
@@ -791,6 +803,7 @@ void GfxRenderer::maskRoundedRectOutsideCorners(const int x, const int y, const 
   if (radius <= 0 || color == Color::Clear) {
     return;
   }
+  if (prewarmCollector_) return;
 
   const int rr = radius - 1;
   const int rr2 = rr * rr;
@@ -871,6 +884,7 @@ void GfxRenderer::fillRoundedRect(const int x, const int y, const int width, con
   if (width <= 0 || height <= 0) {
     return;
   }
+  if (prewarmCollector_) return;
 
   if(cornerRadius <= 0) {
     fillRectDither(x, y, width, height, color);
@@ -939,6 +953,7 @@ void GfxRenderer::fillRoundedRect(const int x, const int y, const int width, con
 }
 
 void GfxRenderer::drawImage(const uint8_t bitmap[], const int x, const int y, const int width, const int height) const {
+  if (prewarmCollector_) return;
   int rotatedX = 0;
   int rotatedY = 0;
   rotateCoordinates(orientation, x, y, &rotatedX, &rotatedY, panelWidth, panelHeight);
@@ -962,11 +977,13 @@ void GfxRenderer::drawImage(const uint8_t bitmap[], const int x, const int y, co
 }
 
 void GfxRenderer::drawIcon(const uint8_t bitmap[], const int x, const int y, const int width, const int height) const {
+  if (prewarmCollector_) return;
   display.drawImageTransparent(bitmap, y, getScreenWidth() - width - x, height, width);
 }
 
 void GfxRenderer::drawBitmap(const Bitmap& bitmap, const int x, const int y, const int maxWidth, const int maxHeight,
                              const float cropX, const float cropY) const {
+  if (prewarmCollector_) return;
   if (fontCacheManager_ && fontCacheManager_->isScanning()) return;
   // For 1-bit bitmaps, use optimized 1-bit rendering path (no crop support for 1-bit)
   if (bitmap.is1Bit() && cropX == 0.0f && cropY == 0.0f) {
@@ -1075,6 +1092,7 @@ void GfxRenderer::drawBitmap(const Bitmap& bitmap, const int x, const int y, con
 
 void GfxRenderer::drawBitmap1Bit(const Bitmap& bitmap, const int x, const int y, const int maxWidth,
                                  const int maxHeight) const {
+  if (prewarmCollector_) return;
   float scale = 1.0f;
   bool isScaled = false;
   if (maxWidth > 0 && bitmap.getWidth() > maxWidth) {
@@ -1326,6 +1344,13 @@ bool GfxRenderer::drawCachedBitmap(CachedBitmap* entry, const int x, const int y
     buildScaledBitmap(entry, targetW, targetH);
   if (!entry->scaledPixels) return false;
 
+  // Dry-run pass: cache + scaled-bitmap state is fully populated above, so
+  // we can return the truthful "blit would succeed" answer. The buildScaledBitmap
+  // result is cached on `entry`, so the real-render pass that follows will
+  // re-enter and skip straight past it (size match → no rebuild). Skip the
+  // actual framebuffer writes below.
+  if (prewarmCollector_) return true;
+
   // Corner-skip table. When r > 0, pixels in the four [0, r) × [0, r) corner
   // boxes that fall outside the rounded shape are left untouched — same
   // pixel test as maskRoundedRectOutsideCorners, applied here so the blit
@@ -1492,6 +1517,7 @@ void GfxRenderer::clearImageCache() const {
 
 void GfxRenderer::fillPolygon(const int* xPoints, const int* yPoints, int numPoints, bool state) const {
   if (numPoints < 3) return;
+  if (prewarmCollector_) return;
 
   // Find bounding box
   int minY = yPoints[0], maxY = yPoints[0];
@@ -1554,17 +1580,20 @@ void GfxRenderer::fillPolygon(const int* xPoints, const int* yPoints, int numPoi
 static unsigned long start_ms = 0;
 
 void GfxRenderer::clearScreen(const uint8_t color) const {
+  if (prewarmCollector_) return;
   start_ms = millis();
   display.clearScreen(color);
 }
 
 void GfxRenderer::invertScreen() const {
+  if (prewarmCollector_) return;
   for (uint32_t i = 0; i < frameBufferSize; i++) {
     frameBuffer[i] = ~frameBuffer[i];
   }
 }
 
 void GfxRenderer::displayBuffer(const HalDisplay::RefreshMode refreshMode) const {
+  if (prewarmCollector_) return;
   auto elapsed = millis() - start_ms;
   LOG_DBG("GFX", "Time = %lu ms from clearScreen to displayBuffer", elapsed);
   display.displayBuffer(refreshMode, fadingFix);
@@ -1894,6 +1923,13 @@ void GfxRenderer::drawTextRotated90CW(const int fontId, const int x, const int y
                                       const EpdFontFamily::Style style) const {
   // Cannot draw a NULL / empty string
   if (text == nullptr || *text == '\0') {
+    return;
+  }
+
+  // Dry-run pass: route into the collector. Rotation is irrelevant for the
+  // prewarm — the same glyphs are needed regardless of orientation.
+  if (prewarmCollector_) {
+    prewarmCollector_->use(fontId, style, text);
     return;
   }
 

@@ -10,23 +10,25 @@ class FontCacheManager;
 class FontDecompressor;
 class SdCardFont;
 
-// Declarative glyph preload — activities call `use()` from declareText() to
-// describe what text they're about to render, and the collector batched-loads
-// the needed glyphs into the font cache once.
+// Declarative glyph preload — the dry-run render pass (see
+// Activity::wantsPrewarmRender) routes every drawText into a TextCollector
+// via GfxRenderer's prewarm collector hook. The collector batches the
+// declarations per fontId and applies them as a single prewarmCache call
+// per font.
 //
-// Aggregates declarations per fontId so multiple `use(fontId, …)` calls in
-// one declareText pass collapse into a single prewarmCache(fontId, …) call
-// at apply time. The styleMask is OR-ed across all uses for that font, and
-// the text strings concatenated — the font cache's SdCardFont layer
-// hashes the resulting (codepoints, mask) and short-circuits if it matches
-// the last paint's declaration, so a stable scene costs only the hash.
+// Multiple `use(fontId, …)` calls for the same font collapse into one
+// prewarmCache(fontId, …) at apply time. The styleMask is OR-ed across all
+// uses for that font and the text strings concatenated — the font cache's
+// SdCardFont layer hashes the resulting (codepoints, mask) and
+// short-circuits if it matches the last paint's declaration, so a stable
+// scene costs only the hash.
 class TextCollector {
  public:
   void use(int fontId, EpdFontFamily::Style style, const char* text);
   void use(int fontId, EpdFontFamily::Style style, const std::string& text) { use(fontId, style, text.c_str()); }
 
   // Flush accumulated declarations to the cache — called once by the
-  // render pipeline after the activity's declareText returns.
+  // render pipeline after the dry-run pass returns.
   void applyTo(FontCacheManager& fcm) const;
 
  private:
