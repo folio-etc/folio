@@ -164,12 +164,26 @@ void LibraryActivity::initPopup() {
     return "";
   };
 
+  // Power Button submenu: 2 rows; opens with cursor on the active option so
+  // the user can see at-a-glance which behavior is current (no glyph
+  // needed — the pre-selection serves as the indicator).
+  subs[POPUP_TOP_POWER].itemCount = POPUP_POWER_COUNT;
+  subs[POPUP_TOP_POWER].rowLabel = [](int i) -> const char* {
+    switch (i) {
+      case 0: return tr(STR_POWER_NEXT_IN_ROW);
+      case 1: return tr(STR_POWER_NEXT_BOOK);
+    }
+    return "";
+  };
+  subs[POPUP_TOP_POWER].initialSelection = []() { return static_cast<int>(SETTINGS.libraryPowerButton); };
+
   // Settings is a leaf — no submenu config needed (itemCount=0 default).
   popup_.configure(
       [](int i) -> const char* {
         switch (i) {
           case POPUP_TOP_SORT: return tr(STR_SORT);
           case POPUP_TOP_FILES: return tr(STR_FILES);
+          case POPUP_TOP_POWER: return tr(STR_POWER_BUTTON);
           case POPUP_TOP_SETTINGS: return tr(STR_SETTINGS_TITLE);
         }
         return "";
@@ -211,14 +225,23 @@ void LibraryActivity::loop() {
     return;
   }
 
-  if (mappedInput.wasPressed(MappedInputManager::Button::Up)) {
-    moveUp();
-    return;
-  }
-  if (mappedInput.wasPressed(MappedInputManager::Button::Down)) {
-    moveDown();
-    return;
-  }
+  // Up/Down: tap = single-row move; hold ≥500ms = page jump (wraps past
+  // the first/last page) repeating every 500ms. ButtonNavigator's
+  // onRelease skips the tap callback if a continuous fired during the
+  // hold, so tap-vs-hold are separated without an explicit timer here.
+  // Note: this shifts Up/Down from press-time to release-time firing,
+  // matching every settings-list activity in the app.
+  buttonNavigator.onRelease({MappedInputManager::Button::Up}, [this] { moveUp(); });
+  buttonNavigator.onRelease({MappedInputManager::Button::Down}, [this] { moveDown(); });
+  buttonNavigator.onContinuous({MappedInputManager::Button::Up}, [this] {
+    if (popup_.isOpen()) return;
+    jumpPageBack();
+  });
+  buttonNavigator.onContinuous({MappedInputManager::Button::Down}, [this] {
+    if (popup_.isOpen()) return;
+    jumpPageForward();
+  });
+
   if (mappedInput.wasPressed(MappedInputManager::Button::Left)) {
     moveLeft();
     return;
@@ -236,16 +259,14 @@ void LibraryActivity::moveUp() {
     if (popup_.moveUp() != CascadingPopupMenu::Nav::Ignored) requestUpdate();
     return;
   }
+  const int pages = totalPages();
+  if (pages <= 0) return;
+
   const int row = currentRow();
   const int col = currentCol();
-  if (row > 0) {
-    librarySelected = (row - 1) * COLS + col;
-    requestUpdate();
-  } else if (libraryPage > 0) {
-    libraryPage--;
-    librarySelected = (ROWS - 1) * COLS + col;
-    requestUpdate();
-  }
+  const int targetPage = (row > 0) ? libraryPage : (libraryPage + pages - 1) % pages;
+  const int targetRow = (row > 0) ? row - 1 : ROWS - 1;
+  landOnPage(targetPage, targetRow, col);
 }
 
 void LibraryActivity::moveDown() {
@@ -253,33 +274,53 @@ void LibraryActivity::moveDown() {
     if (popup_.moveDown() != CascadingPopupMenu::Nav::Ignored) requestUpdate();
     return;
   }
+  const int pages = totalPages();
+  if (pages <= 0) return;
+
   const int row = currentRow();
   const int col = currentCol();
 
-  // Target the row below on the current page; if we're on the last row,
-  // advance to row 0 of the next page (if any).
-  int targetPage = libraryPage;
-  int targetRow;
-  if (row < ROWS - 1) {
-    targetRow = row + 1;
-  } else if (libraryPage < totalPages() - 1) {
-    targetPage = libraryPage + 1;
-    targetRow = 0;
-  } else {
-    return;
-  }
+  // Books pack densely within a page, so "is there a row below with
+  // content?" reduces to "is the first slot of the next row filled?". A
+  // bare `row < ROWS - 1` check misses the partial-last-page case where
+  // the selection sits in row 0/1 but row 1/2 is empty — that should
+  // still wrap to the next page (and from the last page, back to page 0).
+  const bool hasRowBelow =
+      row < ROWS - 1 &&
+      LIBRARY_INDEX.getAt(libraryPage, (row + 1) * COLS, PER_PAGE) != nullptr;
+  const int targetPage = hasRowBelow ? libraryPage : (libraryPage + 1) % pages;
+  const int targetRow = hasRowBelow ? row + 1 : 0;
+  landOnPage(targetPage, targetRow, col);
+}
 
-  // Clamp left until we find a filled slot. The last page may be partial,
-  // so col can land on an empty cell — without this clamp the selection
-  // ends up pointing at a hole (visually nothing selected).
-  for (int c = col; c >= 0; --c) {
-    if (LIBRARY_INDEX.getAt(targetPage, targetRow * COLS + c, PER_PAGE) != nullptr) {
-      libraryPage = targetPage;
-      librarySelected = targetRow * COLS + c;
-      requestUpdate();
-      return;
+void LibraryActivity::landOnPage(int page, int row, int col) {
+  // Scan the target row's columns leftward, then walk up earlier rows on
+  // the same page. Any valid page has at least slot 0 filled, so this
+  // always terminates with a selection. Used by moveUp/moveDown to clamp
+  // onto partial last pages, and by jumpPage* to preserve the visual
+  // selection position across pages of differing fill.
+  for (int r = row; r >= 0; --r) {
+    for (int c = col; c >= 0; --c) {
+      if (LIBRARY_INDEX.getAt(page, r * COLS + c, PER_PAGE) != nullptr) {
+        libraryPage = page;
+        librarySelected = r * COLS + c;
+        requestUpdate();
+        return;
+      }
     }
   }
+}
+
+void LibraryActivity::jumpPageForward() {
+  const int pages = totalPages();
+  if (pages <= 0) return;
+  landOnPage((libraryPage + 1) % pages, currentRow(), currentCol());
+}
+
+void LibraryActivity::jumpPageBack() {
+  const int pages = totalPages();
+  if (pages <= 0) return;
+  landOnPage((libraryPage + pages - 1) % pages, currentRow(), currentCol());
 }
 
 void LibraryActivity::moveLeft() {
@@ -398,6 +439,14 @@ void LibraryActivity::dispatchPopupActivation(CascadingPopupMenu::Nav navResult)
     } else if (sub == POPUP_FILES_TRANSFER) {
       activityManager.goToFileTransfer();
     }
+  } else if (top == POPUP_TOP_POWER) {
+    const uint8_t newBehavior = static_cast<uint8_t>(sub);
+    if (newBehavior != SETTINGS.libraryPowerButton) {
+      SETTINGS.libraryPowerButton = newBehavior;
+      SETTINGS.saveToFile();
+    }
+    popup_.close();
+    requestUpdate();
   }
 }
 
@@ -520,10 +569,15 @@ void LibraryActivity::renderPasses() {
 }
 
 bool LibraryActivity::handlePowerShortPress() {
-  // Short-press of the power button advances linearly through the library
-  // (next book, next page, wrap at end). Consuming the press suppresses the
-  // global FORCE_REFRESH dispatch.
-  moveNext();
+  // Short-press behavior is user-selectable from the Library popup:
+  //  - Next in Row: stepRight within the current row, wrapping at row end
+  //  - Next Book:   linear advance through the whole library (wraps at end)
+  // Consuming the press suppresses the global FORCE_REFRESH dispatch.
+  if (SETTINGS.libraryPowerButton == CrossPointSettings::LIB_PWR_NEXT_BOOK) {
+    moveNext();
+  } else {
+    moveRight();
+  }
   return true;
 }
 

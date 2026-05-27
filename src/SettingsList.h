@@ -247,6 +247,10 @@ inline std::vector<SettingInfo> getSettingsList(const ReaderFontRegistry* regist
         SettingInfo::Enum(StrId::STR_LIBRARY_SORT_DIRECTION, &CrossPointSettings::librarySortDirection,
                           {StrId::STR_DESCENDING, StrId::STR_ASCENDING}, "librarySortDirection",
                           StrId::STR_CAT_SYSTEM),
+        // Configured from the LibraryActivity popup — no device-UI category
+        // so it stays out of Settings, but JsonSettingsIO still persists it.
+        SettingInfo::Enum(StrId::STR_POWER_BUTTON, &CrossPointSettings::libraryPowerButton,
+                          {StrId::STR_POWER_NEXT_IN_ROW, StrId::STR_POWER_NEXT_BOOK}, "libraryPowerButton"),
 
         // --- KOReader Sync (web-only, uses KOReaderCredentialStore) ---
         SettingInfo::DynamicString(

@@ -8,6 +8,7 @@
 #include "activities/Activity.h"
 #include "components/themes/BaseTheme.h"  // for Rect
 #include "components/ui/CascadingPopupMenu/CascadingPopupMenu.h"
+#include "util/ButtonNavigator.h"
 
 class LibraryActivity final : public Activity {
  private:
@@ -20,14 +21,16 @@ class LibraryActivity final : public Activity {
   // leaf actions and sort logic against these indices.
   static constexpr int POPUP_TOP_SORT = 0;
   static constexpr int POPUP_TOP_FILES = 1;
-  static constexpr int POPUP_TOP_SETTINGS = 2;
-  static constexpr int POPUP_TOP_COUNT = 3;
+  static constexpr int POPUP_TOP_POWER = 2;
+  static constexpr int POPUP_TOP_SETTINGS = 3;
+  static constexpr int POPUP_TOP_COUNT = 4;
 
   static constexpr int POPUP_FILES_BROWSE = 0;
   static constexpr int POPUP_FILES_TRANSFER = 1;
   static constexpr int POPUP_FILES_COUNT = 2;
 
   static constexpr int POPUP_SORT_COUNT = 4;  // Recent / Title / Author / Progress
+  static constexpr int POPUP_POWER_COUNT = 2; // Next in Row / Next Book
 
   // ---- View state ---------------------------------------------------------
   // Library grid position
@@ -38,6 +41,11 @@ class LibraryActivity final : public Activity {
   // state, level, and chrome — LibraryActivity routes button presses to it
   // and dispatches LeafActivated / SubItemActivated results.
   CascadingPopupMenu popup_;
+
+  // Drives Up/Down hold-to-page-jump (every 500ms after a 500ms hold) and
+  // suppresses the tap callback when a continuous fired. Default 500/500
+  // matches the cadence used by every settings list in the app.
+  ButtonNavigator buttonNavigator;
 
   // True when the Confirm release that brought us into this activity should
   // not also trigger an open-book (typical when launched from a parent menu).
@@ -61,6 +69,15 @@ class LibraryActivity final : public Activity {
   void moveLeft();
   void moveRight();
   void moveNext();
+  void jumpPageBack();
+  void jumpPageForward();
+
+  // Set selection to the largest filled slot at-or-before (row, col) on
+  // `page`, scanning the row backwards then the rows above. Used by
+  // moveUp/moveDown's column clamp on partial last pages, and by the
+  // page-jump helpers to preserve the visual selection position across
+  // pages of differing fill.
+  void landOnPage(int page, int row, int col);
 
   void doSelect();
   // Dispatches the activity action for an active popup row (leaf or submenu

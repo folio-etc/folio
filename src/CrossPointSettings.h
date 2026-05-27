@@ -166,6 +166,15 @@ class CrossPointSettings {
     LIBRARY_SORT_DIRECTION_COUNT
   };
 
+  // Library short-press power button behavior. Next in Row steps the
+  // selection right and wraps within the current row; Next Book steps
+  // linearly through the entire library (next slot, next page, wrap).
+  enum LIBRARY_POWER_BUTTON {
+    LIB_PWR_NEXT_IN_ROW = 0,
+    LIB_PWR_NEXT_BOOK = 1,
+    LIBRARY_POWER_BUTTON_COUNT
+  };
+
   // Image rendering in EPUB reader
   enum IMAGE_RENDERING { IMAGES_DISPLAY = 0, IMAGES_PLACEHOLDER = 1, IMAGES_SUPPRESS = 2, IMAGE_RENDERING_COUNT };
 
@@ -262,6 +271,8 @@ class CrossPointSettings {
   // most-recently-opened first.
   uint8_t librarySortField = LIB_SORT_RECENT;
   uint8_t librarySortDirection = LIB_SORT_DESC;
+  // Library power-button short-press: Next in Row (default) or Next Book.
+  uint8_t libraryPowerButton = LIB_PWR_NEXT_IN_ROW;
   // Move epub to /Read/ folder on SD card when finished (0 = disabled, 1 = enabled)
   uint8_t moveFinishedToReadFolder = 0;
   // Image rendering mode in EPUB reader
