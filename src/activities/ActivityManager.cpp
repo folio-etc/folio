@@ -46,7 +46,7 @@ void ActivityManager::renderTaskLoop() {
       HalPowerManager::Lock powerLock;  // Ensure we don't go into low-power mode while rendering
 
       // Dry-run prewarm pass for activities that opt in via
-      // wantsPrewarmRender(). The first render() runs with GfxRenderer's
+      // wantsFontPrewarmRender(). The first render() runs with GfxRenderer's
       // prewarm collector installed — drawText routes into the collector,
       // every drawing primitive short-circuits, no framebuffer writes
       // happen. The collector then fans out per-font prewarmCache() calls,
@@ -54,11 +54,11 @@ void ActivityManager::renderTaskLoop() {
       // Stable scenes short-circuit inside SdCardFont via the prewarm
       // hash, so only the first paint of a new scene pays the SD-read cost.
       auto* fcm = renderer.getFontCacheManager();
-      if (fcm != nullptr && currentActivity->wantsPrewarmRender()) {
+      if (fcm != nullptr && currentActivity->wantsFontPrewarmRender()) {
         TextCollector tc;
-        renderer.setPrewarmCollector(&tc);
+        renderer.setPrewarmTextCollector(&tc);
         currentActivity->render(RenderLock(RenderLock::DryRun{}));
-        renderer.setPrewarmCollector(nullptr);
+        renderer.setPrewarmTextCollector(nullptr);
         tc.applyTo(*fcm);
       }
 

@@ -45,7 +45,7 @@ class Activity {
   // beyond the prewarm itself, no framebuffer writes), which is cheap on
   // a stable scene because SdCardFont's idempotent prewarm hashes the
   // resulting codepoint set and short-circuits.
-  virtual bool wantsPrewarmRender() const { return false; }
+  virtual bool wantsFontPrewarmRender() const { return false; }
 
   // If immediate is true, the update will be triggered immediately.
   // Otherwise, it will be deferred until the end of the current loop iteration.

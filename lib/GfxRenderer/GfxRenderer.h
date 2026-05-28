@@ -108,7 +108,7 @@ class GfxRenderer {
   // Mutable for the same reason as fontCacheManager_: the drawing methods
   // are const but the collector pointer is render-pipeline state, not
   // user-observable state.
-  mutable TextCollector* prewarmCollector_ = nullptr;
+  mutable TextCollector* prewarmTextCollector_ = nullptr;
 
   // ─── Image cache state ──────────────────────────────────────────────
   // Transparent hash + key_equal so unordered_map::find(const char*) /
@@ -187,8 +187,8 @@ class GfxRenderer {
   // the real render. While set, every drawing primitive in this class
   // either records its text into the collector (text APIs) or returns
   // immediately (everything else).
-  void setPrewarmCollector(TextCollector* c) const { prewarmCollector_ = c; }
-  TextCollector* getPrewarmCollector() const { return prewarmCollector_; }
+  void setPrewarmTextCollector(TextCollector* c) const { prewarmTextCollector_ = c; }
+  TextCollector* getPrewarmTextCollector() const { return prewarmTextCollector_; }
   // Install the system-wide glyph fallback. `fontId` must already be registered
   // via insertFont. Retro-wires its regular-style EpdFont into every other
   // registered family so existing fonts inherit the fallback. Subsequent
