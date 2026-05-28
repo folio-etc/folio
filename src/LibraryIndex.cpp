@@ -36,10 +36,9 @@ constexpr uint8_t LIBRARY_FILE_VERSION = 2;
 // risks exhausting SdFat's open-file pool.
 constexpr int MAX_TRAVERSAL_DEPTH = 4;
 
-// Generated alongside metadata so LibraryActivity can render covers from
-// /.crosspoint/epub_<hash>/thumb_144.bmp directly. Matches the prototype's
-// 96×144 cover size.
-constexpr int THUMB_HEIGHT = 144;
+// Thumb height — see LibraryIndex::THUMB_HEIGHT declaration in the header
+// for the rationale (matches COVER_H to skip draw-time downscaling).
+constexpr int THUMB_HEIGHT = LibraryIndex::THUMB_HEIGHT;
 
 // Soft cap: ~500 × ~240 bytes per LibraryBook ≈ 120 KB. Beyond this we
 // abort the scan rather than exhaust the heap. The reader is a focused
@@ -288,9 +287,9 @@ bool LibraryIndex::refreshFromSdCard(GfxRenderer* progressRenderer) {
     b.spineCount = static_cast<uint16_t>(epub.getSpineItemsCount());
     readProgress(epub.getCachePath(), b.progressSpineIndex);
 
-    // Best-effort thumbnail at 144px tall — failures here just mean we'll
-    // render a title-only fallback tile in LibraryActivity.
-    epub.generateThumbBmp(THUMB_HEIGHT);
+    // Best-effort thumbnail. Failures here just mean we'll render a
+    // title-only fallback tile in LibraryActivity.
+    epub.generateThumbBmp(LibraryIndex::THUMB_MAX_WIDTH, THUMB_HEIGHT);
 
     books.push_back(std::move(b));
     newBooksIndexed++;

@@ -46,6 +46,24 @@ class LibraryIndex {
   bool loaded = false;
 
  public:
+  // Max dimensions (in pixels) of the cover thumbnail generated for each book
+  // during indexing. The converter preserves aspect ratio and shrinks to fit
+  // — actual on-disk dims may be smaller along one axis.
+  //
+  // THUMB_HEIGHT matches LibraryActivity's COVER_H, so the on-disk thumb is
+  // already the target draw height — no down-scaling at paint time, and the
+  // pre-rasterized 1-bit cache survives orientation changes (cover-area
+  // width varies between portrait and landscape, but height is fixed).
+  //
+  // THUMB_MAX_WIDTH is sized to fit within the narrower portrait cellW
+  // (~129 px) with a few pixels of visual breathing room. Wider source
+  // covers (square, graphic-novel aspect) get to use most of the cell
+  // instead of being clamped to a fixed 0.6-aspect frame; taller covers are
+  // unaffected since height binds first.
+  static constexpr int THUMB_HEIGHT = 120;
+  static constexpr int THUMB_MAX_WIDTH = 120;
+
+
   // Sort options for the library shelf. Plain enums so this header has no
   // dependency on CrossPointSettings. LibraryActivity maps from settings.
   enum class SortField : uint8_t {

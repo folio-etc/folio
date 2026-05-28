@@ -1167,14 +1167,11 @@ void GfxRenderer::drawBitmap1Bit(const Bitmap& bitmap, const int x, const int y,
 GfxRenderer::CachedBitmap* GfxRenderer::lookupCachedBitmap(const char* path) const {
   if (path == nullptr || path[0] == '\0') return nullptr;
 
-  // Heterogeneous lookup: find() takes the const char* directly thanks to
-  // TransparentStringHash + TransparentStringEq, so the common (hit) path
-  // doesn't construct a std::string at all.
-  auto it = imageCache_.find(path);
-  if (it != imageCache_.end()) {
-    it->second.lastUsedTick = ++imageCacheTick_;
-    return &it->second;
-  }
+  // Heterogeneous lookup: get_mut() takes the const char* directly thanks
+  // to TransparentStringHash + TransparentStringEq on ByteLRUCache, so the
+  // common (hit) path doesn't construct a std::string at all. get_mut also
+  // promotes the entry to MRU for us — no manual tick bookkeeping.
+  if (auto* hit = imageCache_.get_mut(path)) return hit;
 
   // Negative-result short-circuit. A prior lookup of this path failed
   // (missing file or unsupported/corrupt content); skip the SD-card
@@ -1251,32 +1248,20 @@ GfxRenderer::CachedBitmap* GfxRenderer::lookupCachedBitmap(const char* path) con
     }
   }
 
-  // Evict LRU entries until the new entry fits under the budget. The new
-  // entry is itself counted before the loop so we don't evict ourselves.
-  while (imageCacheBytes_ + bufBytes > imageCacheBudget_ && !imageCache_.empty()) {
-    auto victim = imageCache_.begin();
-    uint32_t lowestTick = victim->second.lastUsedTick;
-    for (auto candidate = imageCache_.begin(); candidate != imageCache_.end(); ++candidate) {
-      if (candidate->second.lastUsedTick < lowestTick) {
-        lowestTick = candidate->second.lastUsedTick;
-        victim = candidate;
-      }
-    }
-    imageCacheBytes_ -= victim->second.pixelsBytes + victim->second.scaledPixelsBytes;
-    imageCache_.erase(victim);
-  }
-
   CachedBitmap entry;
+  entry.key = path;
   entry.pixels = std::move(pixels);
   entry.pixelsBytes = bufBytes;
   entry.width = width;
   entry.height = height;
   entry.topDown = bitmap.isTopDown();
-  entry.lastUsedTick = ++imageCacheTick_;
 
-  auto [inserted, ok] = imageCache_.emplace(path, std::move(entry));
-  imageCacheBytes_ += bufBytes;
-  return &inserted->second;
+  // put() handles LRU eviction internally; the freshly-inserted entry
+  // becomes MRU.  Re-fetch via get_mut to recover the pointer into the
+  // cache's storage — same hash lookup we'd do on a hit, basically free.
+  std::string key = entry.key;
+  imageCache_.put(std::move(key), std::move(entry));
+  return imageCache_.get_mut(path);
 }
 
 bool GfxRenderer::getCachedBitmapDimensions(const char* path, int* outWidth, int* outHeight) const {
@@ -1293,7 +1278,6 @@ bool GfxRenderer::getCachedBitmapDimensions(const CachedBitmap* handle, int* out
 
 void GfxRenderer::buildScaledBitmap(CachedBitmap* entry, int targetW, int targetH) const {
   if (entry->scaledPixels) {
-    imageCacheBytes_ -= entry->scaledPixelsBytes;
     entry->scaledPixels.reset();
     entry->scaledPixelsBytes = 0;
   }
@@ -1306,6 +1290,8 @@ void GfxRenderer::buildScaledBitmap(CachedBitmap* entry, int targetW, int target
     LOG_ERR("GFX", "Scaled cache OOM: %u bytes", static_cast<unsigned>(scaledBytes));
     entry->scaledWidth = 0;
     entry->scaledHeight = 0;
+    // Reweigh — byte_size() dropped by the old scaled buffer (if any).
+    imageCache_.reweigh(entry->key);
     return;
   }
 
@@ -1335,7 +1321,8 @@ void GfxRenderer::buildScaledBitmap(CachedBitmap* entry, int targetW, int target
   entry->scaledPixelsBytes = scaledBytes;
   entry->scaledWidth = targetW;
   entry->scaledHeight = targetH;
-  imageCacheBytes_ += scaledBytes;
+  // byte_size() now reflects the new scaled buffer; tell the cache.
+  imageCache_.reweigh(entry->key);
 }
 
 // Path overload — looks up the cache handle and forwards to the handle
@@ -1355,9 +1342,11 @@ template <bool Opaque>
 bool GfxRenderer::drawCachedBitmap(CachedBitmap* entry, const int x, const int y,
                                    const int maxWidth, const int maxHeight,
                                    const int cornerRadius) const {
-  if (entry == nullptr) return false;
 
-  if (fontCacheManager_ && fontCacheManager_->isScanning()) return true;
+  if (entry == nullptr) return false;
+  if (prewarmTextCollector_) return false; // signify that we haven't drawn
+                                           // so that library takes the fallback path and
+                                           // optimistically pre-warms placeholder cover text
 
   float scale = 1.0f;
   if (maxWidth > 0 && entry->width > maxWidth)
@@ -1373,12 +1362,6 @@ bool GfxRenderer::drawCachedBitmap(CachedBitmap* entry, const int x, const int y
     buildScaledBitmap(entry, targetW, targetH);
   if (!entry->scaledPixels) return false;
 
-  // Dry-run pass: cache + scaled-bitmap state is fully populated above, so
-  // we can return the truthful "blit would succeed" answer. The buildScaledBitmap
-  // result is cached on `entry`, so the real-render pass that follows will
-  // re-enter and skip straight past it (size match → no rebuild). Skip the
-  // actual framebuffer writes below.
-  if (prewarmTextCollector_) return true;
 
   // Corner-skip table. When r > 0, pixels in the four [0, r) × [0, r) corner
   // boxes that fall outside the rounded shape are left untouched — same
@@ -1539,19 +1522,14 @@ template bool GfxRenderer::drawCachedBitmap<true>(CachedBitmap*, int, int, int, 
 
 void GfxRenderer::clearImageCache() const {
   imageCache_.clear();
-  imageCacheBytes_ = 0;
   imageCacheMisses_.clear();
-  // Tick stays monotonic across clears so we never accidentally reuse a
-  // stale stored tick from before the clear.
 }
 
 void GfxRenderer::invalidateCachedBitmap(const char* path) const {
   if (path == nullptr || path[0] == '\0') return;
-  auto it = imageCache_.find(path);
-  if (it != imageCache_.end()) {
-    imageCacheBytes_ -= it->second.pixelsBytes + it->second.scaledPixelsBytes;
-    imageCache_.erase(it);
-  }
+  // take() drops the entry and adjusts used_bytes in one shot; we discard
+  // the returned value since the caller only wants the slot freed.
+  (void)imageCache_.take(path);
   imageCacheMisses_.erase(path);
 }
 

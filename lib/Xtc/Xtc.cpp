@@ -263,9 +263,9 @@ bool Xtc::generateCoverBmp() const {
 std::string Xtc::getThumbBmpPath() const { return cachePath + "/thumb_[HEIGHT].bmp"; }
 std::string Xtc::getThumbBmpPath(int height) const { return cachePath + "/thumb_" + std::to_string(height) + ".bmp"; }
 
-bool Xtc::generateThumbBmp(int height) const {
+bool Xtc::generateThumbBmp(int maxWidth, int maxHeight) const {
   // Already generated
-  if (Storage.exists(getThumbBmpPath(height).c_str())) {
+  if (Storage.exists(getThumbBmpPath(maxHeight).c_str())) {
     return true;
   }
 
@@ -292,14 +292,13 @@ bool Xtc::generateThumbBmp(int height) const {
   // Get bit depth
   const uint8_t bitDepth = parser->getBitDepth();
 
-  // Calculate target dimensions for thumbnail (fit within 240x400 Continue Reading card)
-  int THUMB_TARGET_WIDTH = height * 0.6;
-  int THUMB_TARGET_HEIGHT = height;
-
-  // Calculate scale factor
-  float scaleX = static_cast<float>(THUMB_TARGET_WIDTH) / pageInfo.width;
-  float scaleY = static_cast<float>(THUMB_TARGET_HEIGHT) / pageInfo.height;
-  float scale = (scaleX > scaleY) ? scaleX : scaleY;  // for cropping
+  // Aspect-preserving fit (the smaller of the two ratios). For Xtc we used to
+  // crop (max ratio) — switched to fit so wider XTC pages stay within
+  // (maxWidth × maxHeight) and the Library doesn't need to downscale at
+  // paint time.
+  float scaleX = static_cast<float>(maxWidth) / pageInfo.width;
+  float scaleY = static_cast<float>(maxHeight) / pageInfo.height;
+  float scale = (scaleX < scaleY) ? scaleX : scaleY;
 
   // Only scale down, never up
   if (scale >= 1.0f) {
@@ -308,7 +307,7 @@ bool Xtc::generateThumbBmp(int height) const {
     if (generateCoverBmp()) {
       FsFile src, dst;
       if (Storage.openFileForRead("XTC", getCoverBmpPath(), src)) {
-        if (Storage.openFileForWrite("XTC", getThumbBmpPath(height), dst)) {
+        if (Storage.openFileForWrite("XTC", getThumbBmpPath(maxHeight), dst)) {
           uint8_t buffer[512];
           while (src.available()) {
             size_t bytesRead = src.read(buffer, sizeof(buffer));
@@ -317,7 +316,7 @@ bool Xtc::generateThumbBmp(int height) const {
         }
       }
       LOG_DBG("XTC", "Copied cover to thumb (no scaling needed)");
-      return Storage.exists(getThumbBmpPath(height).c_str());
+      return Storage.exists(getThumbBmpPath(maxHeight).c_str());
     }
     return false;
   }
@@ -351,7 +350,7 @@ bool Xtc::generateThumbBmp(int height) const {
 
   // Create thumbnail BMP file - use 1-bit format for fast home screen rendering (no gray passes)
   FsFile thumbBmp;
-  if (!Storage.openFileForWrite("XTC", getThumbBmpPath(height), thumbBmp)) {
+  if (!Storage.openFileForWrite("XTC", getThumbBmpPath(maxHeight), thumbBmp)) {
     LOG_DBG("XTC", "Failed to create thumb BMP file");
     free(pageBuffer);
     return false;
@@ -476,7 +475,7 @@ bool Xtc::generateThumbBmp(int height) const {
   free(rowBuffer);
   free(pageBuffer);
 
-  LOG_DBG("XTC", "Generated thumb BMP (%dx%d): %s", thumbWidth, thumbHeight, getThumbBmpPath(height).c_str());
+  LOG_DBG("XTC", "Generated thumb BMP (%dx%d): %s", thumbWidth, thumbHeight, getThumbBmpPath(maxHeight).c_str());
   return true;
 }
 

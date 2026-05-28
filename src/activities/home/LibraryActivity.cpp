@@ -663,8 +663,8 @@ void LibraryActivity::renderBookTile(int slotIndex, const LibraryBook& book, boo
   int frameH = COVER_H;
 
   char thumbPath[64];
-  snprintf(thumbPath, sizeof(thumbPath), "/.crosspoint/epub_%lu/thumb_144.bmp",
-           static_cast<unsigned long>(book.pathHash));
+  snprintf(thumbPath, sizeof(thumbPath), "/.crosspoint/epub_%lu/thumb_%d.bmp",
+           static_cast<unsigned long>(book.pathHash), LibraryIndex::THUMB_HEIGHT);
 
   GfxRenderer::CachedBitmap* thumbHandle = renderer.lookupCachedBitmap(thumbPath);
 
@@ -686,7 +686,6 @@ void LibraryActivity::renderBookTile(int slotIndex, const LibraryBook& book, boo
     frameW = drawnW;
     frameH = drawnH;
   }
-
 
   /** Cover draw **/
   // 1. Draw drop shadow 

@@ -12,10 +12,10 @@ class TextCollector;
 #include <memory>
 #include <string>
 #include <string_view>
-#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
+#include "../data-structures/ByteLRUCache/ByteLRUCache.h"
 #include "Bitmap.h"
 
 // Color representation: uint8_t mapped to 4x4 Bayer matrix dithering levels
@@ -46,12 +46,17 @@ class GfxRenderer {
   // Pixel ordering follows the bitmap's natural orientation — use
   // `topDown` to map render Y → buffer Y.
   struct CachedBitmap {
+    // Path key, duplicated from the cache's own map key so that the entry
+    // is self-describing: drawCachedBitmap() receives only a CachedBitmap*
+    // handle from callers and needs the key to call imageCache_.reweigh()
+    // after mutating scaledPixels.
+    std::string key;
+
     std::unique_ptr<uint8_t[]> pixels;
     size_t pixelsBytes = 0;
     int width = 0;
     int height = 0;
     bool topDown = false;
-    uint32_t lastUsedTick = 0;  // monotonic; touched on every cache lookup.
 
     // Pre-scaled 1-bit pixel data at the most recently requested target
     // dimensions. Built lazily on first drawCachedBitmap call; reused on
@@ -61,6 +66,14 @@ class GfxRenderer {
     size_t scaledPixelsBytes = 0;
     int scaledWidth = 0;
     int scaledHeight = 0;
+
+    // Self-describing weight for ByteLRUCache.  Includes both decoded and
+    // (lazily-built) scaled buffers — the budget tracks total RAM, not just
+    // the decoded payload.  key.size() captures the heap part of the
+    // duplicated path string when it overflows SSO.
+    std::size_t byte_size() const {
+      return key.size() + pixelsBytes + scaledPixelsBytes;
+    }
   };
 
  private:
@@ -111,8 +124,8 @@ class GfxRenderer {
   mutable TextCollector* prewarmTextCollector_ = nullptr;
 
   // ─── Image cache state ──────────────────────────────────────────────
-  // Transparent hash + key_equal so unordered_map::find(const char*) /
-  // find(string_view) doesn't construct a temporary std::string for the
+  // Transparent hash + key_equal so ByteLRUCache::get_mut(const char*) /
+  // get_mut(string_view) doesn't construct a temporary std::string for the
   // key — material on the Library paint path where 9 lookups/paint used to
   // each allocate. std::hash<string_view> and std::hash<string> are
   // guaranteed to agree on identical contents since C++17 LWG2912.
@@ -127,11 +140,8 @@ class GfxRenderer {
     bool operator()(std::string_view a, std::string_view b) const noexcept { return a == b; }
   };
 
-  mutable std::unordered_map<std::string, CachedBitmap, TransparentStringHash, TransparentStringEq>
-      imageCache_;
-  mutable size_t imageCacheBytes_ = 0;
-  mutable size_t imageCacheBudget_ = 64 * 1024;
-  mutable uint32_t imageCacheTick_ = 0;
+  mutable ByteLRUCache<std::string, CachedBitmap, TransparentStringHash, TransparentStringEq>
+      imageCache_{64 * 1024};
 
   // Negative-result cache: paths that lookupCachedBitmap() has already
   // tried and failed (file missing, unsupported format, decode error).
@@ -311,7 +321,7 @@ class GfxRenderer {
   void invalidateCachedBitmap(const char* path) const;
 
   // Override the default cache budget (bytes). Eviction is LRU.
-  void setImageCacheBudget(size_t bytes) const { imageCacheBudget_ = bytes; }
+  void setImageCacheBudget(size_t bytes) const { imageCache_.set_capacity(bytes); }
   void fillPolygon(const int* xPoints, const int* yPoints, int numPoints, bool state = true) const;
 
   // Text
