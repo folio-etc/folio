@@ -61,7 +61,6 @@ constexpr int TILE_CONTENT_H = COVER_H + TILE_TEXT_AREA_H + TILE_PROGRESS_MARGIN
 constexpr int RAIL_TICK = 9;
 constexpr int RAIL_TICK_GAP = 10;
 constexpr int RAIL_PAD_TOP = 8;
-constexpr int RAIL_TICK_COUNT = 6;   // visual cap on the rail (extras roll off)
 
 // constexpr int RAIL_POWER_HINT_BOTTOM = 225;
 constexpr int RAIL_TOP_GAP = 10;
@@ -817,9 +816,8 @@ void LibraryActivity::renderPageRail() {
 
   const auto& lib = GUI.getData()->library;
   const int tickSize = lib.pageIndicatorSize;
-  const int visibleTicks = std::min(pages, RAIL_TICK_COUNT);
   const int tickX = railX + (RAIL_WIDTH - tickSize) / 2;
-  for (int i = 0; i < visibleTicks; ++i) {
+  for (int i = 0; i < pages; ++i) {
     const int tickY = railTop + i * (tickSize + lib.pageIndicatorGap);
 
     const Color fill = (i == libraryPage) ? lib.pageIndicatorFillSelected : lib.pageIndicatorFill;
