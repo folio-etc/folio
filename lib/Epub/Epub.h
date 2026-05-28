@@ -29,7 +29,12 @@ class Epub {
   std::unique_ptr<CssParser> cssParser;
   // CSS files
   std::vector<std::string> cssFiles;
+  // Shared zip handle reused across all helper calls. Lazy-initialised by zipRef().
+  // Holding one instance avoids redundant EOCD scans and SD open/close cycles when
+  // multiple items are read in sequence (e.g. during indexing).
+  mutable std::unique_ptr<ZipFile> zip;
 
+  ZipFile& zipRef() const;
   bool findContentOpfFile(std::string* contentOpfFile) const;
   bool parseContentOpf(BookMetadataCache::BookMetadata& bookMetadata);
   bool parseTocNcxFile() const;
@@ -37,11 +42,10 @@ class Epub {
   void parseCssFiles() const;
 
  public:
-  explicit Epub(std::string filepath, const std::string& cacheDir) : filepath(std::move(filepath)) {
-    // create a cache key based on the filepath
-    cachePath = cacheDir + "/epub_" + std::to_string(std::hash<std::string>{}(this->filepath));
-  }
-  ~Epub() = default;
+  // Constructor and destructor defined in .cpp because zip is a unique_ptr to a
+  // forward-declared ZipFile.
+  explicit Epub(std::string filepath, const std::string& cacheDir);
+  ~Epub();
   std::string& getBasePath() { return contentBasePath; }
   bool load(bool buildIfMissing = true, bool skipLoadingCss = false);
   bool clearCache() const;

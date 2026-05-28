@@ -4,6 +4,7 @@
 #include <HalStorage.h>
 #include <JpegToBmpConverter.h>
 #include <Logging.h>
+#include <Memory.h>
 #include <PngToBmpConverter.h>
 #include <ZipFile.h>
 
@@ -11,6 +12,23 @@
 #include "Epub/parsers/ContentOpfParser.h"
 #include "Epub/parsers/TocNavParser.h"
 #include "Epub/parsers/TocNcxParser.h"
+
+Epub::Epub(std::string filepath, const std::string& cacheDir) : filepath(std::move(filepath)) {
+  cachePath = cacheDir + "/epub_" + std::to_string(std::hash<std::string>{}(this->filepath));
+}
+
+Epub::~Epub() = default;
+
+ZipFile& Epub::zipRef() const {
+  if (!zip) {
+    zip = makeUniqueNoThrow<ZipFile>(filepath);
+    if (!zip) {
+      // ZipFile is ~150B. If this OOMs we're already wedged; the next call crashes.
+      LOG_ERR("EBP", "OOM allocating ZipFile");
+    }
+  }
+  return *zip;
+}
 
 bool Epub::findContentOpfFile(std::string* contentOpfFile) const {
   const auto containerPath = "META-INF/container.xml";
@@ -350,11 +368,14 @@ bool Epub::load(const bool buildIfMissing, const bool skipLoadingCss) {
         LOG_DBG("EBP", "CSS rules cache missing or stale, attempting to parse CSS files");
         cssParser->deleteCache();
 
+        // Pre-open the shared zip so parseContentOpf + parseCssFiles share one handle
+        zipRef().open();
         if (!parseContentOpf(bookMetadataCache->coreMetadata)) {
           LOG_ERR("EBP", "Could not parse content.opf from cached bookMetadata for CSS files");
           // continue anyway - book will work without CSS and we'll still load any inline style CSS
         }
         parseCssFiles();
+        zipRef().close();
         // Invalidate section caches so they are rebuilt with the new CSS
         Storage.removeDir((cachePath + "/sections").c_str());
       }
@@ -379,6 +400,14 @@ bool Epub::load(const bool buildIfMissing, const bool skipLoadingCss) {
     LOG_ERR("EBP", "Could not begin writing cache");
     return false;
   }
+
+  // Pre-open the shared zip for the OPF + TOC passes so all helper reads reuse one
+  // open file handle and cached EOCD/central-dir cursor. Closed before BMC opens
+  // its own handle for buildBookBin.
+  zipRef().open();
+  ScopedCleanup closeZipOnExit{[this] {
+    if (zip) zip->close();
+  }};
 
   // OPF Pass
   const uint32_t opfStart = millis();
@@ -435,6 +464,9 @@ bool Epub::load(const bool buildIfMissing, const bool skipLoadingCss) {
     return false;
   }
 
+  // Release our zip handle before BMC opens its own for buildBookBin.
+  zipRef().close();
+
   // Build final book.bin
   const uint32_t buildStart = millis();
   if (!bookMetadataCache->buildBookBin(filepath, bookMetadata)) {
@@ -456,7 +488,8 @@ bool Epub::load(const bool buildIfMissing, const bool skipLoadingCss) {
   }
 
   if (!skipLoadingCss) {
-    // Parse CSS files after cache reload
+    // Reopen the shared zip for CSS reads (closeZipOnExit will close on return)
+    zipRef().open();
     parseCssFiles();
     Storage.removeDir((cachePath + "/sections").c_str());
   }
@@ -720,7 +753,7 @@ uint8_t* Epub::readItemContentsToBytes(const std::string& itemHref, size_t* size
 
   const std::string path = FsHelpers::normalisePath(itemHref);
 
-  const auto content = ZipFile(filepath).readFileToMemory(path.c_str(), size, trailingNullByte);
+  const auto content = zipRef().readFileToMemory(path.c_str(), size, trailingNullByte);
   if (!content) {
     LOG_DBG("EBP", "Failed to read item %s", path.c_str());
     return nullptr;
@@ -736,12 +769,12 @@ bool Epub::readItemContentsToStream(const std::string& itemHref, Print& out, con
   }
 
   const std::string path = FsHelpers::normalisePath(itemHref);
-  return ZipFile(filepath).readFileToStream(path.c_str(), out, chunkSize);
+  return zipRef().readFileToStream(path.c_str(), out, chunkSize);
 }
 
 bool Epub::getItemSize(const std::string& itemHref, size_t* size) const {
   const std::string path = FsHelpers::normalisePath(itemHref);
-  return ZipFile(filepath).getInflatedFileSize(path.c_str(), size);
+  return zipRef().getInflatedFileSize(path.c_str(), size);
 }
 
 int Epub::getSpineItemsCount() const {

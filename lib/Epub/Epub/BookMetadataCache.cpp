@@ -50,7 +50,7 @@ bool BookMetadataCache::beginTocPass() {
     return false;
   }
 
-  if (spineCount >= LARGE_SPINE_THRESHOLD) {
+  if (spineCount > 0) {
     spineHrefIndex.clear();
     spineHrefIndex.resize(spineCount);
     spineFile.seek(0);
@@ -68,7 +68,6 @@ bool BookMetadataCache::beginTocPass() {
               });
     spineFile.seek(0);
     useSpineHrefIndex = true;
-    LOG_DBG("BMC", "Using fast index for %d spine items", spineCount);
   } else {
     useSpineHrefIndex = false;
   }
@@ -179,20 +178,14 @@ bool BookMetadataCache::buildBookBin(const std::string& epubPath, const BookMeta
     tocFile.close();
     return false;
   }
-  // NOTE: We intentionally skip calling loadAllFileStatSlims() here.
-  // For large EPUBs (2000+ chapters), pre-loading all ZIP central directory entries
-  // into memory causes OOM crashes on ESP32-C3's limited ~380KB RAM.
-  // Instead, for large books we use a one-pass batch lookup that scans the ZIP
-  // central directory once and matches against spine targets using hash comparison.
-  // This is O(n*log(m)) instead of O(n*m) while avoiding memory exhaustion.
+  // Batch size lookup: one ZIP central-directory pass for all spine items.
+  // We intentionally avoid loadAllFileStatSlims() — that hashes every entry in
+  // the EPUB (images/CSS/etc.) and OOMs on large books. The targets array here
+  // is bounded by spineCount only.
   // See: https://github.com/crosspoint-reader/crosspoint-reader/issues/134
-
   std::deque<uint32_t> spineSizes;
-  bool useBatchSizes = false;
 
-  if (spineCount >= LARGE_SPINE_THRESHOLD) {
-    LOG_DBG("BMC", "Using batch size lookup for %d spine items", spineCount);
-
+  if (spineCount > 0) {
     std::deque<ZipFile::SizeTarget> targets;
     targets.resize(spineCount);
 
@@ -213,13 +206,8 @@ bool BookMetadataCache::buildBookBin(const std::string& epubPath, const BookMeta
     });
 
     spineSizes.resize(spineCount, 0);
-    int matched = zip.fillUncompressedSizes(targets, spineSizes);
-    LOG_DBG("BMC", "Batch lookup matched %d/%d spine items", matched, spineCount);
-
-    targets.clear();
-    targets.shrink_to_fit();
-
-    useBatchSizes = true;
+    const int matched = zip.fillUncompressedSizes(targets, spineSizes);
+    LOG_DBG("BMC", "Batch size lookup matched %d/%d spine items", matched, spineCount);
   }
 
   uint32_t cumSize = 0;
@@ -239,16 +227,9 @@ bool BookMetadataCache::buildBookBin(const std::string& epubPath, const BookMeta
     }
     lastSpineTocIndex = spineEntry.tocIndex;
 
-    size_t itemSize = 0;
-    if (useBatchSizes) {
-      itemSize = spineSizes[i];
-      if (itemSize == 0) {
-        const std::string path = FsHelpers::normalisePath(spineEntry.href);
-        if (!zip.getInflatedFileSize(path.c_str(), &itemSize)) {
-          LOG_ERR("BMC", "Warning: Could not get size for spine item: %s", path.c_str());
-        }
-      }
-    } else {
+    size_t itemSize = spineSizes[i];
+    if (itemSize == 0) {
+      // Batch lookup missed (path mismatch, etc.) — fall back to single lookup
       const std::string path = FsHelpers::normalisePath(spineEntry.href);
       if (!zip.getInflatedFileSize(path.c_str(), &itemSize)) {
         LOG_ERR("BMC", "Warning: Could not get size for spine item: %s", path.c_str());

@@ -55,7 +55,7 @@ class BookMetadataCache {
   FsFile spineFile;
   FsFile tocFile;
 
-  // Index for fast href→spineIndex lookup (used only for large EPUBs)
+  // Index for fast href→spineIndex lookup, built once during the TOC pass
   struct SpineHrefIndexEntry {
     uint64_t hrefHash;  // FNV-1a 64-bit hash
     uint16_t hrefLen;   // length for collision reduction
@@ -63,8 +63,6 @@ class BookMetadataCache {
   };
   std::deque<SpineHrefIndexEntry> spineHrefIndex;
   bool useSpineHrefIndex = false;
-
-  static constexpr uint16_t LARGE_SPINE_THRESHOLD = 400;
 
   // FNV-1a 64-bit hash function
   static uint64_t fnvHash64(const std::string& s) {
