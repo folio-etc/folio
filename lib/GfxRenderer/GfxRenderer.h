@@ -13,6 +13,7 @@ class TextCollector;
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "Bitmap.h"
@@ -131,6 +132,16 @@ class GfxRenderer {
   mutable size_t imageCacheBytes_ = 0;
   mutable size_t imageCacheBudget_ = 64 * 1024;
   mutable uint32_t imageCacheTick_ = 0;
+
+  // Negative-result cache: paths that lookupCachedBitmap() has already
+  // tried and failed (file missing, unsupported format, decode error).
+  // SD-card sd.exists() on a missing file costs ~10–30 ms; without this
+  // set every paint repeats the stat for every absent thumbnail. Entries
+  // are session-lifetime — invalidated only by clearImageCache() or an
+  // explicit invalidateCachedBitmap(path) when a generator writes the
+  // file on this session.
+  mutable std::unordered_set<std::string, TransparentStringHash, TransparentStringEq>
+      imageCacheMisses_;
 
   void buildScaledBitmap(CachedBitmap* entry, int targetW, int targetH) const;
 
@@ -288,8 +299,16 @@ class GfxRenderer {
   // found, unsupported format, OOM).
   CachedBitmap* lookupCachedBitmap(const char* path) const;
 
-  // Drop every cached bitmap and reclaim the RAM.
+  // Drop every cached bitmap and reclaim the RAM. Also clears the
+  // negative-result set so paths previously marked missing get re-stat'd
+  // on next lookup.
   void clearImageCache() const;
+
+  // Drop a single path from the positive + negative cache. Call this
+  // after writing a file the renderer may have previously failed to
+  // load, so the next paint re-reads from disk instead of replaying
+  // the cached miss.
+  void invalidateCachedBitmap(const char* path) const;
 
   // Override the default cache budget (bytes). Eviction is LRU.
   void setImageCacheBudget(size_t bytes) const { imageCacheBudget_ = bytes; }

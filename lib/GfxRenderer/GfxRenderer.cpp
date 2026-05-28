@@ -1176,34 +1176,61 @@ GfxRenderer::CachedBitmap* GfxRenderer::lookupCachedBitmap(const char* path) con
     return &it->second;
   }
 
+  // Negative-result short-circuit. A prior lookup of this path failed
+  // (missing file or unsupported/corrupt content); skip the SD-card
+  // sd.exists() + parse pipeline that would just fail the same way.
+  if (imageCacheMisses_.find(path) != imageCacheMisses_.end()) {
+    return nullptr;
+  }
+
   // Miss — read the BMP from SD and decode all rows into the 2-bit packed
   // buffer format that readNextRow already produces. Storing the decoded
   // form (rather than the raw file bytes) lets drawCachedBitmap rasterize
   // without re-running the file-parse pipeline on every paint.
+  //
+  // Any failure path below records the path in imageCacheMisses_ so the
+  // next paint short-circuits above. Insertion is intentionally
+  // unbudgeted — entries are just path strings (~40 B each), the set is
+  // cleared at activity exit, and a Library page with 24 missing thumbs
+  // costs ~1 KB. Cheap relative to the 10–30 ms SD-stat we're skipping.
   FsFile file;
-  if (!Storage.openFileForRead("GFX", path, file)) return nullptr;
+  if (!Storage.openFileForRead("GFX", path, file)) {
+    imageCacheMisses_.emplace(path);
+    return nullptr;
+  }
 
   // Bitmap currently requires non-dithered for 1-bit; we keep things in
   // BW mode for the UI cache (covers + thumbs are rendered at threshold).
   Bitmap bitmap(file, /*dithering=*/false);
-  if (bitmap.parseHeaders() != BmpReaderError::Ok) return nullptr;
+  if (bitmap.parseHeaders() != BmpReaderError::Ok) {
+    imageCacheMisses_.emplace(path);
+    return nullptr;
+  }
   if (!bitmap.is1Bit()) {
     // Higher-bpp paths still go through the existing Bitmap → drawBitmap
     // pipeline; the cache is 1-bit only for now (covers, thumbs, etc.).
+    imageCacheMisses_.emplace(path);
     return nullptr;
   }
 
   const int width = bitmap.getWidth();
   const int height = bitmap.getHeight();
-  if (width <= 0 || height <= 0) return nullptr;
+  if (width <= 0 || height <= 0) {
+    imageCacheMisses_.emplace(path);
+    return nullptr;
+  }
 
   const int stride = (width + 3) / 4;
   const size_t bufBytes = static_cast<size_t>(stride) * static_cast<size_t>(height);
-  if (bufBytes == 0) return nullptr;
+  if (bufBytes == 0) {
+    imageCacheMisses_.emplace(path);
+    return nullptr;
+  }
 
   auto pixels = makeUniqueNoThrow<uint8_t[]>(bufBytes);
   if (!pixels) {
     LOG_ERR("GFX", "Image cache: OOM %u bytes for %s", static_cast<unsigned>(bufBytes), path);
+    imageCacheMisses_.emplace(path);
     return nullptr;
   }
 
@@ -1212,12 +1239,14 @@ GfxRenderer::CachedBitmap* GfxRenderer::lookupCachedBitmap(const char* path) con
   auto rowScratch = makeUniqueNoThrow<uint8_t[]>(bitmap.getRowBytes());
   if (!rowScratch) {
     LOG_ERR("GFX", "Image cache: OOM row scratch for %s", path);
+    imageCacheMisses_.emplace(path);
     return nullptr;
   }
 
   for (int row = 0; row < height; ++row) {
     if (bitmap.readNextRow(pixels.get() + row * stride, rowScratch.get()) != BmpReaderError::Ok) {
       LOG_ERR("GFX", "Image cache: row %d read failed for %s", row, path);
+      imageCacheMisses_.emplace(path);
       return nullptr;
     }
   }
@@ -1511,8 +1540,19 @@ template bool GfxRenderer::drawCachedBitmap<true>(CachedBitmap*, int, int, int, 
 void GfxRenderer::clearImageCache() const {
   imageCache_.clear();
   imageCacheBytes_ = 0;
+  imageCacheMisses_.clear();
   // Tick stays monotonic across clears so we never accidentally reuse a
   // stale stored tick from before the clear.
+}
+
+void GfxRenderer::invalidateCachedBitmap(const char* path) const {
+  if (path == nullptr || path[0] == '\0') return;
+  auto it = imageCache_.find(path);
+  if (it != imageCache_.end()) {
+    imageCacheBytes_ -= it->second.pixelsBytes + it->second.scaledPixelsBytes;
+    imageCache_.erase(it);
+  }
+  imageCacheMisses_.erase(path);
 }
 
 void GfxRenderer::fillPolygon(const int* xPoints, const int* yPoints, int numPoints, bool state) const {
