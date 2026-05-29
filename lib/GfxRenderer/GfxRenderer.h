@@ -1,5 +1,6 @@
 #pragma once
 
+#include <BitmapCacheManager.h>
 #include <EpdFontFamily.h>
 #include <HalDisplay.h>
 
@@ -9,13 +10,9 @@ class TextCollector;
 
 #include <cstring>
 #include <map>
-#include <memory>
 #include <string>
-#include <string_view>
-#include <unordered_set>
 #include <vector>
 
-#include "../data-structures/ByteLRUCache/ByteLRUCache.h"
 #include "Bitmap.h"
 
 // Color representation: uint8_t mapped to 4x4 Bayer matrix dithering levels
@@ -32,48 +29,6 @@ class GfxRenderer {
     LandscapeClockwise,        // 800x480 logical coordinates, rotated 180° (swap top/bottom)
     PortraitInverted,          // 480x800 logical coordinates, inverted
     LandscapeCounterClockwise  // 800x480 logical coordinates, native panel orientation
-  };
-
-  // Cached bitmap entry. Treat as an opaque handle from outside the
-  // renderer — callers obtain a pointer via lookupCachedBitmap() and
-  // reuse it across dim queries / draw calls in the same paint to spare
-  // repeated map lookups. Fields are exposed only so the struct can live
-  // in the public scope alongside its handle accessors.
-  //
-  // Cached pixel data is in the 2-bit-per-pixel packed format that
-  // Bitmap::readNextRow produces (consistent across 1/4/8 bpp sources).
-  // Stride is (width + 3) / 4 bytes; pixels buffer size = stride × height.
-  // Pixel ordering follows the bitmap's natural orientation — use
-  // `topDown` to map render Y → buffer Y.
-  struct CachedBitmap {
-    // Path key, duplicated from the cache's own map key so that the entry
-    // is self-describing: drawCachedBitmap() receives only a CachedBitmap*
-    // handle from callers and needs the key to call imageCache_.reweigh()
-    // after mutating scaledPixels.
-    std::string key;
-
-    std::unique_ptr<uint8_t[]> pixels;
-    size_t pixelsBytes = 0;
-    int width = 0;
-    int height = 0;
-    bool topDown = false;
-
-    // Pre-scaled 1-bit pixel data at the most recently requested target
-    // dimensions. Built lazily on first drawCachedBitmap call; reused on
-    // subsequent paints when target size matches. 1 bit/pixel, MSB first,
-    // row-major, stride = (scaledWidth + 7) / 8.
-    std::unique_ptr<uint8_t[]> scaledPixels;
-    size_t scaledPixelsBytes = 0;
-    int scaledWidth = 0;
-    int scaledHeight = 0;
-
-    // Self-describing weight for ByteLRUCache.  Includes both decoded and
-    // (lazily-built) scaled buffers — the budget tracks total RAM, not just
-    // the decoded payload.  key.size() captures the heap part of the
-    // duplicated path string when it overflows SSO.
-    std::size_t byte_size() const {
-      return key.size() + pixelsBytes + scaledPixelsBytes;
-    }
   };
 
  private:
@@ -123,37 +78,23 @@ class GfxRenderer {
   // user-observable state.
   mutable TextCollector* prewarmTextCollector_ = nullptr;
 
-  // ─── Image cache state ──────────────────────────────────────────────
-  // Transparent hash + key_equal so ByteLRUCache::get_mut(const char*) /
-  // get_mut(string_view) doesn't construct a temporary std::string for the
-  // key — material on the Library paint path where 9 lookups/paint used to
-  // each allocate. std::hash<string_view> and std::hash<string> are
-  // guaranteed to agree on identical contents since C++17 LWG2912.
-  struct TransparentStringHash {
-    using is_transparent = void;
-    size_t operator()(const char* s) const noexcept { return std::hash<std::string_view>{}(s); }
-    size_t operator()(std::string_view s) const noexcept { return std::hash<std::string_view>{}(s); }
-    size_t operator()(const std::string& s) const noexcept { return std::hash<std::string>{}(s); }
-  };
-  struct TransparentStringEq {
-    using is_transparent = void;
-    bool operator()(std::string_view a, std::string_view b) const noexcept { return a == b; }
-  };
+  // Lazily populate `cache` with the decoded BMP at `path`. Returns the
+  // cached entry, or nullptr on miss (file missing, unsupported format,
+  // decode error, OOM). Callers own the cache; the renderer just decodes
+  // into it.
+  BitmapCacheManager::Entry* lookupOrLoadCachedBitmap(BitmapCacheManager& cache,
+                                                      const char* path) const;
+  void buildScaledBitmap(BitmapCacheManager::Entry* entry, int targetW, int targetH) const;
 
-  mutable ByteLRUCache<std::string, CachedBitmap, TransparentStringHash, TransparentStringEq>
-      imageCache_{64 * 1024};
+ public:
+  // Read and decode the BMP at `path` into a detached Entry that the caller can
+  // hand to a BitmapCacheManager via set(). Stateless and thread-safe (SD I/O
+  // goes through HalStorage's own mutex), so off-render-task loaders can use
+  // it without touching any GfxRenderer instance state. Returns an Entry with
+  // an empty `path` on failure (file missing, non-1-bit, decode error, OOM).
+  static BitmapCacheManager::Entry decodeBitmapEntry(const char* path);
 
-  // Negative-result cache: paths that lookupCachedBitmap() has already
-  // tried and failed (file missing, unsupported format, decode error).
-  // SD-card sd.exists() on a missing file costs ~10–30 ms; without this
-  // set every paint repeats the stat for every absent thumbnail. Entries
-  // are session-lifetime — invalidated only by clearImageCache() or an
-  // explicit invalidateCachedBitmap(path) when a generator writes the
-  // file on this session.
-  mutable std::unordered_set<std::string, TransparentStringHash, TransparentStringEq>
-      imageCacheMisses_;
-
-  void buildScaledBitmap(CachedBitmap* entry, int targetW, int targetH) const;
+ private:
 
   void renderChar(const EpdFontFamily& fontFamily, uint32_t cp, int* x, int* y, bool pixelState,
                   EpdFontFamily::Style style) const;
@@ -260,26 +201,30 @@ class GfxRenderer {
   void drawBitmap1Bit(const Bitmap& bitmap, int x, int y, int maxWidth, int maxHeight) const;
 
   // ─── Image cache ─────────────────────────────────────────────────────
-  // Path-keyed cache of decoded 1-bit BMP data. First call for a path
-  // reads + decodes from SD into RAM; subsequent calls render straight
-  // from the cached pixels. Avoids the per-paint SD-I/O cost (~30 ms per
-  // cover on a 9-tile Library page) without requiring callers to manage
-  // their own capture/restore buffers.
+  // Path-keyed bitmap cache. The renderer doesn't own the storage — the
+  // caller (typically an activity that knows its working set) supplies a
+  // BitmapCacheManager sized to the scene. The first call for a (cache,
+  // path) pair reads + decodes from SD into the cache; subsequent calls
+  // render straight from the cached pixels. When the working set
+  // rotates, the owner calls BitmapCacheManager::clear() before
+  // re-populating.
   //
-  // The cache is LRU-managed under a configurable byte budget (~64 KB
-  // default — enough for ~50 small thumbs). Activities call
-  // clearImageCache() on exit when they want the RAM back.
-  //
-  // Returns the bitmap's native dimensions on success; pass nullptrs to
-  // skip the dim outputs when you only care about cache priming.
-  bool getCachedBitmapDimensions(const char* path, int* outWidth, int* outHeight) const;
-  bool getCachedBitmapDimensions(const CachedBitmap* handle, int* outWidth, int* outHeight) const;
+  // Returns the bitmap's native dimensions on success.
+  bool getCachedBitmapDimensions(BitmapCacheManager& cache, const char* path,
+                                 int* outWidth, int* outHeight) const;
+
+  // Read-only sibling of getCachedBitmapDimensions: returns false on cache
+  // miss instead of triggering a load. Used by lazy-loading callers that
+  // populate the cache from a worker task and want the render path to fall
+  // through to a placeholder while the cover is in flight.
+  bool peekCachedBitmapDimensions(BitmapCacheManager& cache, const char* path,
+                                  int* outWidth, int* outHeight) const;
 
   // Draw the BMP at `path`, scaled to fit (maxWidth × maxHeight) at top-
-  // left (x, y). Reads + decodes + caches on first call for a given path;
-  // subsequent calls memcpy-style rasterize from cached pixels. Returns
-  // true on success. Currently 1-bit BMPs only — higher-bpp images fall
-  // through to the SD-backed drawBitmap path.
+  // left (x, y). Reads + decodes + stores in `cache` on first call for a
+  // given path; subsequent calls memcpy-style rasterize from cached
+  // pixels. Returns true on success. Currently 1-bit BMPs only — higher-
+  // bpp images fall through to the SD-backed drawBitmap path.
   //
   // Opaque=false (default): writes only the black-source pixels into the
   // framebuffer, leaving white-source pixels showing whatever was painted
@@ -295,33 +240,9 @@ class GfxRenderer {
   // covers than drawing rectangular then masking with the background color
   // (a mask paints over the shadow; a skip lets it show through).
   template <bool Opaque = false>
-  bool drawCachedBitmap(const char* path, int x, int y, int maxWidth, int maxHeight,
-                        int cornerRadius = 0) const;
-  template <bool Opaque = false>
-  bool drawCachedBitmap(CachedBitmap* handle, int x, int y, int maxWidth, int maxHeight,
-                        int cornerRadius = 0) const;
+  bool drawCachedBitmap(BitmapCacheManager& cache, const char* path, int x, int y,
+                        int maxWidth, int maxHeight, int cornerRadius = 0) const;
 
-  // Look the cache up by path, decoding on miss. Returns an opaque handle
-  // suitable for reuse across getCachedBitmapDimensions + drawCachedBitmap
-  // in the same paint, sparing a second map lookup (and the temporary
-  // std::string the heterogeneous comparator would still allocate when
-  // pulled in from the LRU-evict path). nullptr on failure (file not
-  // found, unsupported format, OOM).
-  CachedBitmap* lookupCachedBitmap(const char* path) const;
-
-  // Drop every cached bitmap and reclaim the RAM. Also clears the
-  // negative-result set so paths previously marked missing get re-stat'd
-  // on next lookup.
-  void clearImageCache() const;
-
-  // Drop a single path from the positive + negative cache. Call this
-  // after writing a file the renderer may have previously failed to
-  // load, so the next paint re-reads from disk instead of replaying
-  // the cached miss.
-  void invalidateCachedBitmap(const char* path) const;
-
-  // Override the default cache budget (bytes). Eviction is LRU.
-  void setImageCacheBudget(size_t bytes) const { imageCache_.set_capacity(bytes); }
   void fillPolygon(const int* xPoints, const int* yPoints, int numPoints, bool state = true) const;
 
   // Text

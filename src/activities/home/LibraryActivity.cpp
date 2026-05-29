@@ -118,10 +118,10 @@ void LibraryActivity::onExit() {
   // does its own font unload before goToReader, which is the one exit that
   // actually needs the RAM.
   //
-  // The renderer's image cache holds 9 decoded covers (~10 KB total at 1bpp).
-  // We drop those on exit too — the next paint of any other UI is fast
-  // because those activities don't render thumbnails.
-  renderer.clearImageCache();
+  // The per-page cover cache holds at most 9 decoded covers (~10 KB total
+  // at 1bpp). Drop them on exit — the next paint of any other UI doesn't
+  // render thumbnails.
+  pageCache_.clear();
   LIBRARY_INDEX.unload();
 }
 
@@ -301,6 +301,7 @@ void LibraryActivity::landOnPage(int page, int row, int col) {
   for (int r = row; r >= 0; --r) {
     for (int c = col; c >= 0; --c) {
       if (LIBRARY_INDEX.getAt(page, r * COLS + c, PER_PAGE) != nullptr) {
+        if (page != libraryPage) pageCache_.clear();
         libraryPage = page;
         librarySelected = r * COLS + c;
         requestUpdate();
@@ -383,7 +384,9 @@ void LibraryActivity::moveNext() {
 
   const int pages = totalPages();
   if (pages <= 0) return;  // empty library — nothing to advance to.
-  libraryPage = (libraryPage + 1) % pages;
+  const int nextPage = (libraryPage + 1) % pages;
+  if (nextPage != libraryPage) pageCache_.clear();
+  libraryPage = nextPage;
   librarySelected = 0;
   requestUpdate();
 }
@@ -452,6 +455,9 @@ void LibraryActivity::dispatchPopupActivation(CascadingPopupMenu::Nav navResult)
 void LibraryActivity::applySort() {
   LIBRARY_INDEX.sortBy(static_cast<LibraryIndex::SortField>(SETTINGS.librarySortField),
                       static_cast<LibraryIndex::SortDirection>(SETTINGS.librarySortDirection));
+  // The book → page mapping changes wholesale; covers held in pageCache_ no
+  // longer correspond to whatever lands on page 0, so drop them regardless.
+  pageCache_.clear();
   libraryPage = 0;
   librarySelected = 0;
   requestUpdate();
@@ -642,10 +648,10 @@ void LibraryActivity::renderBookTile(int slotIndex, const LibraryBook& book, boo
   const int captionLineH = renderer.getLineHeight(captionFont);
 
   // ---- Cover (centered horizontally within the cell, top-aligned) -----
-  // The renderer's path-keyed image cache owns the SD-I/O + decode work.
-  // First paint of a thumb loads from SD; subsequent paints rasterize
-  // from cached pixel data. Library just queries dimensions, computes
-  // the centered frame, and calls drawCachedBitmap.
+  // pageCache_ is a fixed-capacity path-keyed cache sized to the visible
+  // grid. First paint of a thumb loads from SD into pageCache_; subsequent
+  // paints rasterize from cached pixel data. Library just queries
+  // dimensions, computes the centered frame, and calls drawCachedBitmap.
   //
   // The "cover area" is the full cell width × COVER_H — lets wider
   // thumbnails (square or near-square sources) keep their natural size
@@ -666,10 +672,9 @@ void LibraryActivity::renderBookTile(int slotIndex, const LibraryBook& book, boo
   snprintf(thumbPath, sizeof(thumbPath), "/.crosspoint/epub_%lu/thumb_%d.bmp",
            static_cast<unsigned long>(book.pathHash), LibraryIndex::THUMB_HEIGHT);
 
-  GfxRenderer::CachedBitmap* thumbHandle = renderer.lookupCachedBitmap(thumbPath);
-
   int bmpW = 0, bmpH = 0;
-  const bool haveThumb = renderer.getCachedBitmapDimensions(thumbHandle, &bmpW, &bmpH) && bmpW > 0 && bmpH > 0;
+  const bool haveThumb =
+      renderer.getCachedBitmapDimensions(pageCache_, thumbPath, &bmpW, &bmpH) && bmpW > 0 && bmpH > 0;
 
   if (haveThumb) {
     // Fit-to-box against (cell.width × COVER_H), preserving aspect.
@@ -705,8 +710,8 @@ void LibraryActivity::renderBookTile(int slotIndex, const LibraryBook& book, boo
     // — e.g. a 100×180 thumb against 80×120 truncates to drawnH=120 but
     // re-scaling against (66,120) shrinks targetH to 118, leaving a 2-px
     // strip of shadow visible inside the bottom of the cover.
-    drewCover = renderer.drawCachedBitmap<true>(thumbHandle, frameX, frameY, coverAreaW, COVER_H,
-                                                lib.coverBorderRadius);
+    drewCover = renderer.drawCachedBitmap<true>(pageCache_, thumbPath, frameX, frameY, coverAreaW,
+                                                COVER_H, lib.coverBorderRadius);
   }
 
   // 2a. Fallback cover for books without covers

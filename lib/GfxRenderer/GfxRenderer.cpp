@@ -1161,74 +1161,52 @@ void GfxRenderer::drawBitmap1Bit(const Bitmap& bitmap, const int x, const int y,
 }
 
 // ============================================================================
-// Image cache — path-keyed cache of decoded 1-bit BMP pixel data.
+// Image cache — caller-owned, fixed-capacity bitmap cache.
 // ============================================================================
+//
+// Storage lives in a BitmapCacheManager owned by the caller (typically an
+// activity that knows its working set, e.g. LibraryActivity's 9-tile shelf).
+// The renderer just decodes BMPs into the cache on miss and rasterizes from
+// the cached pixels on hit. When the working set rotates, the owner calls
+// BitmapCacheManager::clear() before re-populating — no LRU eviction, no
+// negative-result set, no global state that grows across paints.
 
-GfxRenderer::CachedBitmap* GfxRenderer::lookupCachedBitmap(const char* path) const {
-  if (path == nullptr || path[0] == '\0') return nullptr;
+BitmapCacheManager::Entry GfxRenderer::decodeBitmapEntry(const char* path) {
+  // Read the BMP from SD and decode all rows into the 2-bit packed buffer
+  // format that readNextRow produces. Storing the decoded form (rather than
+  // the raw file bytes) lets drawCachedBitmap rasterize without re-running
+  // the file-parse pipeline on every paint. Returns an Entry with an empty
+  // `path` on any failure so callers can distinguish success from failure
+  // without exceptions.
+  BitmapCacheManager::Entry entry;
+  if (path == nullptr || path[0] == '\0') return entry;
 
-  // Heterogeneous lookup: get_mut() takes the const char* directly thanks
-  // to TransparentStringHash + TransparentStringEq on ByteLRUCache, so the
-  // common (hit) path doesn't construct a std::string at all. get_mut also
-  // promotes the entry to MRU for us — no manual tick bookkeeping.
-  if (auto* hit = imageCache_.get_mut(path)) return hit;
-
-  // Negative-result short-circuit. A prior lookup of this path failed
-  // (missing file or unsupported/corrupt content); skip the SD-card
-  // sd.exists() + parse pipeline that would just fail the same way.
-  if (imageCacheMisses_.find(path) != imageCacheMisses_.end()) {
-    return nullptr;
-  }
-
-  // Miss — read the BMP from SD and decode all rows into the 2-bit packed
-  // buffer format that readNextRow already produces. Storing the decoded
-  // form (rather than the raw file bytes) lets drawCachedBitmap rasterize
-  // without re-running the file-parse pipeline on every paint.
-  //
-  // Any failure path below records the path in imageCacheMisses_ so the
-  // next paint short-circuits above. Insertion is intentionally
-  // unbudgeted — entries are just path strings (~40 B each), the set is
-  // cleared at activity exit, and a Library page with 24 missing thumbs
-  // costs ~1 KB. Cheap relative to the 10–30 ms SD-stat we're skipping.
   FsFile file;
-  if (!Storage.openFileForRead("GFX", path, file)) {
-    imageCacheMisses_.emplace(path);
-    return nullptr;
-  }
+  if (!Storage.openFileForRead("GFX", path, file)) return entry;
 
   // Bitmap currently requires non-dithered for 1-bit; we keep things in
   // BW mode for the UI cache (covers + thumbs are rendered at threshold).
   Bitmap bitmap(file, /*dithering=*/false);
-  if (bitmap.parseHeaders() != BmpReaderError::Ok) {
-    imageCacheMisses_.emplace(path);
-    return nullptr;
-  }
+  if (bitmap.parseHeaders() != BmpReaderError::Ok) return entry;
+
   if (!bitmap.is1Bit()) {
     // Higher-bpp paths still go through the existing Bitmap → drawBitmap
     // pipeline; the cache is 1-bit only for now (covers, thumbs, etc.).
-    imageCacheMisses_.emplace(path);
-    return nullptr;
+    return entry;
   }
 
   const int width = bitmap.getWidth();
   const int height = bitmap.getHeight();
-  if (width <= 0 || height <= 0) {
-    imageCacheMisses_.emplace(path);
-    return nullptr;
-  }
+  if (width <= 0 || height <= 0) return entry;
 
   const int stride = (width + 3) / 4;
   const size_t bufBytes = static_cast<size_t>(stride) * static_cast<size_t>(height);
-  if (bufBytes == 0) {
-    imageCacheMisses_.emplace(path);
-    return nullptr;
-  }
+  if (bufBytes == 0) return entry;
 
   auto pixels = makeUniqueNoThrow<uint8_t[]>(bufBytes);
   if (!pixels) {
     LOG_ERR("GFX", "Image cache: OOM %u bytes for %s", static_cast<unsigned>(bufBytes), path);
-    imageCacheMisses_.emplace(path);
-    return nullptr;
+    return entry;
   }
 
   // Throwaway row buffer for the file's native row size (used internally
@@ -1236,62 +1214,66 @@ GfxRenderer::CachedBitmap* GfxRenderer::lookupCachedBitmap(const char* path) con
   auto rowScratch = makeUniqueNoThrow<uint8_t[]>(bitmap.getRowBytes());
   if (!rowScratch) {
     LOG_ERR("GFX", "Image cache: OOM row scratch for %s", path);
-    imageCacheMisses_.emplace(path);
-    return nullptr;
+    return entry;
   }
 
   for (int row = 0; row < height; ++row) {
     if (bitmap.readNextRow(pixels.get() + row * stride, rowScratch.get()) != BmpReaderError::Ok) {
       LOG_ERR("GFX", "Image cache: row %d read failed for %s", row, path);
-      imageCacheMisses_.emplace(path);
-      return nullptr;
+      return entry;
     }
   }
 
-  CachedBitmap entry;
-  entry.key = path;
+  entry.path = path;
   entry.pixels = std::move(pixels);
   entry.pixelsBytes = bufBytes;
   entry.width = width;
   entry.height = height;
   entry.topDown = bitmap.isTopDown();
-
-  // put() handles LRU eviction internally; the freshly-inserted entry
-  // becomes MRU.  Re-fetch via get_mut to recover the pointer into the
-  // cache's storage — same hash lookup we'd do on a hit, basically free.
-  std::string key = entry.key;
-  imageCache_.put(std::move(key), std::move(entry));
-  return imageCache_.get_mut(path);
+  return entry;
 }
 
-bool GfxRenderer::getCachedBitmapDimensions(const char* path, int* outWidth, int* outHeight) const {
-  return getCachedBitmapDimensions(lookupCachedBitmap(path), outWidth, outHeight);
+BitmapCacheManager::Entry* GfxRenderer::lookupOrLoadCachedBitmap(BitmapCacheManager& cache,
+                                                                 const char* path) const {
+  if (path == nullptr || path[0] == '\0') return nullptr;
+  if (auto* hit = cache.get(path)) return hit;
+
+  auto entry = decodeBitmapEntry(path);
+  if (entry.path.empty()) return nullptr;
+  return cache.set(std::move(entry));
 }
 
-bool GfxRenderer::getCachedBitmapDimensions(const CachedBitmap* handle, int* outWidth,
-                                            int* outHeight) const {
-  if (handle == nullptr) return false;
-  if (outWidth) *outWidth = handle->width;
-  if (outHeight) *outHeight = handle->height;
+bool GfxRenderer::getCachedBitmapDimensions(BitmapCacheManager& cache, const char* path,
+                                            int* outWidth, int* outHeight) const {
+  auto* entry = lookupOrLoadCachedBitmap(cache, path);
+  if (entry == nullptr) return false;
+  if (outWidth) *outWidth = entry->width;
+  if (outHeight) *outHeight = entry->height;
   return true;
 }
 
-void GfxRenderer::buildScaledBitmap(CachedBitmap* entry, int targetW, int targetH) const {
-  if (entry->scaledPixels) {
-    entry->scaledPixels.reset();
-    entry->scaledPixelsBytes = 0;
-  }
+bool GfxRenderer::peekCachedBitmapDimensions(BitmapCacheManager& cache, const char* path,
+                                              int* outWidth, int* outHeight) const {
+  if (path == nullptr || path[0] == '\0') return false;
+  auto* entry = cache.get(path);
+  if (entry == nullptr) return false;
+  if (outWidth) *outWidth = entry->width;
+  if (outHeight) *outHeight = entry->height;
+  return true;
+}
 
+void GfxRenderer::buildScaledBitmap(BitmapCacheManager::Entry* entry, int targetW,
+                                    int targetH) const {
   const int scaledStride = (targetW + 7) / 8;
   const size_t scaledBytes = static_cast<size_t>(scaledStride) * static_cast<size_t>(targetH);
 
   auto scaled = makeUniqueNoThrow<uint8_t[]>(scaledBytes);
   if (!scaled) {
     LOG_ERR("GFX", "Scaled cache OOM: %u bytes", static_cast<unsigned>(scaledBytes));
+    entry->scaledPixels.reset();
+    entry->scaledPixelsBytes = 0;
     entry->scaledWidth = 0;
     entry->scaledHeight = 0;
-    // Reweigh — byte_size() dropped by the old scaled buffer (if any).
-    imageCache_.reweigh(entry->key);
     return;
   }
 
@@ -1321,28 +1303,18 @@ void GfxRenderer::buildScaledBitmap(CachedBitmap* entry, int targetW, int target
   entry->scaledPixelsBytes = scaledBytes;
   entry->scaledWidth = targetW;
   entry->scaledHeight = targetH;
-  // byte_size() now reflects the new scaled buffer; tell the cache.
-  imageCache_.reweigh(entry->key);
 }
 
-// Path overload — looks up the cache handle and forwards to the handle
-// overload of the same specialization.
+// Looks up `path` in `cache` (loading on miss), then blits it. `Opaque=false`
+// (the default) writes only the black-source pixels, leaving white-source
+// pixels showing whatever was underneath; `Opaque=true` writes both inks so
+// the caller can skip a substrate fillRect. The `if constexpr` switch
+// ensures each specialization carries exactly one inner-write branch.
 template <bool Opaque>
-bool GfxRenderer::drawCachedBitmap(const char* path, const int x, const int y, const int maxWidth,
-                                   const int maxHeight, const int cornerRadius) const {
-  return drawCachedBitmap<Opaque>(lookupCachedBitmap(path), x, y, maxWidth, maxHeight, cornerRadius);
-}
-
-// Handle overload — does the actual blit. `Opaque=false` (the default)
-// writes only the black-source pixels, leaving white-source pixels showing
-// whatever was underneath; `Opaque=true` writes both inks so the caller
-// can skip a substrate fillRect. The `if constexpr` switch ensures each
-// specialization carries exactly one inner-write branch.
-template <bool Opaque>
-bool GfxRenderer::drawCachedBitmap(CachedBitmap* entry, const int x, const int y,
-                                   const int maxWidth, const int maxHeight,
+bool GfxRenderer::drawCachedBitmap(BitmapCacheManager& cache, const char* path, const int x,
+                                   const int y, const int maxWidth, const int maxHeight,
                                    const int cornerRadius) const {
-
+  auto* entry = lookupOrLoadCachedBitmap(cache, path);
   if (entry == nullptr) return false;
   if (prewarmTextCollector_) return false; // signify that we haven't drawn
                                            // so that library takes the fallback path and
@@ -1515,23 +1487,8 @@ bool GfxRenderer::drawCachedBitmap(CachedBitmap* entry, const int x, const int y
   return true;
 }
 
-template bool GfxRenderer::drawCachedBitmap<false>(const char*, int, int, int, int, int) const;
-template bool GfxRenderer::drawCachedBitmap<true>(const char*, int, int, int, int, int) const;
-template bool GfxRenderer::drawCachedBitmap<false>(CachedBitmap*, int, int, int, int, int) const;
-template bool GfxRenderer::drawCachedBitmap<true>(CachedBitmap*, int, int, int, int, int) const;
-
-void GfxRenderer::clearImageCache() const {
-  imageCache_.clear();
-  imageCacheMisses_.clear();
-}
-
-void GfxRenderer::invalidateCachedBitmap(const char* path) const {
-  if (path == nullptr || path[0] == '\0') return;
-  // take() drops the entry and adjusts used_bytes in one shot; we discard
-  // the returned value since the caller only wants the slot freed.
-  (void)imageCache_.take(path);
-  imageCacheMisses_.erase(path);
-}
+template bool GfxRenderer::drawCachedBitmap<false>(BitmapCacheManager&, const char*, int, int, int, int, int) const;
+template bool GfxRenderer::drawCachedBitmap<true>(BitmapCacheManager&, const char*, int, int, int, int, int) const;
 
 void GfxRenderer::fillPolygon(const int* xPoints, const int* yPoints, int numPoints, bool state) const {
   if (numPoints < 3) return;

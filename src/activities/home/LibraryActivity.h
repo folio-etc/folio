@@ -1,4 +1,5 @@
 #pragma once
+#include <BitmapCacheManager.h>
 #include <I18n.h>
 
 #include <cstdint>
@@ -52,10 +53,13 @@ class LibraryActivity final : public Activity {
   bool lockNextConfirmRelease = false;
   bool lockNextBackRelease = false;
 
-  // No per-slot cover cache here — the renderer owns a path-keyed image
-  // cache (see GfxRenderer::drawCachedBitmap). Library just calls
-  // drawCachedBitmap for each visible thumb; the renderer hides the
-  // SD-I/O / decode cost and LRU-evicts under its own budget.
+  // Fixed-capacity cover cache, sized to the visible grid. Owned here so the
+  // working set is bounded to a single page; cleared at page transitions to
+  // release the prior page's decoded pixels before the next page's covers
+  // are pulled in. Populated lazily on the render path — the first paint
+  // after a page change pays the SD decode cost; subsequent paints of the
+  // same page rasterize from cached pixels.
+  BitmapCacheManager pageCache_{PER_PAGE};
 
   // ---- Navigation helpers -------------------------------------------------
   int currentRow() const { return librarySelected / COLS; }

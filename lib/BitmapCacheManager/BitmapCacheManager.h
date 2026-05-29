@@ -1,30 +1,64 @@
+#pragma once
+
 #include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <string>
-#include "../data-structures/ByteLRUCache/ByteLRUCache.h"
+#include <vector>
 
+// Fixed-capacity, path-keyed cache for decoded bitmaps. Sized at construction
+// to the working set of a single scene (e.g. one Library page) so callers
+// can rely on get() hits across all paints of that scene with no eviction
+// churn. When the working set rotates (page navigation), the owner calls
+// clear() before re-populating.
+//
+// Storage is an inline vector of Entry slots, allocated once at construction.
+// No hash table, no map nodes, no per-get/set heap traffic beyond the
+// caller-supplied Entry's own pixel buffers. Lookup is O(capacity) linear
+// scan — for the 9-tile Library grid this is faster than a hash map and
+// avoids the heap fragmentation that came with the previous global LRU.
 class BitmapCacheManager {
-  public:
-    struct CachedBitmap {
-      std::unique_ptr<uint8_t[]> pixels;
-      size_t pixelsBytes = 0;
-      int width = 0;
-      int height = 0;
-      bool topDown = false;
+ public:
+  struct Entry {
+    // Path key. Empty string means "slot is unoccupied".
+    std::string path;
 
-      // Pre-scaled 1-bit pixel data at the most recently requested target
-      // dimensions. Built lazily on first drawCachedBitmap call; reused on
-      // subsequent paints when target size matches. 1 bit/pixel, MSB first,
-      // row-major, stride = (scaledWidth + 7) / 8.
-      std::unique_ptr<uint8_t[]> scaledPixels;
-      size_t scaledPixelsBytes = 0;
-      int scaledWidth = 0;
-      int scaledHeight = 0;
-    };
+    // 2-bit-per-pixel packed source pixels (Bitmap::readNextRow format).
+    // stride = (width + 3) / 4 bytes; total = stride × height.
+    std::unique_ptr<uint8_t[]> pixels;
+    std::size_t pixelsBytes = 0;
+    int width = 0;
+    int height = 0;
+    bool topDown = false;
 
-  private:
-    ByteLRUCache<std::string, CachedBitmap> cache{ std::size_t{ 64 * 1024 } };
+    // Lazily-built 1-bit pre-scaled pixels at the most recently requested
+    // target dimensions. stride = (scaledWidth + 7) / 8.
+    std::unique_ptr<uint8_t[]> scaledPixels;
+    std::size_t scaledPixelsBytes = 0;
+    int scaledWidth = 0;
+    int scaledHeight = 0;
+  };
 
-    void test() {
-    }
+  explicit BitmapCacheManager(std::size_t capacity) : slots_(capacity) {}
+
+  // Look up the entry for `path`. Returns nullptr on miss. The returned
+  // pointer is invalidated by the next clear() / set() call.
+  Entry* get(const char* path);
+
+  // Move `entry` into the cache. If the key is already present, overwrites
+  // that slot; otherwise fills an empty slot if one is available;
+  // otherwise round-robin replaces the slot that has been resident
+  // longest. Returns a pointer to the stored slot, or nullptr if capacity
+  // is zero. The pointer is invalidated by the next clear() / set() call.
+  Entry* set(Entry entry);
+
+  // Drop every entry, releasing pixel buffers. Capacity is preserved.
+  void clear();
+
+  std::size_t capacity() const { return slots_.size(); }
+
+ private:
+  std::vector<Entry> slots_;
+  // Index of the slot to overwrite next when the cache is full.
+  std::size_t nextOverwrite_ = 0;
 };
