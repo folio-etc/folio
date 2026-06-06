@@ -84,14 +84,20 @@ bool UiThemeLoader::loadTheme(const char* themeId, GfxRenderer& renderer) {
   char cacheDir[128];
   archive_.getCacheDir(themeId, cacheDir, sizeof(cacheDir));
   const auto ids = ThemeFontManager::getInstance().loadRoles(themeId, cacheDir, fontSpec, renderer);
-  themeData_->fonts.titleId = ids.title;
-  themeData_->fonts.headingId = ids.heading;
-  themeData_->fonts.bodyId = ids.body;
-  themeData_->fonts.captionId = ids.caption;
-  themeData_->fonts.accentId = ids.accent;
-  themeData_->fonts.bodyIdCompact = ids.bodyCompact;
-  themeData_->fonts.captionIdCompact = ids.captionCompact;
-  themeData_->fonts.accentIdCompact = ids.accentCompact;
+  // Only overwrite roles that loadRoles actually resolved. parseThemeJson
+  // initialized themeData_->fonts from BuiltinThemes::Folio, so roles the
+  // SD theme.json omits (a 0 in `ids`) keep their flash-resident Folio
+  // defaults instead of getting clobbered to "no font" — which would force
+  // BaseTheme::resolveFontRole to chain compact → non-compact and risk
+  // pulling compact glyphs through an SD-backed body/caption font.
+  if (ids.title != 0)          themeData_->fonts.titleId          = ids.title;
+  if (ids.heading != 0)        themeData_->fonts.headingId        = ids.heading;
+  if (ids.body != 0)           themeData_->fonts.bodyId           = ids.body;
+  if (ids.caption != 0)        themeData_->fonts.captionId        = ids.caption;
+  if (ids.accent != 0)         themeData_->fonts.accentId         = ids.accent;
+  if (ids.bodyCompact != 0)    themeData_->fonts.bodyIdCompact    = ids.bodyCompact;
+  if (ids.captionCompact != 0) themeData_->fonts.captionIdCompact = ids.captionCompact;
+  if (ids.accentCompact != 0)  themeData_->fonts.accentIdCompact  = ids.accentCompact;
 
   LOG_INF(LOG_TAG, "Loaded SD theme '%s' (%s)", nameBuf_, idBuf_);
   return true;
