@@ -1,6 +1,7 @@
 #include "LibraryActivity.h"
 
 #include <Bitmap.h>
+#include <FontCacheManager.h>
 #include <GfxRenderer.h>
 #include <HalStorage.h>
 #include <I18n.h>
@@ -8,12 +9,14 @@
 #include <Memory.h>  // makeUniqueNoThrow
 
 #include <algorithm>
+#include <cstdint>
 #include <string>
 #include <vector>
 
 #include "CrossPointSettings.h"
-#include "FontCacheManager.h"
+#include "LibraryIndex.h"
 #include "MappedInputManager.h"
+#include "util/GridHelper.h"
 #include "components/UITheme.h"
 #include "components/ui/ButtonHints/ButtonHints.h"
 #include "components/themes/BaseTheme.h"
@@ -98,13 +101,7 @@ void LibraryActivity::onEnter() {
   LIBRARY_INDEX.sortBy(static_cast<LibraryIndex::SortField>(SETTINGS.librarySortField),
                       static_cast<LibraryIndex::SortDirection>(SETTINGS.librarySortDirection));
 
-  // Clamp selection in case the previous page no longer exists.
-  const int pages = totalPages();
-  if (libraryPage >= pages) libraryPage = std::max(0, pages - 1);
-  if (LIBRARY_INDEX.getAt(libraryPage, librarySelected, PER_PAGE) == nullptr) {
-    librarySelected = 0;
-  }
-
+  this->gridHelper = GridHelper(LIBRARY_INDEX.getBookCount(), ROWS, COLS, 0);
   requestUpdate();
 }
 
@@ -258,69 +255,35 @@ void LibraryActivity::moveUp() {
     if (popup_.moveUp() != CascadingPopupMenu::Nav::Ignored) requestUpdate();
     return;
   }
-  const int pages = totalPages();
-  if (pages <= 0) return;
 
-  const int row = currentRow();
-  const int col = currentCol();
-  const int targetPage = (row > 0) ? libraryPage : (libraryPage + pages - 1) % pages;
-  const int targetRow = (row > 0) ? row - 1 : ROWS - 1;
-  landOnPage(targetPage, targetRow, col);
+  this->gridHelper.up();
+  requestUpdate();
 }
 
 void LibraryActivity::moveDown() {
   if (popup_.isOpen()) {
-    if (popup_.moveDown() != CascadingPopupMenu::Nav::Ignored) requestUpdate();
+    if (popup_.moveDown() != CascadingPopupMenu::Nav::Ignored) {
+      requestUpdate();
+    }
+
     return;
   }
-  const int pages = totalPages();
-  if (pages <= 0) return;
 
-  const int row = currentRow();
-  const int col = currentCol();
-
-  // Books pack densely within a page, so "is there a row below with
-  // content?" reduces to "is the first slot of the next row filled?". A
-  // bare `row < ROWS - 1` check misses the partial-last-page case where
-  // the selection sits in row 0/1 but row 1/2 is empty — that should
-  // still wrap to the next page (and from the last page, back to page 0).
-  const bool hasRowBelow =
-      row < ROWS - 1 &&
-      LIBRARY_INDEX.getAt(libraryPage, (row + 1) * COLS, PER_PAGE) != nullptr;
-  const int targetPage = hasRowBelow ? libraryPage : (libraryPage + 1) % pages;
-  const int targetRow = hasRowBelow ? row + 1 : 0;
-  landOnPage(targetPage, targetRow, col);
+  this->gridHelper.down();
+  requestUpdate();
 }
 
-void LibraryActivity::landOnPage(int page, int row, int col) {
-  // Scan the target row's columns leftward, then walk up earlier rows on
-  // the same page. Any valid page has at least slot 0 filled, so this
-  // always terminates with a selection. Used by moveUp/moveDown to clamp
-  // onto partial last pages, and by jumpPage* to preserve the visual
-  // selection position across pages of differing fill.
-  for (int r = row; r >= 0; --r) {
-    for (int c = col; c >= 0; --c) {
-      if (LIBRARY_INDEX.getAt(page, r * COLS + c, PER_PAGE) != nullptr) {
-        if (page != libraryPage) pageCache_.clear();
-        libraryPage = page;
-        librarySelected = r * COLS + c;
-        requestUpdate();
-        return;
-      }
-    }
-  }
-}
 
 void LibraryActivity::jumpPageForward() {
-  const int pages = totalPages();
-  if (pages <= 0) return;
-  landOnPage((libraryPage + 1) % pages, currentRow(), currentCol());
+  // const int pages = totalPages();
+  // if (pages <= 0) return;
+  // landOnPage((libraryPage + 1) % pages, currentRow(), currentCol());
 }
 
 void LibraryActivity::jumpPageBack() {
-  const int pages = totalPages();
-  if (pages <= 0) return;
-  landOnPage((libraryPage + pages - 1) % pages, currentRow(), currentCol());
+  // const int pages = totalPages();
+  // if (pages <= 0) return;
+  // landOnPage((libraryPage + pages - 1) % pages, currentRow(), currentCol());
 }
 
 void LibraryActivity::moveLeft() {
@@ -328,23 +291,8 @@ void LibraryActivity::moveLeft() {
     return;
   }
 
-  const int col = currentCol();
-  if(col > 0) {
-    librarySelected--;
-    requestUpdate();
-    return;
-  }
-
-
-  for(int candidate = librarySelected + COLS - 1; candidate >= librarySelected; candidate--) {
-    if (LIBRARY_INDEX.getAt(libraryPage, candidate, PER_PAGE) == nullptr) {
-      continue;
-    }
-
-    librarySelected = candidate;
-    requestUpdate();
-    return;
-  }
+  this->gridHelper.left();
+  requestUpdate();
 }
 
 void LibraryActivity::moveRight() {
@@ -352,18 +300,8 @@ void LibraryActivity::moveRight() {
     return;
   }
 
-  const int col = currentCol();
-  if (col == COLS - 1) {
-    librarySelected -= (COLS - 1);
-    requestUpdate();
-    return;
-  }
-
-  const int candidate = librarySelected + 1;
-  if (LIBRARY_INDEX.getAt(libraryPage, candidate, PER_PAGE) != nullptr) {
-    librarySelected = candidate;
-    requestUpdate();
-  }
+  this->gridHelper.right();
+  requestUpdate();
 }
 
 void LibraryActivity::moveNext() {
@@ -371,23 +309,7 @@ void LibraryActivity::moveNext() {
     return;
   }
 
-  // Linear advance through the library. Step to the next slot on this page;
-  // when that slot is past the page or empty (partial last page), step to
-  // the next page; on the last page, wrap back to page 0 / slot 0 so the
-  // power button cycles through the entire library.
-  const int next = librarySelected + 1;
-  if (next < PER_PAGE && LIBRARY_INDEX.getAt(libraryPage, next, PER_PAGE) != nullptr) {
-    librarySelected = next;
-    requestUpdate();
-    return;
-  }
-
-  const int pages = totalPages();
-  if (pages <= 0) return;  // empty library — nothing to advance to.
-  const int nextPage = (libraryPage + 1) % pages;
-  if (nextPage != libraryPage) pageCache_.clear();
-  libraryPage = nextPage;
-  librarySelected = 0;
+  this->gridHelper.nextItem(); 
   requestUpdate();
 }
 
@@ -403,8 +325,9 @@ void LibraryActivity::doSelect() {
     return;
   }
 
-  const LibraryBook* book = LIBRARY_INDEX.getAt(libraryPage, librarySelected, PER_PAGE);
+  const LibraryBook* book = LIBRARY_INDEX.getAt(gridHelper.currentIndex());
   if (book == nullptr) return;
+
   LOG_DBG(LOG_TAG, "Opening book: %s", book->path.c_str());
 
   auto* fcm = renderer.getFontCacheManager();
@@ -455,11 +378,13 @@ void LibraryActivity::dispatchPopupActivation(CascadingPopupMenu::Nav navResult)
 void LibraryActivity::applySort() {
   LIBRARY_INDEX.sortBy(static_cast<LibraryIndex::SortField>(SETTINGS.librarySortField),
                       static_cast<LibraryIndex::SortDirection>(SETTINGS.librarySortDirection));
+
   // The book → page mapping changes wholesale; covers held in pageCache_ no
   // longer correspond to whatever lands on page 0, so drop them regardless.
   pageCache_.clear();
-  libraryPage = 0;
-  librarySelected = 0;
+
+  this->gridHelper.setByIndex(0);
+
   requestUpdate();
 }
 
@@ -559,7 +484,7 @@ void LibraryActivity::renderHeader() {
     const char* arrow =
         (SETTINGS.librarySortDirection == CrossPointSettings::LIB_SORT_ASC) ? "(asc)" : "(desc)";
     subtitleText = std::string(I18n::getInstance().get(sortedKey)) + " " + arrow + "  ·  " +
-                   std::to_string(libraryPage + 1) + " / " + std::to_string(totalPages());
+                   std::to_string(this->gridHelper.currentPage()) + " / " + std::to_string(this->gridHelper.pageCount());
   }
 
   const int titleFont = libFont(FontRole::Title);
@@ -586,11 +511,19 @@ void LibraryActivity::renderLibraryShelf() {
   const int shelfW = screenW - CONTENT_PAD_X * 2 - RAIL_WIDTH - RAIL_GAP;
   const int shelfH = screenH - HEADER_HEIGHT - FOOTER_HEIGHT - CONTENT_PAD_Y * 2;
 
+  const uint8_t currentIndexOnPage = gridHelper.currentIndexOnPage(); 
+
+  const uint8_t currentPage = gridHelper.currentPage(); 
+  const uint8_t itemsPerPage = gridHelper.itemsPerPage(); 
+
+  const uint16_t baseIndex = currentPage * itemsPerPage;
+
   for (int slot = 0; slot < PER_PAGE; ++slot) {
-    const LibraryBook* book = LIBRARY_INDEX.getAt(libraryPage, slot, PER_PAGE);
+    const LibraryBook* book = LIBRARY_INDEX.getAt(baseIndex + slot);
     if (book == nullptr) continue;
+
     const Rect cell = cellRect(slot / COLS, slot % COLS, shelfX, shelfY, shelfW, shelfH);
-    const bool selected = (slot == librarySelected);
+    const bool selected = slot == currentIndexOnPage;
 
     // Selection is split into a background pass (fills — drawn BEFORE tile
     // content so the cover bitmap and text paint on top of the wash) and a
@@ -809,7 +742,7 @@ void LibraryActivity::renderBookTile(int slotIndex, const LibraryBook& book, boo
 void LibraryActivity::renderPageRail() {
   // Always render the rail so the user sees their position even on a single-
   // page library — the visual treatment is part of the Library's identity.
-  const int pages = std::max(1, totalPages());
+  const int pages = std::max(1, static_cast<int>(gridHelper.pageCount()));
   const int screenH = renderer.getScreenHeight();
   const int railX = renderer.getScreenWidth() - CONTENT_PAD_X - RAIL_WIDTH;
   
@@ -821,11 +754,13 @@ void LibraryActivity::renderPageRail() {
   const auto& lib = GUI.getData()->library;
   const int tickSize = lib.pageIndicatorSize;
   const int tickX = railX + (RAIL_WIDTH - tickSize) / 2;
+  const uint8_t currentPage = this->gridHelper.currentPage();
+
   for (int i = 0; i < pages; ++i) {
     const int tickY = railTop + i * (tickSize + lib.pageIndicatorGap);
 
-    const Color fill = (i == libraryPage) ? lib.pageIndicatorFillSelected : lib.pageIndicatorFill;
-    const Color border = (i == libraryPage) ? lib.pageIndicatorBorderSelected : lib.pageIndicatorBorder;
+    const Color fill = (i == currentPage) ? lib.pageIndicatorFillSelected : lib.pageIndicatorFill;
+    const Color border = (i == currentPage) ? lib.pageIndicatorBorderSelected : lib.pageIndicatorBorder;
 
     switch(lib.pageIndicatorShape) {
       case IndicatorShape::Circle: {
@@ -855,7 +790,7 @@ void LibraryActivity::renderPageRail() {
   // installed.
   const int accentFont = libFont(FontRole::AccentCompact);
   char countBuf[16];
-  snprintf(countBuf, sizeof(countBuf), "%d / %d", libraryPage + 1, pages);
+  snprintf(countBuf, sizeof(countBuf), "%d / %d", currentPage + 1, pages);
   const int countY = railBottom - 4;
   const int countX = railX + RAIL_WIDTH / 2 + 4;
   renderer.drawTextRotated90CW(accentFont, countX, countY, countBuf, true, EpdFontFamily::ITALIC);

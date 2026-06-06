@@ -7,6 +7,7 @@
 
 #include "LibraryIndex.h"
 #include "activities/Activity.h"
+#include "util/GridHelper.h"
 #include "components/themes/BaseTheme.h"  // for Rect
 #include "components/ui/CascadingPopupMenu/CascadingPopupMenu.h"
 #include "util/ButtonNavigator.h"
@@ -34,9 +35,8 @@ class LibraryActivity final : public Activity {
   static constexpr int POPUP_POWER_COUNT = 2; // Next in Row / Next Book
 
   // ---- View state ---------------------------------------------------------
-  // Library grid position
-  int libraryPage = 0;          // 0-indexed
-  int librarySelected = 0;      // 0..PER_PAGE-1 within current page
+  // GridHelper
+  GridHelper gridHelper = GridHelper(0, 0, 0, 0);
 
   // The cascading popup (Sort / Files / Settings). Owns its own selection
   // state, level, and chrome — LibraryActivity routes button presses to it
@@ -61,11 +61,6 @@ class LibraryActivity final : public Activity {
   // same page rasterize from cached pixels.
   BitmapCacheManager pageCache_{PER_PAGE};
 
-  // ---- Navigation helpers -------------------------------------------------
-  int currentRow() const { return librarySelected / COLS; }
-  int currentCol() const { return librarySelected % COLS; }
-  int totalPages() const { return LIBRARY_INDEX.totalPages(PER_PAGE); }
-
   void initPopup();
 
   void moveUp();
@@ -75,13 +70,6 @@ class LibraryActivity final : public Activity {
   void moveNext();
   void jumpPageBack();
   void jumpPageForward();
-
-  // Set selection to the largest filled slot at-or-before (row, col) on
-  // `page`, scanning the row backwards then the rows above. Used by
-  // moveUp/moveDown's column clamp on partial last pages, and by the
-  // page-jump helpers to preserve the visual selection position across
-  // pages of differing fill.
-  void landOnPage(int page, int row, int col);
 
   void doSelect();
   // Dispatches the activity action for an active popup row (leaf or submenu

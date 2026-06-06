@@ -324,8 +324,13 @@ int LibraryIndex::totalPages(int perPage) const {
 const LibraryBook* LibraryIndex::getAt(int page, int slot, int perPage) const {
   if (page < 0 || slot < 0 || perPage <= 0 || slot >= perPage) return nullptr;
   const size_t idx = static_cast<size_t>(page) * static_cast<size_t>(perPage) + static_cast<size_t>(slot);
-  if (idx >= books.size()) return nullptr;
-  return &books[idx];
+
+  return this->getAt(idx);
+}
+
+const LibraryBook* LibraryIndex::getAt(int index) const {
+  if (index >= books.size()) return nullptr;
+  return &books[index];
 }
 
 void LibraryIndex::unload() {

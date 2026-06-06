@@ -98,6 +98,7 @@ class LibraryIndex {
   int totalPages(int perPage) const;
   // Returns nullptr when (page, slot) is past the end of the index.
   const LibraryBook* getAt(int page, int slot, int perPage) const;
+  const LibraryBook* getAt(int index) const;
 
   // Re-read progress.bin for a single book and update the in-memory entry.
   // Cheap — opens the 6-byte progress file. Persists library.bin if changed.
