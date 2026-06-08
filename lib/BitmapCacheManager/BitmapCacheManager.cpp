@@ -41,3 +41,13 @@ void BitmapCacheManager::clear() {
   }
   nextOverwrite_ = 0;
 }
+
+void BitmapCacheManager::evict(const char* path) {
+  if (path == nullptr || path[0] == '\0') return;
+  for (auto& slot : slots_) {
+    if (!slot.path.empty() && slot.path == path) {
+      slot = Entry{};
+      return;
+    }
+  }
+}

@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <cstring>
 #include <string>
 #include <vector>
 
@@ -102,6 +103,50 @@ void LibraryActivity::onEnter() {
                       static_cast<LibraryIndex::SortDirection>(SETTINGS.librarySortDirection));
 
   this->gridHelper = GridHelper(LIBRARY_INDEX.getBookCount(), ROWS, COLS, 0);
+  this->lastObservedPage_ = this->gridHelper.currentPage();
+
+  // Spin up the prefetch worker before requesting the first paint so it's
+  // ready by the time we ask for neighbor-page fills.
+  // cacheLock_ is a binary semaphore (created taken, then given) rather
+  // than a true xSemaphoreCreateMutex. A mutex tracks ownership for
+  // priority inheritance — its release path calls xTaskPriorityDisinherit
+  // which assertions on `holder == currentTask`. Under Lyra we were
+  // tripping that assertion; switching to a binary semaphore avoids the
+  // inheritance accounting entirely while preserving mutual exclusion.
+  // All tasks here run at priority 1 (Arduino main loop, render task,
+  // prefetch worker), so priority inversion isn't a concern.
+  cacheLock_ = xSemaphoreCreateBinary();
+  prefetchSignal_ = xSemaphoreCreateBinary();
+  prefetchExited_ = xSemaphoreCreateBinary();
+  prefetchBatchDone_ = xSemaphoreCreateBinary();
+  assert(cacheLock_ != nullptr && prefetchSignal_ != nullptr && prefetchExited_ != nullptr &&
+         prefetchBatchDone_ != nullptr);
+  // Binary semaphores from xSemaphoreCreateBinary are born "taken"
+  // (count = 0). Give once so the first acquirer can take it.
+  xSemaphoreGive(cacheLock_);
+  prefetchCancel_ = false;
+  prefetchShutdown_ = false;
+  prefetchQueueCount_ = 0;
+  for (auto& slot : prefetchQueue_) slot = 0xFF;
+  xTaskCreate(&prefetchTaskTrampoline, "LibPrefetch",
+              4096,            // stack: SD I/O + bitmap parsing
+              this, 1,         // priority: same tier as render
+              &prefetchTask_);
+  assert(prefetchTask_ != nullptr);
+
+  // First impression matters — prefetch both neighbor pages so the first
+  // page-turn (in either direction) paints from cache. The current page
+  // is still loaded synchronously by the render path on the first paint
+  // below; it's the neighbors that benefit from getting a head start.
+  const uint8_t cur = lastObservedPage_;
+  const uint8_t pages = std::max<uint8_t>(1, gridHelper.pageCount());
+  xSemaphoreTake(cacheLock_, portMAX_DELAY);
+  if (pages > 1) {
+    enqueuePrefetchLocked((cur + pages - 1) % pages);  // prev (wraps)
+    enqueuePrefetchLocked((cur + 1) % pages);          // next (wraps)
+  }
+  xSemaphoreGive(cacheLock_);
+
   requestUpdate();
 }
 
@@ -114,12 +159,293 @@ void LibraryActivity::onExit() {
   // serif and fall back to embedded sans). The book-open path in doSelect()
   // does its own font unload before goToReader, which is the one exit that
   // actually needs the RAM.
-  //
-  // The per-page cover cache holds at most 9 decoded covers (~10 KB total
-  // at 1bpp). Drop them on exit — the next paint of any other UI doesn't
-  // render thumbnails.
+
+  // Tear down the prefetch worker BEFORE clearing the cache or destroying
+  // the lock — the worker reads both, so the order matters. Set shutdown
+  // + cancel under the lock (so any worker wake observes them coherently),
+  // signal once to wake the worker, then wait on prefetchExited_ which
+  // the worker gives just before parking. Parent calls vTaskDelete so we
+  // never poll a potentially-dangling self-deleted handle.
+  if (prefetchTask_ != nullptr) {
+    xSemaphoreTake(cacheLock_, portMAX_DELAY);
+    prefetchShutdown_ = true;
+    prefetchCancel_ = true;
+    prefetchQueueCount_ = 0;
+    xSemaphoreGive(cacheLock_);
+    xSemaphoreGive(prefetchSignal_);
+    // Worker may be mid-decode; wait for it to observe shutdown between
+    // covers and exit its main loop. Worst case ~500 ms (one cover decode).
+    xSemaphoreTake(prefetchExited_, portMAX_DELAY);
+    // Worker is parked in vTaskDelay(portMAX_DELAY) and holds no
+    // resources; safe to delete from here.
+    vTaskDelete(prefetchTask_);
+    prefetchTask_ = nullptr;
+  }
+  if (prefetchSignal_ != nullptr) {
+    vSemaphoreDelete(prefetchSignal_);
+    prefetchSignal_ = nullptr;
+  }
+  if (prefetchExited_ != nullptr) {
+    vSemaphoreDelete(prefetchExited_);
+    prefetchExited_ = nullptr;
+  }
+  if (prefetchBatchDone_ != nullptr) {
+    vSemaphoreDelete(prefetchBatchDone_);
+    prefetchBatchDone_ = nullptr;
+  }
+
+  // The cover cache holds up to 27 1bpp pre-scaled covers (~2 KB each →
+  // ~55 KB total worst case at 120×120; ~35 KB for typical 80×120 covers).
+  // The 2bpp decoded source is freed inside buildScaledBitmap as soon as
+  // the 1bpp raster is built, so resident-set is scaled-only. Drop them
+  // on exit — the next paint of any other UI doesn't render thumbnails.
   pageCache_.clear();
+
+  if (cacheLock_ != nullptr) {
+    vSemaphoreDelete(cacheLock_);
+    cacheLock_ = nullptr;
+  }
+
   LIBRARY_INDEX.unload();
+}
+
+// ---- Prefetch worker --------------------------------------------------------
+
+bool LibraryActivity::buildThumbPath(uint8_t page, uint8_t slot, char* out,
+                                     std::size_t outSize) const {
+  if (out == nullptr || outSize < 64) return false;
+  const int idx = static_cast<int>(page) * PER_PAGE + static_cast<int>(slot);
+  const LibraryBook* book = LIBRARY_INDEX.getAt(idx);
+  if (book == nullptr) {
+    out[0] = '\0';
+    return false;
+  }
+  snprintf(out, outSize, "/.crosspoint/epub_%lu/thumb_%d.bmp",
+           static_cast<unsigned long>(book->pathHash), LibraryIndex::THUMB_HEIGHT);
+  return true;
+}
+
+void LibraryActivity::enqueuePrefetchLocked(uint8_t page) {
+  // Validate against the current library size — pageCount() includes a
+  // partial trailing page when applicable.
+  const uint8_t pages = gridHelper.pageCount();
+  if (pages == 0 || page >= pages) return;
+
+  // Dedupe against the existing queue so repeated requests for the same
+  // page don't pile up (e.g., quick A→B→A bouncing).
+  for (uint8_t i = 0; i < prefetchQueueCount_; ++i) {
+    if (prefetchQueue_[i] == page) return;
+  }
+
+  if (prefetchQueueCount_ >= PREFETCH_QUEUE_CAPACITY) {
+    // Drop the oldest pending — newer requests reflect more recent
+    // user intent. Shift down one slot.
+    for (uint8_t i = 1; i < prefetchQueueCount_; ++i) {
+      prefetchQueue_[i - 1] = prefetchQueue_[i];
+    }
+    --prefetchQueueCount_;
+  }
+  prefetchQueue_[prefetchQueueCount_++] = page;
+  xSemaphoreGive(prefetchSignal_);
+}
+
+void LibraryActivity::cancelAllPrefetch() {
+  if (cacheLock_ == nullptr) return;
+  xSemaphoreTake(cacheLock_, portMAX_DELAY);
+  prefetchCancel_ = true;
+  prefetchQueueCount_ = 0;
+  for (auto& slot : prefetchQueue_) slot = 0xFF;
+  xSemaphoreGive(cacheLock_);
+  // Wake the worker if it's currently sleeping on the signal so it can
+  // observe the cleared queue and go back to sleep. Without this, a
+  // worker that just finished its previous page would sit on the signal
+  // forever if we never gave it again.
+  xSemaphoreGive(prefetchSignal_);
+}
+
+void LibraryActivity::evictPagesOutsideKeepSetLocked(uint8_t centerPage) {
+  const uint8_t pages = std::max<uint8_t>(1, gridHelper.pageCount());
+  const uint8_t prev = (centerPage + pages - 1) % pages;
+  const uint8_t next = (centerPage + 1) % pages;
+  // Materialize the keep-set thumb paths up front (at most 27), then
+  // evictIf does a linear scan of cached entries against this list.
+  // Stack cost is ~1.7 KB — main task has 8 KB so it's well within budget.
+  char keepPaths[PER_PAGE * 3][64];
+  std::size_t keepCount = 0;
+  auto addPagePaths = [&](uint8_t page) {
+    for (uint8_t slot = 0; slot < PER_PAGE; ++slot) {
+      if (buildThumbPath(page, slot, keepPaths[keepCount], sizeof(keepPaths[0]))) {
+        ++keepCount;
+      }
+    }
+  };
+  addPagePaths(prev);
+  addPagePaths(centerPage);
+  if (next != prev) addPagePaths(next);  // single-page library: prev==cur==next
+
+  pageCache_.evictIf([&](const std::string& path) {
+    for (std::size_t i = 0; i < keepCount; ++i) {
+      if (path == keepPaths[i]) return false;
+    }
+    return true;
+  });
+}
+
+void LibraryActivity::primeNeighborhoodLazy(uint8_t centerPage) {
+  cancelAllPrefetch();
+  const uint8_t pages = std::max<uint8_t>(1, gridHelper.pageCount());
+
+  xSemaphoreTake(cacheLock_, portMAX_DELAY);
+  evictPagesOutsideKeepSetLocked(centerPage);
+  enqueuePrefetchLocked(centerPage);
+  if (pages > 1) {
+    enqueuePrefetchLocked((centerPage + pages - 1) % pages);
+    enqueuePrefetchLocked((centerPage + 1) % pages);
+  }
+  // Drain any pending batch-done signal from a previous batch — we only
+  // care about the batch we're enqueuing now. Then enter lazy mode so
+  // the render path uses peek instead of triggering 1–2 s of synchronous
+  // SD decode for covers that may already be in the prefetch queue
+  // ahead of the render request.
+  xSemaphoreTake(prefetchBatchDone_, 0);
+  lazyLoadCurrentPage_ = true;
+  xSemaphoreGive(cacheLock_);
+}
+
+void LibraryActivity::onPageChanged(uint8_t oldPage, uint8_t newPage) {
+  if (oldPage == newPage || cacheLock_ == nullptr) return;
+
+  // Don't disturb the cache or prefetch queue while a rapid-jump is in
+  // progress — endRapidJumpIfActive owns the cleanup once the button
+  // releases. (A user can still press Left/Right while holding Down; in
+  // that rare case, we just let lastObservedPage_ drift; the rapid-jump
+  // release path treats the landed page as cold anyway.)
+  if (rapidJumping_) {
+    lastObservedPage_ = newPage;
+    return;
+  }
+
+  // Cancel any in-flight prefetch and drop queued requests — they refer
+  // to a neighborhood that's about to shift. We'll re-enqueue below.
+  cancelAllPrefetch();
+
+  // A normal page step implies the new current page is already cached
+  // (it was the prev/next of the previous current page). If somehow
+  // it isn't, getCachedBitmapDimensions will do a synchronous decode —
+  // the same fallback as before this commit. Either way, lazy-load
+  // shouldn't persist past an explicit page change.
+  lazyLoadCurrentPage_ = false;
+
+  const uint8_t pages = std::max<uint8_t>(1, gridHelper.pageCount());
+
+  xSemaphoreTake(cacheLock_, portMAX_DELAY);
+  evictPagesOutsideKeepSetLocked(newPage);
+
+  // Detect single-step transitions (the common case: user pages one over,
+  // so the opposite-direction neighbor is still resident). Multi-page
+  // jumps (rapid-jump release, sort-induced reposition) need to refill
+  // both neighbors since neither is cached.
+  const uint8_t forwardNeighbor = (newPage + 1) % pages;
+  const uint8_t backwardNeighbor = (newPage + pages - 1) % pages;
+  const bool steppedForward = (newPage == (oldPage + 1) % pages);
+  const bool steppedBackward = (oldPage == (newPage + 1) % pages);
+  if (steppedForward && pages > 1) {
+    enqueuePrefetchLocked(forwardNeighbor);
+  } else if (steppedBackward && pages > 1) {
+    enqueuePrefetchLocked(backwardNeighbor);
+  } else if (pages > 1) {
+    enqueuePrefetchLocked(backwardNeighbor);
+    enqueuePrefetchLocked(forwardNeighbor);
+  }
+  xSemaphoreGive(cacheLock_);
+
+  lastObservedPage_ = newPage;
+}
+
+void LibraryActivity::prefetchTaskTrampoline(void* ctx) {
+  auto* self = static_cast<LibraryActivity*>(ctx);
+  self->prefetchTaskLoop();
+  // Signal that the worker has exited its main loop and is no longer
+  // touching cacheLock_ or pageCache_. The parent waits on this in
+  // onExit before calling vTaskDelete on us, so we know we won't be
+  // killed mid-lock-hold. Park here until the parent reaps.
+  xSemaphoreGive(self->prefetchExited_);
+  while (true) vTaskDelay(portMAX_DELAY);
+}
+
+void LibraryActivity::prefetchTaskLoop() {
+  while (true) {
+    // Wait for work. Activity gives the semaphore on enqueue or on
+    // cancel/shutdown (so we always wake to re-check our state).
+    xSemaphoreTake(prefetchSignal_, portMAX_DELAY);
+
+    while (true) {
+      uint8_t targetPage = 0xFF;
+      xSemaphoreTake(cacheLock_, portMAX_DELAY);
+      if (prefetchShutdown_) {
+        xSemaphoreGive(cacheLock_);
+        return;
+      }
+      if (prefetchQueueCount_ > 0) {
+        targetPage = prefetchQueue_[0];
+        for (uint8_t i = 1; i < prefetchQueueCount_; ++i) {
+          prefetchQueue_[i - 1] = prefetchQueue_[i];
+        }
+        prefetchQueue_[--prefetchQueueCount_] = 0xFF;
+        // Reset the cancel flag for the new work unit. Old in-flight
+        // cancellations were already honored by the previous iteration.
+        prefetchCancel_ = false;
+      }
+      xSemaphoreGive(cacheLock_);
+      if (targetPage == 0xFF) break;  // queue empty, go back to sleep
+
+      // Decode each of the 9 covers. Path build, cache check, and
+      // cache.set are lock-protected; the SD decode itself runs
+      // unlocked so the render thread can still touch the cache for
+      // hits while we're working.
+      bool batchCompleted = true;  // false if we broke early (cancel/shutdown)
+      for (uint8_t slot = 0; slot < PER_PAGE; ++slot) {
+        if (prefetchCancel_ || prefetchShutdown_) {
+          batchCompleted = false;
+          break;
+        }
+        char path[64];
+        bool pathOk = false;
+        xSemaphoreTake(cacheLock_, portMAX_DELAY);
+        pathOk = buildThumbPath(targetPage, slot, path, sizeof(path));
+        bool alreadyCached = false;
+        if (pathOk) {
+          alreadyCached = (pageCache_.get(path) != nullptr);
+        }
+        xSemaphoreGive(cacheLock_);
+        if (!pathOk || alreadyCached) continue;
+
+        // Slow path — decode off-lock. HalStorage serializes its own
+        // SD access, so the render thread can still read the cache for
+        // hits while this runs.
+        auto entry = GfxRenderer::decodeBitmapEntry(path);
+        if (entry.path.empty()) continue;  // decode failed; nothing to insert
+
+        if (prefetchCancel_ || prefetchShutdown_) {
+          batchCompleted = false;
+          break;
+        }
+
+        xSemaphoreTake(cacheLock_, portMAX_DELAY);
+        if (!prefetchShutdown_) {
+          pageCache_.set(std::move(entry));
+        }
+        xSemaphoreGive(cacheLock_);
+      }
+      // Signal the activity loop that this page's covers are resident
+      // in the cache. Activity uses this to clear lazyLoadCurrentPage_
+      // and trigger a repaint when the awaited page lands. Suppressed
+      // on cancel — the partial state shouldn't drop the placeholder.
+      if (batchCompleted && !prefetchShutdown_) {
+        xSemaphoreGive(prefetchBatchDone_);
+      }
+    }
+  }
 }
 
 void LibraryActivity::initPopup() {
@@ -190,6 +516,29 @@ void LibraryActivity::initPopup() {
 // ---- Input ------------------------------------------------------------------
 
 void LibraryActivity::loop() {
+  // Pick up the prefetch worker's batch-completion signal. The current
+  // page is enqueued first by applySort / endRapidJumpIfActive, so the
+  // first batch-done after entering lazy mode means current-page covers
+  // are now resident — clear the flag and repaint to swap placeholders
+  // for the real artwork. Subsequent batch-dones (prev / next neighbors)
+  // arrive with the flag already clear and are simply drained.
+  if (prefetchBatchDone_ != nullptr &&
+      xSemaphoreTake(prefetchBatchDone_, 0) == pdTRUE) {
+    if (lazyLoadCurrentPage_) {
+      lazyLoadCurrentPage_ = false;
+      requestUpdate();
+    }
+  }
+
+  // End-of-rapid-jump detection: once both continuous-bound buttons are
+  // released, restore normal prefetch + cache loading and repaint with the
+  // real covers for the landed page. ButtonNavigator doesn't expose a
+  // release-after-continuous hook, so we sample the input state here.
+  if (rapidJumping_ && !mappedInput.isPressed(MappedInputManager::Button::Up) &&
+      !mappedInput.isPressed(MappedInputManager::Button::Down)) {
+    endRapidJumpIfActive();
+  }
+
   // Suppress the just-pressed Confirm release that brought us here.
   if (lockNextConfirmRelease) {
     if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
@@ -256,7 +605,10 @@ void LibraryActivity::moveUp() {
     return;
   }
 
+  const uint8_t oldPage = gridHelper.currentPage();
   this->gridHelper.up();
+  const uint8_t newPage = gridHelper.currentPage();
+  if (oldPage != newPage) onPageChanged(oldPage, newPage);
   requestUpdate();
 }
 
@@ -269,21 +621,50 @@ void LibraryActivity::moveDown() {
     return;
   }
 
+  const uint8_t oldPage = gridHelper.currentPage();
   this->gridHelper.down();
+  const uint8_t newPage = gridHelper.currentPage();
+  if (oldPage != newPage) onPageChanged(oldPage, newPage);
   requestUpdate();
 }
 
 
 void LibraryActivity::jumpPageForward() {
-  // const int pages = totalPages();
-  // if (pages <= 0) return;
-  // landOnPage((libraryPage + 1) % pages, currentRow(), currentCol());
+  if (popup_.isOpen()) return;
+  const uint8_t pages = gridHelper.pageCount();
+  if (pages <= 1) return;
+  const uint8_t oldPage = gridHelper.currentPage();
+  const uint8_t row = gridHelper.currentRow();
+  const uint8_t col = gridHelper.currentCol();
+  const uint8_t newPage = (oldPage + 1) % pages;
+  gridHelper.setByRowColPage(row, col, newPage);
+  // During a held rapid-jump, suppress prefetch / SD work — we want the
+  // render path to take the placeholder fallback for any uncached covers.
+  // Page-aware retention + prefetch resumes when the button is released
+  // (see the onContinuous binding's release handler).
+  if (!rapidJumping_) {
+    rapidJumping_ = true;
+    cancelAllPrefetch();
+  }
+  lastObservedPage_ = gridHelper.currentPage();
+  requestUpdate();
 }
 
 void LibraryActivity::jumpPageBack() {
-  // const int pages = totalPages();
-  // if (pages <= 0) return;
-  // landOnPage((libraryPage + pages - 1) % pages, currentRow(), currentCol());
+  if (popup_.isOpen()) return;
+  const uint8_t pages = gridHelper.pageCount();
+  if (pages <= 1) return;
+  const uint8_t oldPage = gridHelper.currentPage();
+  const uint8_t row = gridHelper.currentRow();
+  const uint8_t col = gridHelper.currentCol();
+  const uint8_t newPage = (oldPage + pages - 1) % pages;
+  gridHelper.setByRowColPage(row, col, newPage);
+  if (!rapidJumping_) {
+    rapidJumping_ = true;
+    cancelAllPrefetch();
+  }
+  lastObservedPage_ = gridHelper.currentPage();
+  requestUpdate();
 }
 
 void LibraryActivity::moveLeft() {
@@ -291,7 +672,10 @@ void LibraryActivity::moveLeft() {
     return;
   }
 
+  const uint8_t oldPage = gridHelper.currentPage();
   this->gridHelper.left();
+  const uint8_t newPage = gridHelper.currentPage();
+  if (oldPage != newPage) onPageChanged(oldPage, newPage);
   requestUpdate();
 }
 
@@ -300,7 +684,10 @@ void LibraryActivity::moveRight() {
     return;
   }
 
+  const uint8_t oldPage = gridHelper.currentPage();
   this->gridHelper.right();
+  const uint8_t newPage = gridHelper.currentPage();
+  if (oldPage != newPage) onPageChanged(oldPage, newPage);
   requestUpdate();
 }
 
@@ -309,8 +696,26 @@ void LibraryActivity::moveNext() {
     return;
   }
 
-  this->gridHelper.nextItem(); 
+  const uint8_t oldPage = gridHelper.currentPage();
+  this->gridHelper.nextItem();
+  const uint8_t newPage = gridHelper.currentPage();
+  if (oldPage != newPage) onPageChanged(oldPage, newPage);
   requestUpdate();
+}
+
+// Called when the rapid-jump continuous binding stops firing (button
+// released). Resumes normal page-aware prefetch for the landed page,
+// using lazy-load so the user sees the new layout immediately with
+// placeholders that fill in as covers decode (no 1–2 s freeze waiting
+// on synchronous SD reads for nine covers).
+void LibraryActivity::endRapidJumpIfActive() {
+  if (!rapidJumping_) return;
+  rapidJumping_ = false;
+
+  const uint8_t cur = gridHelper.currentPage();
+  primeNeighborhoodLazy(cur);
+  lastObservedPage_ = cur;
+  requestUpdate();  // paint placeholders; real covers follow async
 }
 
 void LibraryActivity::doSelect() {
@@ -376,14 +781,31 @@ void LibraryActivity::dispatchPopupActivation(CascadingPopupMenu::Nav navResult)
 }
 
 void LibraryActivity::applySort() {
+  // Cancel any in-flight prefetch BEFORE taking cacheLock_ — the worker
+  // may be holding the lock briefly between covers, and we don't want
+  // to deadlock waiting for it. cancelAllPrefetch is non-blocking from
+  // our perspective; the worker observes the cancel flag between
+  // covers and parks itself.
+  cancelAllPrefetch();
+
+  // Hold cacheLock_ across sortBy. The worker reads LIBRARY_INDEX from
+  // inside buildThumbPath (called under cacheLock_), so sorting outside
+  // the lock would race with a worker that won the lock between
+  // cancelAllPrefetch's release and our sortBy. That race was the
+  // double-sort crash.
+  xSemaphoreTake(cacheLock_, portMAX_DELAY);
   LIBRARY_INDEX.sortBy(static_cast<LibraryIndex::SortField>(SETTINGS.librarySortField),
                       static_cast<LibraryIndex::SortDirection>(SETTINGS.librarySortDirection));
+  xSemaphoreGive(cacheLock_);
 
-  // The book → page mapping changes wholesale; covers held in pageCache_ no
-  // longer correspond to whatever lands on page 0, so drop them regardless.
-  pageCache_.clear();
-
+  // Land on page 0 of the new ordering, then reseed the cache around it.
+  // book.pathHash is invariant under sort, so any cached cover whose
+  // book lands in the new {prev, cur, next} neighborhood survives the
+  // eviction step — for libraries that fit in three pages, no eviction
+  // happens at all.
   this->gridHelper.setByIndex(0);
+  lastObservedPage_ = 0;
+  primeNeighborhoodLazy(0);
 
   requestUpdate();
 }
@@ -605,9 +1027,23 @@ void LibraryActivity::renderBookTile(int slotIndex, const LibraryBook& book, boo
   snprintf(thumbPath, sizeof(thumbPath), "/.crosspoint/epub_%lu/thumb_%d.bmp",
            static_cast<unsigned long>(book.pathHash), LibraryIndex::THUMB_HEIGHT);
 
+  // Hold cacheLock_ across the dimension probe AND the later
+  // drawCachedBitmap call so the worker can't evict / mutate the entry
+  // between them. The lock is taken just before the lookup and released
+  // after the bitmap draw (or the fallback path) further down. The
+  // read-only peek variant is used in two cases: (1) while a rapid-jump
+  // is in progress (no SD reads at all until the button releases),
+  // and (2) while lazy-load is active (sort change / rapid-jump
+  // release — the prefetch worker fills the cache asynchronously, so
+  // a miss here falls through to the placeholder and the activity
+  // repaints when the batch-done signal arrives).
+  xSemaphoreTake(cacheLock_, portMAX_DELAY);
+
+  const bool useReadOnly = rapidJumping_ || lazyLoadCurrentPage_;
   int bmpW = 0, bmpH = 0;
-  const bool haveThumb =
-      renderer.getCachedBitmapDimensions(pageCache_, thumbPath, &bmpW, &bmpH) && bmpW > 0 && bmpH > 0;
+  const bool haveThumb = useReadOnly
+      ? (renderer.peekCachedBitmapDimensions(pageCache_, thumbPath, &bmpW, &bmpH) && bmpW > 0 && bmpH > 0)
+      : (renderer.getCachedBitmapDimensions(pageCache_, thumbPath, &bmpW, &bmpH) && bmpW > 0 && bmpH > 0);
 
   if (haveThumb) {
     // Fit-to-box against (cell.width × COVER_H), preserving aspect.
@@ -646,6 +1082,10 @@ void LibraryActivity::renderBookTile(int slotIndex, const LibraryBook& book, boo
     drewCover = renderer.drawCachedBitmap<true>(pageCache_, thumbPath, frameX, frameY, coverAreaW,
                                                 COVER_H, lib.coverBorderRadius);
   }
+  // Cache work is done — release the lock before the fallback / text /
+  // progress-bar paths so the worker can proceed in parallel with the
+  // rest of this tile's render.
+  xSemaphoreGive(cacheLock_);
 
   // 2a. Fallback cover for books without covers
   if (!drewCover) {

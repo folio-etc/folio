@@ -55,6 +55,23 @@ class BitmapCacheManager {
   // Drop every entry, releasing pixel buffers. Capacity is preserved.
   void clear();
 
+  // Drop a single entry by path, releasing its pixel buffers. No-op if the
+  // path isn't in the cache. Used both to invalidate a stale-dimensioned
+  // entry (forcing a re-decode at the new size) and to evict per-page
+  // entries when the Library transitions between pages.
+  void evict(const char* path);
+
+  // Drop every entry whose path satisfies `pred`. Pred receives the path
+  // as a string_view (non-empty). Used by LibraryActivity to bulk-evict
+  // the page that just rotated out of the {prev, cur, next} keep-set.
+  template <typename Pred>
+  void evictIf(Pred pred) {
+    for (auto& slot : slots_) {
+      if (slot.path.empty()) continue;
+      if (pred(static_cast<const std::string&>(slot.path))) slot = Entry{};
+    }
+  }
+
   std::size_t capacity() const { return slots_.size(); }
 
  private:

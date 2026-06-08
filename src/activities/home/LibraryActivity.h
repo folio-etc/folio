@@ -1,7 +1,11 @@
 #pragma once
 #include <BitmapCacheManager.h>
 #include <I18n.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
+#include <freertos/task.h>
 
+#include <cstddef>
 #include <cstdint>
 #include <string>
 
@@ -53,13 +57,93 @@ class LibraryActivity final : public Activity {
   bool lockNextConfirmRelease = false;
   bool lockNextBackRelease = false;
 
-  // Fixed-capacity cover cache, sized to the visible grid. Owned here so the
-  // working set is bounded to a single page; cleared at page transitions to
-  // release the prior page's decoded pixels before the next page's covers
-  // are pulled in. Populated lazily on the render path — the first paint
-  // after a page change pays the SD decode cost; subsequent paints of the
-  // same page rasterize from cached pixels.
-  BitmapCacheManager pageCache_{PER_PAGE};
+  // Fixed-capacity cover cache sized to three pages worth of thumbs
+  // (previous / current / next). The current page is populated lazily on
+  // the render path; the two neighbor pages are populated by an async
+  // prefetch task so a page-turn paints from cached pixels with no SD
+  // I/O on the render thread. The 2bpp decoded source is freed inside
+  // buildScaledBitmap once the 1bpp raster is built, keeping the worst-
+  // case resident set around 55 KB even at 27 entries (~2 KB / cover).
+  BitmapCacheManager pageCache_{PER_PAGE * 3};
+
+  // ---- Prefetch worker state ---------------------------------------------
+  // FreeRTOS task that decodes neighbor-page covers off the render path.
+  // Created in onEnter, joined and destroyed in onExit. Communication:
+  //   - cacheLock_ guards pageCache_, prefetchQueue_, and the queue count.
+  //   - prefetchSignal_ is a binary semaphore the worker waits on.
+  //   - prefetchCancel_ is a volatile flag the worker checks between
+  //     covers to abandon its current scan (set on page change / sort /
+  //     rapid-jump / shutdown).
+  //   - prefetchShutdown_ tells the worker to exit cleanly.
+  // Owner: activity thread enqueues page indices; worker dequeues and
+  // populates the cache via GfxRenderer::decodeBitmapEntry + cache.set.
+  TaskHandle_t prefetchTask_ = nullptr;
+  SemaphoreHandle_t cacheLock_ = nullptr;
+  SemaphoreHandle_t prefetchSignal_ = nullptr;
+  // Given by the worker after its main loop has exited. onExit waits on
+  // this before calling vTaskDelete, ensuring the worker isn't holding
+  // cacheLock_ or mid-SD-decode when it's deleted.
+  SemaphoreHandle_t prefetchExited_ = nullptr;
+  // Given by the worker after each fully-completed page batch (not on
+  // cancel). Activity loop polls it to clear lazyLoadCurrentPage_ and
+  // trigger a repaint once the awaited page lands in the cache.
+  SemaphoreHandle_t prefetchBatchDone_ = nullptr;
+  // Capacity 4 is enough for the worst overlap: onEnter enqueues both
+  // neighbors (2), and a rapid-jump release enqueues both new neighbors
+  // before the worker has drained (2 more). Sentinel 0xFF = empty slot.
+  static constexpr std::size_t PREFETCH_QUEUE_CAPACITY = 4;
+  uint8_t prefetchQueue_[PREFETCH_QUEUE_CAPACITY] = {0xFF, 0xFF, 0xFF, 0xFF};
+  uint8_t prefetchQueueCount_ = 0;
+  volatile bool prefetchCancel_ = false;
+  volatile bool prefetchShutdown_ = false;
+
+  // Tracks gridHelper.currentPage() at the start of loop() so page
+  // transitions trigger the page-aware eviction + direction-of-travel
+  // prefetch exactly once per transition.
+  uint8_t lastObservedPage_ = 0;
+  // True while a rapid-jump (continuous Up/Down) hold is in progress.
+  // Render path swaps to peekCachedBitmapDimensions while this is set so
+  // pages flicked past don't trigger SD reads; release restores normal
+  // loading and triggers a re-prefetch of the landed page's neighbors.
+  // Volatile because the render task reads it without taking cacheLock_
+  // (the read is single-byte and outside the lock-protected cache ops).
+  volatile bool rapidJumping_ = false;
+  // True after applySort or endRapidJumpIfActive — render path uses
+  // peekCachedBitmapDimensions for the current page so the activity
+  // paints placeholders immediately rather than blocking on a 1–2 s
+  // synchronous SD decode. Cleared by the activity loop when the
+  // prefetch worker signals batch-done (the current page lands first
+  // because applySort / endRapidJumpIfActive enqueue it first).
+  volatile bool lazyLoadCurrentPage_ = false;
+
+  // ---- Prefetch helpers --------------------------------------------------
+  static void prefetchTaskTrampoline(void* ctx);
+  void prefetchTaskLoop();
+  // Build the SD path for the cover at (page, slot). Returns false if no
+  // book occupies that grid position (past end of library). out must be
+  // at least 64 bytes.
+  bool buildThumbPath(uint8_t page, uint8_t slot, char* out, std::size_t outSize) const;
+  // Enqueue a page for prefetch. Validates the page index, dedupes against
+  // the existing queue, signals the worker. Safe to call while holding
+  // cacheLock_ (uses no-op fast path) or without.
+  void enqueuePrefetchLocked(uint8_t page);
+  // Cancel any in-flight or queued prefetch. Acquires cacheLock_.
+  void cancelAllPrefetch();
+  // Drop cached entries whose path doesn't appear in the keep-set for
+  // pages {centerPage-1, centerPage, centerPage+1}. Caller holds cacheLock_.
+  void evictPagesOutsideKeepSetLocked(uint8_t centerPage);
+  // Handle a detected page transition: cancel pending prefetch, evict
+  // pages outside the new keep-set, request prefetch for the new
+  // direction-of-travel neighbor (or both neighbors on a multi-page jump
+  // where the prev page is no longer resident).
+  void onPageChanged(uint8_t oldPage, uint8_t newPage);
+  // Shared "we just landed on a cold page" reseed used by applySort and
+  // endRapidJumpIfActive: cancel any in-flight prefetch, evict entries
+  // outside the new {prev, cur, next} keep-set, enqueue current first
+  // then both neighbors, drain any stale batch-done signal, enter
+  // lazy-load mode so the render path uses peek (showing placeholders)
+  // until the worker's first batch lands.
+  void primeNeighborhoodLazy(uint8_t centerPage);
 
   void initPopup();
 
@@ -70,6 +154,9 @@ class LibraryActivity final : public Activity {
   void moveNext();
   void jumpPageBack();
   void jumpPageForward();
+  // Resume normal prefetch + render-side cache loading after a rapid-jump
+  // continuous-hold ends. No-op if not currently rapid-jumping.
+  void endRapidJumpIfActive();
 
   void doSelect();
   // Dispatches the activity action for an active popup row (leaf or submenu

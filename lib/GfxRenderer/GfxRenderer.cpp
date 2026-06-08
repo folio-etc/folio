@@ -1303,6 +1303,14 @@ void GfxRenderer::buildScaledBitmap(BitmapCacheManager::Entry* entry, int target
   entry->scaledPixelsBytes = scaledBytes;
   entry->scaledWidth = targetW;
   entry->scaledHeight = targetH;
+
+  // 2bpp source is only needed to (re)build the 1bpp scaled raster. Once
+  // the scaled buffer is live, drop the source — frees ~3.6 KB per 120×120
+  // cover (~65% of the entry footprint). If a later paint requests a
+  // different target size, drawCachedBitmap evicts the slot and re-decodes
+  // from SD; that path is exercised on orientation change only.
+  entry->pixels.reset();
+  entry->pixelsBytes = 0;
 }
 
 // Looks up `path` in `cache` (loading on miss), then blits it. `Opaque=false`
@@ -1330,8 +1338,20 @@ bool GfxRenderer::drawCachedBitmap(BitmapCacheManager& cache, const char* path, 
   const int targetH = static_cast<int>(entry->height * scale);
   if (targetW <= 0 || targetH <= 0) return false;
 
-  if (!entry->scaledPixels || entry->scaledWidth != targetW || entry->scaledHeight != targetH)
+  if (!entry->scaledPixels || entry->scaledWidth != targetW || entry->scaledHeight != targetH) {
+    // buildScaledBitmap consumes entry->pixels (the 2bpp source) and then
+    // drops it. If a subsequent paint requests different dimensions, the
+    // source is gone — evict the slot and re-decode from SD before
+    // rescaling. This path is rare (orientation change only in current
+    // Library usage; THUMB_HEIGHT == COVER_H means normal page paints
+    // always hit the matching-dims branch).
+    if (!entry->pixels) {
+      cache.evict(path);
+      entry = lookupOrLoadCachedBitmap(cache, path);
+      if (entry == nullptr) return false;
+    }
     buildScaledBitmap(entry, targetW, targetH);
+  }
   if (!entry->scaledPixels) return false;
 
 
