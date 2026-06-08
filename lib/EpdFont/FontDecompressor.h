@@ -9,7 +9,10 @@
 class FontDecompressor {
  public:
   static constexpr uint16_t MAX_PAGE_GLYPHS = 512;
-  static constexpr uint8_t MAX_PAGE_SLOTS = 4;  // One per font style (R/B/I/BI)
+  // Theoretical maximum: 8 FontRoles × 4 styles (R/B/I/BI). Each slot itself
+  // is ~20 bytes; the buffer/glyphs allocations are sized per-prewarm and
+  // amortized via the (fontData, textHash) idempotent short-circuit below.
+  static constexpr uint8_t MAX_PAGE_SLOTS = 32;
 
   FontDecompressor() = default;
   ~FontDecompressor();
@@ -61,6 +64,11 @@ class FontDecompressor {
     const EpdFontData* fontData = nullptr;
     PageGlyphEntry* glyphs = nullptr;
     uint16_t glyphCount = 0;
+    // FNV-1a of the prewarm utf8Text. Lets prewarmCache short-circuit when
+    // the same (fontData, text) is requested again — UI activities prewarm
+    // on every render, and stable scenes (page navigation in a fixed grid,
+    // popup open/close) keep the same text in most slots.
+    uint32_t textHash = 0;
   };
   PageSlot pageSlots[MAX_PAGE_SLOTS] = {};
   uint8_t pageSlotCount = 0;

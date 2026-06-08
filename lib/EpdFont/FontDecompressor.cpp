@@ -245,12 +245,39 @@ int32_t FontDecompressor::findGlyphIndex(const EpdFontData* fontData, uint32_t c
 int FontDecompressor::prewarmCache(const EpdFontData* fontData, const char* utf8Text) {
   if (!fontData || !fontData->groups || !utf8Text) return 0;
 
-  // Allocate the next available slot (caller must call freePageBuffer/clearCache to reset)
-  if (pageSlotCount >= MAX_PAGE_SLOTS) {
+  // Idempotent short-circuit: hash the page text, and if a slot is already
+  // pinned to (fontData, hash) the cached buffer is exactly what we'd
+  // rebuild — return without touching it. Same fontData with different
+  // text frees the old buffers and rebuilds in place at the same index
+  // (no slot-count churn). Critical for UI activities that prewarm on
+  // every render with mostly-stable scenes.
+  static constexpr uint32_t FNV_OFFSET = 2166136261u;
+  static constexpr uint32_t FNV_PRIME = 16777619u;
+  uint32_t textHash = FNV_OFFSET;
+  for (const unsigned char* h = reinterpret_cast<const unsigned char*>(utf8Text); *h; h++) {
+    textHash ^= *h;
+    textHash *= FNV_PRIME;
+  }
+  if (textHash == 0) textHash = 1;  // 0 is the not-yet-warmed sentinel
+
+  uint8_t slotIdx = pageSlotCount;
+  bool isNewSlot = true;
+  for (uint8_t s = 0; s < pageSlotCount; s++) {
+    if (pageSlots[s].fontData != fontData) continue;
+    if (pageSlots[s].textHash == textHash) return 0;  // hit — buffer is exactly what we'd rebuild
+    // Same font, different text — free the stale content and rebuild in place
+    free(pageSlots[s].buffer);
+    free(pageSlots[s].glyphs);
+    pageSlots[s] = {};
+    slotIdx = s;
+    isNewSlot = false;
+    break;
+  }
+  if (isNewSlot && pageSlotCount >= MAX_PAGE_SLOTS) {
     LOG_ERR("FDC", "All %u page buffer slots full, cannot prewarm fontData=%p", MAX_PAGE_SLOTS, (void*)fontData);
     return -1;
   }
-  PageSlot& slot = pageSlots[pageSlotCount];
+  PageSlot& slot = pageSlots[slotIdx];
 
   // Step 1: Collect unique glyph indices needed for this page
   uint32_t neededGlyphs[MAX_PAGE_GLYPHS];
@@ -366,7 +393,8 @@ int FontDecompressor::prewarmCache(const EpdFontData* fontData, const char* utf8
 
   slot.fontData = fontData;
   slot.glyphCount = glyphCount;
-  pageSlotCount++;
+  slot.textHash = textHash;
+  if (isNewSlot) pageSlotCount++;
 
   // Initialize lookup entries (bufferOffset = UINT32_MAX means not yet extracted)
   for (uint16_t i = 0; i < glyphCount; i++) {
