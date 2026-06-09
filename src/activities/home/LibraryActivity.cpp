@@ -47,23 +47,22 @@ constexpr int CELL_GAP = 14;
 constexpr int kTilePadTop = 4;
 constexpr int kTilePadBottom = 16;
 constexpr int kCoverPercent = 60;
-constexpr int kProgressGap = 3;
 constexpr int kTitleAuthorGap = 1;
 
 constexpr int kSelectionInsetX = 3;
 constexpr int kSelectionLiftAbove = 4;
 constexpr int kSelectionExtendBelowTileContent = 8;
 
-inline Rect computeSelectionFrame(const Rect& cell) {
-  // Tile content bottom = cell.y + (cell.height − kTilePadBottom). Frame
-  // floats from kSelectionLiftAbove above the cell top down to
-  // kSelectionExtendBelowTileContent past that bottom.
-  const int tileBottom = cell.y + cell.height - kTilePadBottom;
+// Frame hugs measured content: it floats from kSelectionLiftAbove above the
+// cell top down to kSelectionExtendBelowTileContent past `contentBottom` (the
+// progress-bar bottom for progress books, the author/title bottom otherwise).
+inline Rect computeSelectionFrame(const Rect& cell, int contentBottom) {
+  const int top = cell.y - kSelectionLiftAbove;
   return Rect{
       cell.x - kSelectionInsetX,
-      cell.y - kSelectionLiftAbove,
+      top,
       cell.width + kSelectionInsetX * 2,
-      (tileBottom + kSelectionExtendBelowTileContent) - (cell.y - kSelectionLiftAbove),
+      (contentBottom + kSelectionExtendBelowTileContent) - top,
   };
 }
 
@@ -845,7 +844,7 @@ std::string LibraryActivity::getHeaderSubtitleText() {
       (SETTINGS.librarySortDirection == CrossPointSettings::LIB_SORT_ASC) ? "(asc)" : "(desc)";
 
   return std::string(I18n::getInstance().get(sortedKey)) + " " + arrow + "  ·  " +
-         std::to_string(this->gridHelper.currentPage()) + " / " +
+         std::to_string(this->gridHelper.currentPage() + 1) + " / " +
          std::to_string(this->gridHelper.pageCount());
 }
 
@@ -923,22 +922,19 @@ void LibraryActivity::renderBookTile(const Rect& cell, const LibraryBook& book, 
   const int captionFont = libFont(FontRole::CaptionCompact);
   const int captionLineH = renderer.getLineHeight(captionFont);
 
-  Rect selectionRect{};
-  if (selected) {
-    selectionRect = computeSelectionFrame(cell);
-    GUI.drawSelectionBackground(renderer, selectionRect);
-  }
+  constexpr int kCoverBottomPadding = 8;
+  constexpr int kProgressGap = 8;
 
   // ---- Tile interior bands ----
-  // Vstack padding {top=kTilePadTop, bottom=kTilePadBottom} reserves the
-  // same vertical region as the prior fixed-height tile-content rect, so
-  // the selection frame above still hugs the same area. Inside that span:
+  // Vstack padding {top=kTilePadTop, bottom=kTilePadBottom}. Inside that span:
   //   * cover  — kCoverPercent (60%) of inner — Cover::render aspect-fits
   //              the thumb; small fallback frame uses Cover::kFallback*.
-  //   * text   — grows to fill the rest (absorbs the progress bands when
-  //              the book has no progress).
+  //   * text   — grows to fill the rest (absorbs the progress bands when the
+  //              book has no progress); the title/author render top-anchored
+  //              at the slot top so titles line up across the grid.
   //   * gap + progress — only when book.hasProgress(); ProgressBar's
-  //                       intrinsic height drives the slot.
+  //                       intrinsic height drives the slot, pinned to the
+  //                       inner bottom so bars line up across the grid.
   const flex::Padding tilePad{kTilePadTop, 0, kTilePadBottom, 0};
 
   Rect coverSlot;
@@ -947,32 +943,72 @@ void LibraryActivity::renderBookTile(const Rect& cell, const LibraryBook& book, 
 
   if (book.hasProgress()) {
     flex::Vstack tile(cell,
-                      {flex::percent(kCoverPercent), flex::grow(),
-                       flex::fixed(kProgressGap),
-                       flex::fixed(ProgressBar::kIntrinsicHeight)},
-                      0, 
+                      {
+                        flex::percent(kCoverPercent), 
+                        flex::fixed(kCoverBottomPadding),
+                        flex::grow(),
+                        flex::fixed(kProgressGap),
+                        flex::fixed(ProgressBar::kIntrinsicHeight)
+                      },
+                      0,
                       tilePad
     );
 
     coverSlot = tile[0];
-    textSlot = tile[1];
-    progressSlot = tile[3];
+    textSlot = tile[2];
+    progressSlot = tile[4];
   } else {
-    flex::Vstack tile(cell, 
-                     {flex::percent(kCoverPercent), flex::grow()}, 
+    flex::Vstack tile(cell,
+                     {
+                       flex::percent(kCoverPercent), 
+                       flex::fixed(kCoverBottomPadding),
+                       flex::grow()
+                     },
                      0,
                      tilePad
     );
 
     coverSlot = tile[0];
-    textSlot = tile[1];
+    textSlot = tile[2];
+  }
+
+  // Measure the title/author stack before drawing the frame: the selection
+  // frame hugs the actual content bottom (progress-bar bottom for progress
+  // books; the author/title bottom otherwise).
+  const int authorReserved = book.author.empty() ? 0 : (kTitleAuthorGap + captionLineH);
+  const int titleBudget = textSlot.height - authorReserved;
+  const int maxTitleLines = std::min(2, std::max(1, titleBudget / captionLineH));
+
+  const std::vector<std::string> titleLines = renderer.wrappedText(
+      captionFont, book.title.c_str(), textSlot.width - 8, maxTitleLines, EpdFontFamily::BOLD);
+
+  const std::string authorTrunc =
+      book.author.empty()
+          ? std::string()
+          : renderer.truncatedText(captionFont, book.author.c_str(), textSlot.width - 8,
+                                   EpdFontFamily::ITALIC);
+
+  // Tight, top-anchored text box: TextBlock vertically centers within the box,
+  // so a box sized to the natural text height places the text at the slot top.
+  const int textH = static_cast<int>(titleLines.size()) * captionLineH +
+                    (authorTrunc.empty() ? 0 : (kTitleAuthorGap + captionLineH));
+  const Rect textBox{textSlot.x, textSlot.y, textSlot.width, textH};
+
+  const int contentBottom = book.hasProgress()
+                                ? progressSlot.y + ProgressBar::kIntrinsicHeight
+                                : textBox.y + textBox.height;
+
+  Rect selectionRect{};
+  if (selected) {
+    selectionRect = computeSelectionFrame(cell, contentBottom);
+    GUI.drawSelectionBackground(renderer, selectionRect);
   }
 
   {
     char thumbPath[64];
     snprintf(thumbPath, sizeof(thumbPath), "/.crosspoint/epub_%lu/thumb_%d.bmp",
            static_cast<unsigned long>(book.pathHash), LibraryIndex::THUMB_HEIGHT);
-    
+
     xSemaphoreTake(cacheLock_, portMAX_DELAY);
     {
       const bool useReadOnly = rapidJumping_ || lazyLoadCurrentPage_;
@@ -981,20 +1017,6 @@ void LibraryActivity::renderBookTile(const Rect& cell, const LibraryBook& book, 
                     Cover::kFallbackWidth, Cover::kFallbackHeight, &coverFallback);
     }
     xSemaphoreGive(cacheLock_);
-
-     
-    const int authorReserved = book.author.empty() ? 0 : (kTitleAuthorGap + captionLineH);
-    const int titleBudget = textSlot.height - authorReserved;
-    const int maxTitleLines = std::min(2, std::max(1, titleBudget / captionLineH));
-
-    const std::vector<std::string> titleLines = renderer.wrappedText(
-        captionFont, book.title.c_str(), textSlot.width - 8, maxTitleLines, EpdFontFamily::BOLD);
-
-    const std::string authorTrunc =
-        book.author.empty()
-            ? std::string()
-            : renderer.truncatedText(captionFont, book.author.c_str(), textSlot.width - 8,
-                                     EpdFontFamily::ITALIC);
 
     TextBlock::Line tlines[3]; // up to 2 title lines + 1 author line
     std::size_t tcount = 0;
@@ -1006,7 +1028,7 @@ void LibraryActivity::renderBookTile(const Rect& cell, const LibraryBook& book, 
                                          EpdFontFamily::ITALIC, kTitleAuthorGap, false};
     }
 
-    TextBlock::render(renderer, textSlot, tlines, tcount, textBlack);
+    TextBlock::render(renderer, textBox, tlines, tcount, textBlack);
 
     if (book.hasProgress()) {
       const Rect barBox = flex::align(progressSlot, Cover::kFallbackWidth,
