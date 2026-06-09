@@ -36,12 +36,15 @@ void GridHelper::up() {
 }
 
 void GridHelper::down() {
-  if((this->index + this->cols) >= this->itemCount) {
+  bool isFinalPage = currentPage() == (pageCount() - 1);
+  bool shouldWrap = isFinalPage && currentRow() == (rowsOnFinalPage() - 1);
+
+  if(shouldWrap) {
     this->setByRowColPage(0, this->currentCol(), 0);
     return;
   }
 
-  this->index = (this->index + this->cols) % this->itemCount;
+  setByIndex(index + cols);
 };
 
 void GridHelper::left() {
