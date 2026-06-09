@@ -95,6 +95,10 @@ bool Epub::parseContentOpf(BookMetadataCache::BookMetadata& bookMetadata) {
   bookMetadata.author = opfParser.author;
   bookMetadata.language = opfParser.language;
   bookMetadata.coverItemHref = opfParser.coverItemHref;
+  bookMetadata.series = opfParser.series;
+  bookMetadata.genre = opfParser.genre;
+  // seriesIndex may be "2" or "2.0"; atoi stops at the decimal point.
+  bookMetadata.seriesIndex = static_cast<uint16_t>(atoi(opfParser.seriesIndex.c_str()));
 
   // Guide-based cover fallback: if no cover found via metadata/properties,
   // try extracting the image reference from the guide's cover page XHTML
@@ -552,6 +556,32 @@ const std::string& Epub::getLanguage() const {
   return bookMetadataCache->coreMetadata.language;
 }
 
+const std::string& Epub::getSeries() const {
+  static std::string blank;
+  if (!bookMetadataCache || !bookMetadataCache->isLoaded()) {
+    return blank;
+  }
+
+  return bookMetadataCache->coreMetadata.series;
+}
+
+const std::string& Epub::getGenre() const {
+  static std::string blank;
+  if (!bookMetadataCache || !bookMetadataCache->isLoaded()) {
+    return blank;
+  }
+
+  return bookMetadataCache->coreMetadata.genre;
+}
+
+uint16_t Epub::getSeriesIndex() const {
+  if (!bookMetadataCache || !bookMetadataCache->isLoaded()) {
+    return 0;
+  }
+
+  return bookMetadataCache->coreMetadata.seriesIndex;
+}
+
 std::string Epub::getCoverBmpPath(bool cropped) const {
   const auto coverFileName = std::string("cover") + (cropped ? "_crop" : "");
   return cachePath + "/" + coverFileName + ".bmp";
@@ -685,8 +715,7 @@ bool Epub::generateThumbBmp(int maxWidth, int maxHeight) const {
     }
     // Aspect-preserving fit to (maxWidth, maxHeight). Generate 1-bit BMP for
     // fast home-screen rendering (no gray passes needed).
-    const bool success =
-        JpegToBmpConverter::jpegFileTo1BitBmpStreamWithSize(coverJpg, thumbBmp, maxWidth, maxHeight);
+    const bool success = JpegToBmpConverter::jpegFileTo1BitBmpStreamWithSize(coverJpg, thumbBmp, maxWidth, maxHeight);
     // Explicitly close() files before calling Storage.remove()
     coverJpg.close();
     thumbBmp.close();
@@ -718,8 +747,7 @@ bool Epub::generateThumbBmp(int maxWidth, int maxHeight) const {
     if (!Storage.openFileForWrite("EBP", getThumbBmpPath(maxHeight), thumbBmp)) {
       return false;
     }
-    const bool success =
-        PngToBmpConverter::pngFileTo1BitBmpStreamWithSize(coverPng, thumbBmp, maxWidth, maxHeight);
+    const bool success = PngToBmpConverter::pngFileTo1BitBmpStreamWithSize(coverPng, thumbBmp, maxWidth, maxHeight);
     // Explicitly close() files before calling Storage.remove()
     coverPng.close();
     thumbBmp.close();

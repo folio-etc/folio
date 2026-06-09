@@ -12,22 +12,24 @@
 #include <cstdint>
 #include <cstring>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
+#include "CollectionStore.h"
 #include "CrossPointSettings.h"
 #include "LibraryIndex.h"
 #include "MappedInputManager.h"
 #include "activities/ActivityManager.h"
-#include "util/Flex.h"
-#include "util/GridHelper.h"
 #include "components/UITheme.h"
+#include "components/themes/BaseTheme.h"
+#include "components/themes/ThemeData.generated.h"
 #include "components/ui/ButtonHints/ButtonHints.h"
+#include "components/ui/CascadingPopupMenu/CascadingPopupMenu.h"
 #include "components/ui/Cover/Cover.h"
 #include "components/ui/ProgressBar/ProgressBar.h"
 #include "components/ui/TextBlock/TextBlock.h"
-#include "components/themes/BaseTheme.h"
-#include "components/themes/ThemeData.generated.h"
-#include "components/ui/CascadingPopupMenu/CascadingPopupMenu.h"
+#include "util/Flex.h"
+#include "util/GridHelper.h"
 
 namespace {
 constexpr char LOG_TAG[] = "LIBA";
@@ -89,11 +91,18 @@ void LibraryActivity::onEnter() {
   // popup; the popup never appears when nothing has changed.
   LIBRARY_INDEX.refreshFromSdCard(&renderer);
 
+  // Manual-collection membership store, for the COLLECTION view filter.
+  COLLECTION_STORE.loadFromFile();
+
   // Apply persisted sort.
   LIBRARY_INDEX.sortBy(static_cast<LibraryIndex::SortField>(SETTINGS.librarySortField),
-                      static_cast<LibraryIndex::SortDirection>(SETTINGS.librarySortDirection));
+                       static_cast<LibraryIndex::SortDirection>(SETTINGS.librarySortDirection));
 
-  this->gridHelper = GridHelper(LIBRARY_INDEX.getBookCount(), ROWS, COLS, 0);
+  // Resolve the persisted active view and build the filtered, ordered list.
+  // Safe to do before the prefetch worker exists (no lock needed yet).
+  rebuildView();
+
+  this->gridHelper = GridHelper(viewItemCount(), ROWS, COLS, 0);
   this->lastObservedPage_ = this->gridHelper.currentPage();
 
   // Spin up the prefetch worker before requesting the first paint so it's
@@ -112,13 +121,13 @@ void LibraryActivity::onEnter() {
   prefetchQueueCount_ = 0;
   for (auto& slot : prefetchQueue_) slot = 0xFF;
   xTaskCreate(&prefetchTaskTrampoline, "LibPrefetch",
-              4096,            // stack: SD I/O + bitmap parsing
-              this, 1,         // priority: same tier as render
+              4096,     // stack: SD I/O + bitmap parsing
+              this, 1,  // priority: same tier as render
               &prefetchTask_);
   assert(prefetchTask_ != nullptr);
 
-  // Prefetch both neighbor pages so the first page-turn (in either direction) 
-  // paints from cache. The current page is loaded synchronously by the render path 
+  // Prefetch both neighbor pages so the first page-turn (in either direction)
+  // paints from cache. The current page is loaded synchronously by the render path
   // on the first paint below
   const uint8_t cur = lastObservedPage_;
   const uint8_t pages = std::max<uint8_t>(1, gridHelper.pageCount());
@@ -177,17 +186,18 @@ void LibraryActivity::onExit() {
 
 // ---- Prefetch worker --------------------------------------------------------
 
-bool LibraryActivity::buildThumbPath(uint8_t page, uint8_t slot, char* out,
-                                     std::size_t outSize) const {
+bool LibraryActivity::buildThumbPath(uint8_t page, uint8_t slot, char* out, std::size_t outSize) const {
   if (out == nullptr || outSize < 64) return false;
   const int idx = static_cast<int>(page) * PER_PAGE + static_cast<int>(slot);
-  const LibraryBook* book = LIBRARY_INDEX.getAt(idx);
+  // bookForGridIndex returns nullptr for the back-tile slot (no cover) and for
+  // positions past the end of the filtered view.
+  const LibraryBook* book = bookForGridIndex(idx);
   if (book == nullptr) {
     out[0] = '\0';
     return false;
   }
-  snprintf(out, outSize, "/.crosspoint/epub_%lu/thumb_%d.bmp",
-           static_cast<unsigned long>(book->pathHash), LibraryIndex::THUMB_HEIGHT);
+  snprintf(out, outSize, "/.crosspoint/epub_%lu/thumb_%d.bmp", static_cast<unsigned long>(book->pathHash),
+           LibraryIndex::THUMB_HEIGHT);
   return true;
 }
 
@@ -400,18 +410,21 @@ void LibraryActivity::initPopup() {
   subs[POPUP_TOP_SORT].itemCount = POPUP_SORT_COUNT;
   subs[POPUP_TOP_SORT].rowLabel = [](int i) -> const char* {
     switch (i) {
-      case 0: return tr(STR_SORT_RECENT);
-      case 1: return tr(STR_SORT_TITLE);
-      case 2: return tr(STR_SORT_AUTHOR);
-      case 3: return tr(STR_SORT_PROGRESS);
+      case 0:
+        return tr(STR_SORT_RECENT);
+      case 1:
+        return tr(STR_SORT_TITLE);
+      case 2:
+        return tr(STR_SORT_AUTHOR);
+      case 3:
+        return tr(STR_SORT_PROGRESS);
     }
     return "";
   };
   subs[POPUP_TOP_SORT].rowGlyph = [](int i) -> PopupMenu::Glyph {
     if (i != SETTINGS.librarySortField) return PopupMenu::Glyph::None;
-    return (SETTINGS.librarySortDirection == CrossPointSettings::LIB_SORT_ASC)
-               ? PopupMenu::Glyph::ArrowUp
-               : PopupMenu::Glyph::ArrowDown;
+    return (SETTINGS.librarySortDirection == CrossPointSettings::LIB_SORT_ASC) ? PopupMenu::Glyph::ArrowUp
+                                                                               : PopupMenu::Glyph::ArrowDown;
   };
   subs[POPUP_TOP_SORT].initialSelection = []() { return static_cast<int>(SETTINGS.librarySortField); };
 
@@ -419,8 +432,10 @@ void LibraryActivity::initPopup() {
   subs[POPUP_TOP_FILES].itemCount = POPUP_FILES_COUNT;
   subs[POPUP_TOP_FILES].rowLabel = [](int i) -> const char* {
     switch (i) {
-      case 0: return tr(STR_BROWSE);
-      case 1: return tr(STR_TRANSFER);
+      case 0:
+        return tr(STR_BROWSE);
+      case 1:
+        return tr(STR_TRANSFER);
     }
     return "";
   };
@@ -431,8 +446,10 @@ void LibraryActivity::initPopup() {
   subs[POPUP_TOP_POWER].itemCount = POPUP_POWER_COUNT;
   subs[POPUP_TOP_POWER].rowLabel = [](int i) -> const char* {
     switch (i) {
-      case 0: return tr(STR_POWER_NEXT_IN_ROW);
-      case 1: return tr(STR_POWER_NEXT_BOOK);
+      case 0:
+        return tr(STR_POWER_NEXT_IN_ROW);
+      case 1:
+        return tr(STR_POWER_NEXT_BOOK);
     }
     return "";
   };
@@ -442,10 +459,16 @@ void LibraryActivity::initPopup() {
   popup_.configure(
       [](int i) -> const char* {
         switch (i) {
-          case POPUP_TOP_SORT: return tr(STR_SORT);
-          case POPUP_TOP_FILES: return tr(STR_FILES);
-          case POPUP_TOP_POWER: return tr(STR_POWER_BUTTON);
-          case POPUP_TOP_SETTINGS: return tr(STR_SETTINGS_TITLE);
+          case POPUP_TOP_SORT:
+            return tr(STR_SORT);
+          case POPUP_TOP_COLLECTIONS:
+            return tr(STR_COLLECTIONS);
+          case POPUP_TOP_FILES:
+            return tr(STR_FILES);
+          case POPUP_TOP_POWER:
+            return tr(STR_POWER_BUTTON);
+          case POPUP_TOP_SETTINGS:
+            return tr(STR_SETTINGS_TITLE);
         }
         return "";
       },
@@ -461,8 +484,7 @@ void LibraryActivity::loop() {
   // are now resident — clear the flag and repaint to swap placeholders
   // for the real artwork. Subsequent batch-dones (prev / next neighbors)
   // arrive with the flag already clear and are simply drained.
-  if (prefetchBatchDone_ != nullptr &&
-      xSemaphoreTake(prefetchBatchDone_, 0) == pdTRUE) {
+  if (prefetchBatchDone_ != nullptr && xSemaphoreTake(prefetchBatchDone_, 0) == pdTRUE) {
     if (lazyLoadCurrentPage_) {
       lazyLoadCurrentPage_ = false;
       requestUpdate();
@@ -489,7 +511,7 @@ void LibraryActivity::loop() {
   }
 
   if (mappedInput.wasPressed(MappedInputManager::Button::Back)) {
-    if(popup_.isOpen()) {
+    if (popup_.isOpen()) {
       popup_.moveLeft();
     } else {
       popup_.open();
@@ -558,7 +580,6 @@ void LibraryActivity::moveDown() {
   if (oldPage != newPage) onPageChanged(oldPage, newPage);
   requestUpdate();
 }
-
 
 void LibraryActivity::jumpPageForward() {
   if (popup_.isOpen()) return;
@@ -650,14 +671,19 @@ void LibraryActivity::doSelect() {
     const auto nav = popup_.activate();
     if (nav == CascadingPopupMenu::Nav::EnteredSubmenu) {
       requestUpdate();
-    } else if (nav == CascadingPopupMenu::Nav::LeafActivated ||
-               nav == CascadingPopupMenu::Nav::SubItemActivated) {
+    } else if (nav == CascadingPopupMenu::Nav::LeafActivated || nav == CascadingPopupMenu::Nav::SubItemActivated) {
       dispatchPopupActivation(nav);
     }
     return;
   }
 
-  const LibraryBook* book = LIBRARY_INDEX.getAt(gridHelper.currentIndex());
+  const int idx = gridHelper.currentIndex();
+  if (isBackTileIndex(idx)) {
+    activateBack();
+    return;
+  }
+
+  const LibraryBook* book = bookForGridIndex(idx);
   if (book == nullptr) return;
 
   LOG_DBG(LOG_TAG, "Opening book: %s", book->path.c_str());
@@ -671,7 +697,10 @@ void LibraryActivity::doSelect() {
 void LibraryActivity::dispatchPopupActivation(CascadingPopupMenu::Nav navResult) {
   const int top = popup_.topSelectedIndex();
   if (navResult == CascadingPopupMenu::Nav::LeafActivated) {
-    switch(top) {
+    switch (top) {
+      case POPUP_TOP_COLLECTIONS:
+        activityManager.goToCollections();
+        break;
       case POPUP_TOP_SETTINGS:
         activityManager.goToSettings();
         break;
@@ -682,7 +711,7 @@ void LibraryActivity::dispatchPopupActivation(CascadingPopupMenu::Nav navResult)
 
   // SubItemActivated: dispatch by which submenu the user is in.
   const int sub = popup_.subSelectedIndex();
-  switch(top) {
+  switch (top) {
     case POPUP_TOP_SORT: {
       const uint8_t newField = static_cast<uint8_t>(sub);
       uint8_t newDirection = SETTINGS.librarySortDirection;
@@ -696,7 +725,7 @@ void LibraryActivity::dispatchPopupActivation(CascadingPopupMenu::Nav navResult)
       break;
     }
     case POPUP_TOP_FILES: {
-      switch(sub) {
+      switch (sub) {
         case POPUP_FILES_BROWSE:
           activityManager.goToFileBrowser();
           break;
@@ -730,10 +759,13 @@ void LibraryActivity::applySort() {
   // cancelAllPrefetch's release and our sortBy.
   xSemaphoreTake(cacheLock_, portMAX_DELAY);
   LIBRARY_INDEX.sortBy(static_cast<LibraryIndex::SortField>(SETTINGS.librarySortField),
-                      static_cast<LibraryIndex::SortDirection>(SETTINGS.librarySortDirection));
+                       static_cast<LibraryIndex::SortDirection>(SETTINGS.librarySortDirection));
+  // sortBy reorders the index in place, invalidating view_'s pointers — rebuild
+  // the filtered view (same membership, new order) under the same lock.
+  rebuildView();
   xSemaphoreGive(cacheLock_);
 
-  this->gridHelper.setByIndex(0);
+  this->gridHelper = GridHelper(viewItemCount(), ROWS, COLS, 0);
   lastObservedPage_ = 0;
   primeNeighborhoodLazy(0);
 
@@ -741,8 +773,7 @@ void LibraryActivity::applySort() {
 }
 
 void LibraryActivity::setSort(uint8_t field, uint8_t direction) {
-  const bool changed =
-      (field != SETTINGS.librarySortField) || (direction != SETTINGS.librarySortDirection);
+  const bool changed = (field != SETTINGS.librarySortField) || (direction != SETTINGS.librarySortDirection);
 
   if (changed) {
     SETTINGS.librarySortField = field;
@@ -751,6 +782,109 @@ void LibraryActivity::setSort(uint8_t field, uint8_t direction) {
   }
 
   applySort();
+}
+
+// ---- Active view ------------------------------------------------------------
+
+int LibraryActivity::viewItemCount() const { return static_cast<int>(view_.size()) + (hasBackTile_ ? 1 : 0); }
+
+bool LibraryActivity::isBackTileIndex(int gridIndex) const { return hasBackTile_ && gridIndex == 0; }
+
+const LibraryBook* LibraryActivity::bookForGridIndex(int gridIndex) const {
+  if (gridIndex < 0) return nullptr;
+  const int bookIdx = gridIndex - (hasBackTile_ ? 1 : 0);
+  if (bookIdx < 0 || bookIdx >= static_cast<int>(view_.size())) return nullptr;
+  return view_[bookIdx];
+}
+
+void LibraryActivity::rebuildView() {
+  view_.clear();
+  hasBackTile_ = false;
+
+  const auto& books = LIBRARY_INDEX.getBooks();
+  view_.reserve(books.size());
+
+  uint8_t kind = SETTINGS.libraryViewKind;
+
+  // Validate a COLLECTION view up front: a stale id falls back to All Books.
+  const Collection* coll = nullptr;
+  if (kind == CrossPointSettings::LIB_VIEW_COLLECTION) {
+    if (!COLLECTION_STORE.isLoaded()) COLLECTION_STORE.loadFromFile();
+    coll = COLLECTION_STORE.findById(SETTINGS.libraryViewCollectionId);
+    if (coll == nullptr) kind = CrossPointSettings::LIB_VIEW_ALL;
+  }
+
+  auto fallBackToAll = [&]() {
+    view_.clear();
+    for (const auto& b : books) view_.push_back(&b);
+    hasBackTile_ = false;
+    viewTitle_ = tr(STR_LIBRARY);
+    if (SETTINGS.libraryViewKind != CrossPointSettings::LIB_VIEW_ALL) {
+      SETTINGS.libraryViewKind = CrossPointSettings::LIB_VIEW_ALL;
+      SETTINGS.libraryViewCollectionId = 0;
+      SETTINGS.libraryViewName[0] = '\0';
+      SETTINGS.saveToFile();
+    }
+  };
+
+  if (kind == CrossPointSettings::LIB_VIEW_ALL) {
+    fallBackToAll();
+    return;
+  }
+
+  if (kind == CrossPointSettings::LIB_VIEW_COLLECTION) {
+    const std::unordered_set<uint32_t> members(coll->memberPathHashes.begin(), coll->memberPathHashes.end());
+    for (const auto& b : books) {
+      if (members.count(b.pathHash)) view_.push_back(&b);
+    }
+    hasBackTile_ = true;
+    viewTitle_ = coll->name;  // empty collection is allowed (back-tile-only view)
+    return;
+  }
+
+  // Auto-group: series / author / genre by exact name match.
+  const std::string name = SETTINGS.libraryViewName;
+  for (const auto& b : books) {
+    const std::string* field = nullptr;
+    switch (kind) {
+      case CrossPointSettings::LIB_VIEW_SERIES:
+        field = &b.series;
+        break;
+      case CrossPointSettings::LIB_VIEW_AUTHOR:
+        field = &b.author;
+        break;
+      case CrossPointSettings::LIB_VIEW_GENRE:
+        field = &b.genre;
+        break;
+    }
+    if (field != nullptr && *field == name) view_.push_back(&b);
+  }
+
+  if (view_.empty()) {
+    // The group no longer matches any book (e.g. the book was removed) — reset.
+    fallBackToAll();
+    return;
+  }
+
+  hasBackTile_ = true;
+  viewTitle_ = name;
+}
+
+void LibraryActivity::activateBack() {
+  SETTINGS.libraryViewKind = CrossPointSettings::LIB_VIEW_ALL;
+  SETTINGS.libraryViewCollectionId = 0;
+  SETTINGS.libraryViewName[0] = '\0';
+  SETTINGS.saveToFile();
+
+  cancelAllPrefetch();
+  xSemaphoreTake(cacheLock_, portMAX_DELAY);
+  rebuildView();
+  xSemaphoreGive(cacheLock_);
+
+  this->gridHelper = GridHelper(viewItemCount(), ROWS, COLS, 0);
+  lastObservedPage_ = 0;
+  primeNeighborhoodLazy(0);
+  requestUpdate();
 }
 
 // ---- Render -----------------------------------------------------------------
@@ -764,12 +898,14 @@ void LibraryActivity::render(RenderLock&&) {
 void LibraryActivity::renderPasses() {
   const Rect screen{0, 0, renderer.getScreenWidth(), renderer.getScreenHeight()};
 
-  flex::Vstack top(screen,
-                   {flex::fixed(HEADER_HEIGHT), flex::grow(), flex::fixed(FOOTER_HEIGHT)});
+  flex::Vstack top(screen, {flex::fixed(HEADER_HEIGHT), flex::grow(), flex::fixed(FOOTER_HEIGHT)});
   {
     renderHeader(top[0]);
 
-    if (LIBRARY_INDEX.isEmpty()) {
+    // Zero grid items means an empty device library (the All view with no
+    // books). A filtered-but-empty view still has its back tile, so it falls
+    // through to the shelf and renders just that tile.
+    if (viewItemCount() == 0) {
       renderEmptyState(top[1]);
     } else {
       flex::Hstack body(top[1], {flex::grow(), flex::fixed(RAIL_WIDTH)}, RAIL_GAP,
@@ -783,12 +919,11 @@ void LibraryActivity::renderPasses() {
     if (popup_.isOpen()) {
       popup_.renderFooterHints(renderer, mappedInput);
     } else {
-      const auto labels = mappedInput.mapLabels(tr(STR_MENU_LABEL), tr(STR_SELECT), tr(STR_DIR_LEFT),
-                                                tr(STR_DIR_RIGHT));
+      const auto labels =
+          mappedInput.mapLabels(tr(STR_MENU_LABEL), tr(STR_SELECT), tr(STR_DIR_LEFT), tr(STR_DIR_RIGHT));
       ButtonHints::render(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
     }
   }
-
 
   if (popup_.isOpen()) {
     renderPopup();
@@ -796,8 +931,8 @@ void LibraryActivity::renderPasses() {
 }
 
 bool LibraryActivity::handlePowerShortPress() {
-  switch(SETTINGS.libraryPowerButton) {
-    case CrossPointSettings::LIB_PWR_NEXT_BOOK: 
+  switch (SETTINGS.libraryPowerButton) {
+    case CrossPointSettings::LIB_PWR_NEXT_BOOK:
       moveNext();
       break;
     case CrossPointSettings::LIB_PWR_NEXT_IN_ROW:
@@ -814,11 +949,11 @@ void LibraryActivity::renderBattery(const Rect& headerBox) {
   constexpr int kBatteryTopOffset = 5;
   constexpr int kBatteryRightInset = 12;
 
-  const Rect batteryRow{headerBox.x, headerBox.y + kBatteryTopOffset,
-                        headerBox.width - kBatteryRightInset, td.battery.height};
+  const Rect batteryRow{headerBox.x, headerBox.y + kBatteryTopOffset, headerBox.width - kBatteryRightInset,
+                        td.battery.height};
 
-  const Rect batteryRect = flex::align(batteryRow, td.battery.width, td.battery.height,
-                                       flex::HAlign::End, flex::VAlign::Start);
+  const Rect batteryRect =
+      flex::align(batteryRow, td.battery.width, td.battery.height, flex::HAlign::End, flex::VAlign::Start);
 
   const bool showBatteryPct =
       SETTINGS.hideBatteryPercentage != CrossPointSettings::HIDE_BATTERY_PERCENTAGE::HIDE_ALWAYS;
@@ -827,25 +962,31 @@ void LibraryActivity::renderBattery(const Rect& headerBox) {
 }
 
 std::string LibraryActivity::getHeaderSubtitleText() {
-  if (LIBRARY_INDEX.isEmpty()) {
+  if (viewItemCount() == 0) {
     return std::string("");
   }
 
   StrId sortedKey = StrId::STR_LIBRARY_SORTED_RECENT;
   switch (SETTINGS.librarySortField) {
-    case CrossPointSettings::LIB_SORT_TITLE:    sortedKey = StrId::STR_LIBRARY_SORTED_TITLE; break;
-    case CrossPointSettings::LIB_SORT_AUTHOR:   sortedKey = StrId::STR_LIBRARY_SORTED_AUTHOR; break;
-    case CrossPointSettings::LIB_SORT_PROGRESS: sortedKey = StrId::STR_LIBRARY_SORTED_PROGRESS; break;
+    case CrossPointSettings::LIB_SORT_TITLE:
+      sortedKey = StrId::STR_LIBRARY_SORTED_TITLE;
+      break;
+    case CrossPointSettings::LIB_SORT_AUTHOR:
+      sortedKey = StrId::STR_LIBRARY_SORTED_AUTHOR;
+      break;
+    case CrossPointSettings::LIB_SORT_PROGRESS:
+      sortedKey = StrId::STR_LIBRARY_SORTED_PROGRESS;
+      break;
     case CrossPointSettings::LIB_SORT_RECENT:
-    default:                                    sortedKey = StrId::STR_LIBRARY_SORTED_RECENT; break;
+    default:
+      sortedKey = StrId::STR_LIBRARY_SORTED_RECENT;
+      break;
   }
-  
-  const char* arrow =
-      (SETTINGS.librarySortDirection == CrossPointSettings::LIB_SORT_ASC) ? "(asc)" : "(desc)";
+
+  const char* arrow = (SETTINGS.librarySortDirection == CrossPointSettings::LIB_SORT_ASC) ? "(asc)" : "(desc)";
 
   return std::string(I18n::getInstance().get(sortedKey)) + " " + arrow + "  ·  " +
-         std::to_string(this->gridHelper.currentPage() + 1) + " / " +
-         std::to_string(this->gridHelper.pageCount());
+         std::to_string(this->gridHelper.currentPage() + 1) + " / " + std::to_string(this->gridHelper.pageCount());
 }
 
 void LibraryActivity::renderHeader(const Rect& headerBox) {
@@ -861,41 +1002,32 @@ void LibraryActivity::renderHeader(const Rect& headerBox) {
   constexpr int kPaddingBottom = 6;
   constexpr int kBorderHeight = 3;
 
-  const Rect headerBoxInner{ headerBox.x, headerBox.y, headerBox.width, headerBox.height - kBorderHeight };
+  const Rect headerBoxInner{headerBox.x, headerBox.y, headerBox.width, headerBox.height - kBorderHeight};
 
-  flex::Vstack header(headerBoxInner,
-                      {flex::grow(),
-                       flex::fixed(titleLineH),
-                       flex::fixed(kTitleToSubtitleGap),
-                       flex::fixed(captionLineH)},
-                       0,
-                       flex::Padding{ 0, CONTENT_PAD_X, kPaddingBottom, CONTENT_PAD_X }
-                     );
+  flex::Vstack header(
+      headerBoxInner,
+      {flex::grow(), flex::fixed(titleLineH), flex::fixed(kTitleToSubtitleGap), flex::fixed(captionLineH)}, 0,
+      flex::Padding{0, CONTENT_PAD_X, kPaddingBottom, CONTENT_PAD_X});
   {
     const Rect& titleRow = header[1];
     const Rect& subtitleRow = header[3];
 
-    const char* title = tr(STR_LIBRARY);
-    const std::string truncatedTitle =
-      renderer.truncatedText(titleFont, title, titleRow.width, EpdFontFamily::BOLD);  
+    const char* title = viewTitle_.empty() ? tr(STR_LIBRARY) : viewTitle_.c_str();
+    const std::string truncatedTitle = renderer.truncatedText(titleFont, title, titleRow.width, EpdFontFamily::BOLD);
 
-    renderer.drawText(titleFont, titleRow.x, titleRow.y, truncatedTitle.c_str(),
-                    true, EpdFontFamily::BOLD);
+    renderer.drawText(titleFont, titleRow.x, titleRow.y, truncatedTitle.c_str(), true, EpdFontFamily::BOLD);
 
-    std::string subtitleText = getHeaderSubtitleText(); 
+    std::string subtitleText = getHeaderSubtitleText();
 
     if (!subtitleText.empty()) {
       const std::string truncatedSub =
-          renderer.truncatedText(captionFont, subtitleText.c_str(),
-                                 subtitleRow.width, EpdFontFamily::ITALIC);
+          renderer.truncatedText(captionFont, subtitleText.c_str(), subtitleRow.width, EpdFontFamily::ITALIC);
 
-      renderer.drawText(captionFont, subtitleRow.x, subtitleRow.y,
-                        truncatedSub.c_str(), true, EpdFontFamily::ITALIC);
+      renderer.drawText(captionFont, subtitleRow.x, subtitleRow.y, truncatedSub.c_str(), true, EpdFontFamily::ITALIC);
     }
   }
 
-
-  const Rect bottomBorder{ 0, headerBoxInner.height, headerBox.width, kBorderHeight };
+  const Rect bottomBorder{0, headerBoxInner.height, headerBox.width, kBorderHeight};
   renderer.fillRect(bottomBorder.x, bottomBorder.y, bottomBorder.width, bottomBorder.height);
 }
 
@@ -908,7 +1040,12 @@ void LibraryActivity::renderLibraryShelf(const Rect& shelfArea) {
   flex::Grid cells(shelfArea, ROWS, COLS, CELL_GAP, CELL_GAP);
   {
     for (int slot = 0; slot < PER_PAGE; ++slot) {
-      const LibraryBook* book = LIBRARY_INDEX.getAt(baseIndex + slot);
+      const int idx = baseIndex + slot;
+      if (isBackTileIndex(idx)) {
+        renderBackTile(cells[slot], slot == currentIndexOnPage);
+        continue;
+      }
+      const LibraryBook* book = bookForGridIndex(idx);
       if (book == nullptr) continue;
       renderBookTile(cells[slot], *book, slot == currentIndexOnPage);
     }
@@ -943,30 +1080,15 @@ void LibraryActivity::renderBookTile(const Rect& cell, const LibraryBook& book, 
 
   if (book.hasProgress()) {
     flex::Vstack tile(cell,
-                      {
-                        flex::percent(kCoverPercent), 
-                        flex::fixed(kCoverBottomPadding),
-                        flex::grow(),
-                        flex::fixed(kProgressGap),
-                        flex::fixed(ProgressBar::kIntrinsicHeight)
-                      },
-                      0,
-                      tilePad
-    );
+                      {flex::percent(kCoverPercent), flex::fixed(kCoverBottomPadding), flex::grow(),
+                       flex::fixed(kProgressGap), flex::fixed(ProgressBar::kIntrinsicHeight)},
+                      0, tilePad);
 
     coverSlot = tile[0];
     textSlot = tile[2];
     progressSlot = tile[4];
   } else {
-    flex::Vstack tile(cell,
-                     {
-                       flex::percent(kCoverPercent), 
-                       flex::fixed(kCoverBottomPadding),
-                       flex::grow()
-                     },
-                     0,
-                     tilePad
-    );
+    flex::Vstack tile(cell, {flex::percent(kCoverPercent), flex::fixed(kCoverBottomPadding), flex::grow()}, 0, tilePad);
 
     coverSlot = tile[0];
     textSlot = tile[2];
@@ -979,24 +1101,22 @@ void LibraryActivity::renderBookTile(const Rect& cell, const LibraryBook& book, 
   const int titleBudget = textSlot.height - authorReserved;
   const int maxTitleLines = std::min(2, std::max(1, titleBudget / captionLineH));
 
-  const std::vector<std::string> titleLines = renderer.wrappedText(
-      captionFont, book.title.c_str(), textSlot.width - 8, maxTitleLines, EpdFontFamily::BOLD);
+  const std::vector<std::string> titleLines =
+      renderer.wrappedText(captionFont, book.title.c_str(), textSlot.width - 8, maxTitleLines, EpdFontFamily::BOLD);
 
   const std::string authorTrunc =
       book.author.empty()
           ? std::string()
-          : renderer.truncatedText(captionFont, book.author.c_str(), textSlot.width - 8,
-                                   EpdFontFamily::ITALIC);
+          : renderer.truncatedText(captionFont, book.author.c_str(), textSlot.width - 8, EpdFontFamily::ITALIC);
 
   // Tight, top-anchored text box: TextBlock vertically centers within the box,
   // so a box sized to the natural text height places the text at the slot top.
-  const int textH = static_cast<int>(titleLines.size()) * captionLineH +
-                    (authorTrunc.empty() ? 0 : (kTitleAuthorGap + captionLineH));
+  const int textH =
+      static_cast<int>(titleLines.size()) * captionLineH + (authorTrunc.empty() ? 0 : (kTitleAuthorGap + captionLineH));
   const Rect textBox{textSlot.x, textSlot.y, textSlot.width, textH};
 
-  const int contentBottom = book.hasProgress()
-                                ? progressSlot.y + ProgressBar::kIntrinsicHeight
-                                : textBox.y + textBox.height;
+  const int contentBottom =
+      book.hasProgress() ? progressSlot.y + ProgressBar::kIntrinsicHeight : textBox.y + textBox.height;
 
   Rect selectionRect{};
   if (selected) {
@@ -1007,38 +1127,83 @@ void LibraryActivity::renderBookTile(const Rect& cell, const LibraryBook& book, 
   {
     char thumbPath[64];
     snprintf(thumbPath, sizeof(thumbPath), "/.crosspoint/epub_%lu/thumb_%d.bmp",
-           static_cast<unsigned long>(book.pathHash), LibraryIndex::THUMB_HEIGHT);
+             static_cast<unsigned long>(book.pathHash), LibraryIndex::THUMB_HEIGHT);
 
     xSemaphoreTake(cacheLock_, portMAX_DELAY);
     {
       const bool useReadOnly = rapidJumping_ || lazyLoadCurrentPage_;
       const Cover::Fallback coverFallback{book.title.c_str(), captionFont, EpdFontFamily::BOLD};
-      Cover::render(renderer, coverSlot, pageCache_, thumbPath, useReadOnly, invertText,
-                    Cover::kFallbackWidth, Cover::kFallbackHeight, &coverFallback);
+      Cover::render(renderer, coverSlot, pageCache_, thumbPath, useReadOnly, invertText, Cover::kFallbackWidth,
+                    Cover::kFallbackHeight, &coverFallback);
     }
     xSemaphoreGive(cacheLock_);
 
-    TextBlock::Line tlines[3]; // up to 2 title lines + 1 author line
+    TextBlock::Line tlines[3];  // up to 2 title lines + 1 author line
     std::size_t tcount = 0;
     for (const auto& l : titleLines) {
       tlines[tcount++] = TextBlock::Line{l.c_str(), captionFont, EpdFontFamily::BOLD, 0, false};
     }
     if (!authorTrunc.empty()) {
-      tlines[tcount++] = TextBlock::Line{authorTrunc.c_str(), captionFont,
-                                         EpdFontFamily::ITALIC, kTitleAuthorGap, false};
+      tlines[tcount++] =
+          TextBlock::Line{authorTrunc.c_str(), captionFont, EpdFontFamily::ITALIC, kTitleAuthorGap, false};
     }
 
     TextBlock::render(renderer, textBox, tlines, tcount, textBlack);
 
     if (book.hasProgress()) {
-      const Rect barBox = flex::align(progressSlot, Cover::kFallbackWidth,
-                                      ProgressBar::kIntrinsicHeight,
+      const Rect barBox = flex::align(progressSlot, Cover::kFallbackWidth, ProgressBar::kIntrinsicHeight,
                                       flex::HAlign::Center, flex::VAlign::Start);
       ProgressBar::render(renderer, barBox, book.progressPercent(), textBlack);
     }
   }
 
   // ---- Selection foreground pass (drawn over tile content) ----
+  if (selected) {
+    GUI.drawSelectionForeground(renderer, selectionRect);
+  }
+}
+
+void LibraryActivity::renderBackTile(const Rect& cell, bool selected) {
+  const bool invertText = selected && GUI.getData()->selection.textInverted;
+  const bool textBlack = !invertText;
+
+  const int captionFont = libFont(FontRole::CaptionCompact);
+  const int captionLineH = renderer.getLineHeight(captionFont);
+
+  constexpr int kCoverBottomPadding = 8;
+  const flex::Padding tilePad{kTilePadTop, 0, kTilePadBottom, 0};
+
+  // Same geometry as a bar-less book tile so the back tile aligns with the grid.
+  flex::Vstack tile(cell, {flex::percent(kCoverPercent), flex::fixed(kCoverBottomPadding), flex::grow()}, 0, tilePad);
+  const Rect coverSlot = tile[0];
+  const Rect textSlot = tile[2];
+
+  const std::string labelTrunc =
+      renderer.truncatedText(captionFont, tr(STR_ALL_BOOKS), textSlot.width - 8, EpdFontFamily::BOLD);
+  const Rect textBox{textSlot.x, textSlot.y, textSlot.width, captionLineH};
+  const int contentBottom = textBox.y + textBox.height;
+
+  Rect selectionRect{};
+  if (selected) {
+    selectionRect = computeSelectionFrame(cell, contentBottom);
+    GUI.drawSelectionBackground(renderer, selectionRect);
+  }
+
+  // A bordered box (fallback-cover sized) with a centered left arrow.
+  const Rect box =
+      flex::align(coverSlot, Cover::kFallbackWidth, Cover::kFallbackHeight, flex::HAlign::Center, flex::VAlign::Start);
+  renderer.drawRoundedRect(box.x, box.y, box.width, box.height, 2, 6, textBlack);
+  const int cx = box.x + box.width / 2;
+  const int cy = box.y + box.height / 2;
+  const int arm = box.width / 4;
+  const int barb = box.height / 8;
+  renderer.drawLine(cx - arm, cy, cx + arm, cy, 3, textBlack);                // shaft
+  renderer.drawLine(cx - arm, cy, cx - arm + barb, cy - barb, 3, textBlack);  // upper barb
+  renderer.drawLine(cx - arm, cy, cx - arm + barb, cy + barb, 3, textBlack);  // lower barb
+
+  TextBlock::Line line{labelTrunc.c_str(), captionFont, EpdFontFamily::BOLD, 0, false};
+  TextBlock::render(renderer, textBox, &line, 1, textBlack);
+
   if (selected) {
     GUI.drawSelectionForeground(renderer, selectionRect);
   }
@@ -1058,8 +1223,7 @@ void LibraryActivity::renderPageRail(const Rect& railArea) {
     // Per-tick row slot spans the full rail width; the tick itself is
     // centered horizontally inside it via flex::align.
     const Rect tickRow{railArea.x, tickRowY, railArea.width, tickSize};
-    const Rect tick =
-        flex::align(tickRow, tickSize, tickSize, flex::HAlign::Center, flex::VAlign::Start);
+    const Rect tick = flex::align(tickRow, tickSize, tickSize, flex::HAlign::Center, flex::VAlign::Start);
 
     const Color fill = (i == currentPage) ? lib.pageIndicatorFillSelected : lib.pageIndicatorFill;
     const Color border = (i == currentPage) ? lib.pageIndicatorBorderSelected : lib.pageIndicatorBorder;
@@ -1076,10 +1240,9 @@ void LibraryActivity::renderPageRail(const Rect& railArea) {
         renderer.drawRect(tick.x, tick.y, tick.width, tick.height, border == Color::Black);
         break;
       case IndicatorShape::RoundedRect:
-        renderer.fillRoundedRect(tick.x, tick.y, tick.width, tick.height,
-                                 lib.pageIndicatorCornerRadius, fill);
-        renderer.drawRoundedRect(tick.x, tick.y, tick.width, tick.height, 1,
-                                 lib.pageIndicatorCornerRadius, border == Color::Black);
+        renderer.fillRoundedRect(tick.x, tick.y, tick.width, tick.height, lib.pageIndicatorCornerRadius, fill);
+        renderer.drawRoundedRect(tick.x, tick.y, tick.width, tick.height, 1, lib.pageIndicatorCornerRadius,
+                                 border == Color::Black);
         break;
     }
   }
@@ -1095,7 +1258,7 @@ void LibraryActivity::renderPageRail(const Rect& railArea) {
 
 void LibraryActivity::renderEmptyState(const Rect& body) {
   // "No books on SD card" — italic heading, centered both axes inside the
-  // body region. 
+  // body region.
   const int font = libFont(FontRole::Heading);
   const char* msg = tr(STR_LIBRARY_NO_BOOKS);
   const int textW = renderer.getTextWidth(font, msg, EpdFontFamily::ITALIC);

@@ -160,20 +160,23 @@ class CrossPointSettings {
     LIB_SORT_PROGRESS = 3,
     LIBRARY_SORT_FIELD_COUNT
   };
-  enum LIBRARY_SORT_DIRECTION {
-    LIB_SORT_DESC = 0,
-    LIB_SORT_ASC = 1,
-    LIBRARY_SORT_DIRECTION_COUNT
+  enum LIBRARY_SORT_DIRECTION { LIB_SORT_DESC = 0, LIB_SORT_ASC = 1, LIBRARY_SORT_DIRECTION_COUNT };
+
+  // Active library view kind. ALL is the unfiltered shelf; the others filter
+  // the shelf to a manual collection or an auto-group (series/author/genre).
+  enum LIBRARY_VIEW_KIND {
+    LIB_VIEW_ALL = 0,
+    LIB_VIEW_COLLECTION = 1,
+    LIB_VIEW_SERIES = 2,
+    LIB_VIEW_AUTHOR = 3,
+    LIB_VIEW_GENRE = 4,
+    LIBRARY_VIEW_KIND_COUNT
   };
 
   // Library short-press power button behavior. Next in Row steps the
   // selection right and wraps within the current row; Next Book steps
   // linearly through the entire library (next slot, next page, wrap).
-  enum LIBRARY_POWER_BUTTON {
-    LIB_PWR_NEXT_IN_ROW = 0,
-    LIB_PWR_NEXT_BOOK = 1,
-    LIBRARY_POWER_BUTTON_COUNT
-  };
+  enum LIBRARY_POWER_BUTTON { LIB_PWR_NEXT_IN_ROW = 0, LIB_PWR_NEXT_BOOK = 1, LIBRARY_POWER_BUTTON_COUNT };
 
   // Image rendering in EPUB reader
   enum IMAGE_RENDERING { IMAGES_DISPLAY = 0, IMAGES_PLACEHOLDER = 1, IMAGES_SUPPRESS = 2, IMAGE_RENDERING_COUNT };
@@ -273,6 +276,13 @@ class CrossPointSettings {
   uint8_t librarySortDirection = LIB_SORT_DESC;
   // Library power-button short-press: Next in Row (default) or Next Book.
   uint8_t libraryPowerButton = LIB_PWR_NEXT_IN_ROW;
+  // Active library view (collection / auto-group filter), persisted so the
+  // shelf reopens to the same view after a reboot. ALL = unfiltered.
+  // For COLLECTION the id is in libraryViewCollectionId; for the auto-group
+  // kinds the group name is in libraryViewName.
+  uint8_t libraryViewKind = LIB_VIEW_ALL;
+  uint32_t libraryViewCollectionId = 0;
+  char libraryViewName[64] = "";
   // Move epub to /Read/ folder on SD card when finished (0 = disabled, 1 = enabled)
   uint8_t moveFinishedToReadFolder = 0;
   // Image rendering mode in EPUB reader

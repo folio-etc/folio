@@ -29,7 +29,8 @@ constexpr uint32_t LIBRARY_FILE_MAGIC = 0x424C5058u;
 // v2 adds LibraryBook::openSequence. The load path's version-mismatch branch
 // triggers a full disk rescan, so old caches regenerate transparently with
 // openSequence = 0 on every book.
-constexpr uint8_t LIBRARY_FILE_VERSION = 2;
+// v3 adds series/genre/seriesIndex (auto-group collections).
+constexpr uint8_t LIBRARY_FILE_VERSION = 3;
 
 // Bound directory recursion. /Books/Author/Series/Title.epub is plenty;
 // deeper hierarchies are uncommon in book libraries and recursing further
@@ -45,13 +46,9 @@ constexpr int THUMB_HEIGHT = LibraryIndex::THUMB_HEIGHT;
 // tool, not a library manager.
 constexpr int MAX_LIBRARY_BOOKS = 500;
 
-uint32_t hashPath(const std::string& path) {
-  return static_cast<uint32_t>(std::hash<std::string>{}(path));
-}
+uint32_t hashPath(const std::string& path) { return static_cast<uint32_t>(std::hash<std::string>{}(path)); }
 
-std::string cachePathFor(uint32_t pathHash) {
-  return std::string(CACHE_DIR) + "/epub_" + std::to_string(pathHash);
-}
+std::string cachePathFor(uint32_t pathHash) { return std::string(CACHE_DIR) + "/epub_" + std::to_string(pathHash); }
 
 // Reads progress.bin into spineIdx (1-based spine position). Leaves spineIdx
 // at 0 if no progress file exists or it's too short — i.e., "unread".
@@ -123,6 +120,9 @@ bool LibraryIndex::loadFromFile() {
     serialization::readString(f, b.path);
     serialization::readString(f, b.title);
     serialization::readString(f, b.author);
+    serialization::readString(f, b.series);
+    serialization::readString(f, b.genre);
+    serialization::readPod(f, b.seriesIndex);
     books.push_back(std::move(b));
   }
 
@@ -157,6 +157,9 @@ bool LibraryIndex::saveToFile() const {
     serialization::writeString(f, b.path);
     serialization::writeString(f, b.title);
     serialization::writeString(f, b.author);
+    serialization::writeString(f, b.series);
+    serialization::writeString(f, b.genre);
+    serialization::writePod(f, b.seriesIndex);
   }
 
   // Must close before rename — see CLAUDE.md DESTRUCTOR_CLOSES_FILE note.
@@ -284,6 +287,9 @@ bool LibraryIndex::refreshFromSdCard(GfxRenderer* progressRenderer) {
     b.pathHash = h;
     b.title = epub.getTitle();
     b.author = epub.getAuthor();
+    b.series = epub.getSeries();
+    b.genre = epub.getGenre();
+    b.seriesIndex = epub.getSeriesIndex();
     b.spineCount = static_cast<uint16_t>(epub.getSpineItemsCount());
     readProgress(epub.getCachePath(), b.progressSpineIndex);
 
@@ -310,8 +316,7 @@ bool LibraryIndex::refreshFromSdCard(GfxRenderer* progressRenderer) {
     saveToFile();
   }
 
-  LOG_DBG(LOG_TAG, "Library refresh: %d books indexed (%d new)", static_cast<int>(books.size()),
-          newBooksIndexed);
+  LOG_DBG(LOG_TAG, "Library refresh: %d books indexed (%d new)", static_cast<int>(books.size()), newBooksIndexed);
   return true;
 }
 
@@ -382,9 +387,12 @@ std::string_view titleSortKey(const std::string& title) {
     }
     return true;
   };
-  if (startsWithCi("the ")) v.remove_prefix(4);
-  else if (startsWithCi("an ")) v.remove_prefix(3);
-  else if (startsWithCi("a ")) v.remove_prefix(2);
+  if (startsWithCi("the "))
+    v.remove_prefix(4);
+  else if (startsWithCi("an "))
+    v.remove_prefix(3);
+  else if (startsWithCi("a "))
+    v.remove_prefix(2);
   return v;
 }
 

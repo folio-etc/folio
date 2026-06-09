@@ -151,6 +151,12 @@ bool JsonSettingsIO::saveSettings(const CrossPointSettings& s, const char* path)
   // legacy settings that lacked this key entirely).
   doc["sdThemeName"] = s.sdThemeName;
 
+  // Active library view — not in SettingsList (collection id is uint32, name is
+  // a string), so persist manually.
+  doc["libraryViewKind"] = s.libraryViewKind;
+  doc["libraryViewCollectionId"] = s.libraryViewCollectionId;
+  doc["libraryViewName"] = s.libraryViewName;
+
   // Language -- managed by LanguageSelectActivity, not in SettingsList.
   // Stored as ISO code string ("EN", "DE", ...) for stability across enum reorders.
   doc["language"] = (s.language < getLanguageCount()) ? LANGUAGE_CODES[s.language] : "EN";
@@ -249,6 +255,14 @@ bool JsonSettingsIO::loadSettings(CrossPointSettings& s, const char* json, bool*
   const char* stn = doc["sdThemeName"] | "";
   strncpy(s.sdThemeName, stn, sizeof(s.sdThemeName) - 1);
   s.sdThemeName[sizeof(s.sdThemeName) - 1] = '\0';
+
+  // Active library view — persisted manually (see saveSettings).
+  s.libraryViewKind = clamp(doc["libraryViewKind"] | (uint8_t)CrossPointSettings::LIB_VIEW_ALL,
+                            CrossPointSettings::LIBRARY_VIEW_KIND_COUNT, CrossPointSettings::LIB_VIEW_ALL);
+  s.libraryViewCollectionId = doc["libraryViewCollectionId"] | (uint32_t)0;
+  const char* lvn = doc["libraryViewName"] | "";
+  strncpy(s.libraryViewName, lvn, sizeof(s.libraryViewName) - 1);
+  s.libraryViewName[sizeof(s.libraryViewName) - 1] = '\0';
 
   // Restore uiTheme from sdThemeName — the generic loop clamps it to FOLIO because
   // the base SettingsList only declares one enum option (FOLIO), so any SD_THEME value

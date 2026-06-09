@@ -8,13 +8,14 @@
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#include <vector>
 
 #include "LibraryIndex.h"
 #include "activities/Activity.h"
-#include "util/GridHelper.h"
 #include "components/themes/BaseTheme.h"  // for Rect
 #include "components/ui/CascadingPopupMenu/CascadingPopupMenu.h"
 #include "util/ButtonNavigator.h"
+#include "util/GridHelper.h"
 
 class LibraryActivity final : public Activity {
  private:
@@ -26,21 +27,35 @@ class LibraryActivity final : public Activity {
   // Top-panel row indices for the cascading popup. The activity dispatches
   // leaf actions and sort logic against these indices.
   static constexpr int POPUP_TOP_SORT = 0;
-  static constexpr int POPUP_TOP_FILES = 1;
-  static constexpr int POPUP_TOP_POWER = 2;
-  static constexpr int POPUP_TOP_SETTINGS = 3;
-  static constexpr int POPUP_TOP_COUNT = 4;
+  static constexpr int POPUP_TOP_COLLECTIONS = 1;  // leaf → CollectionsActivity
+  static constexpr int POPUP_TOP_FILES = 2;
+  static constexpr int POPUP_TOP_POWER = 3;
+  static constexpr int POPUP_TOP_SETTINGS = 4;
+  static constexpr int POPUP_TOP_COUNT = 5;
 
   static constexpr int POPUP_FILES_BROWSE = 0;
   static constexpr int POPUP_FILES_TRANSFER = 1;
   static constexpr int POPUP_FILES_COUNT = 2;
 
-  static constexpr int POPUP_SORT_COUNT = 4;  // Recent / Title / Author / Progress
-  static constexpr int POPUP_POWER_COUNT = 2; // Next in Row / Next Book
+  static constexpr int POPUP_SORT_COUNT = 4;   // Recent / Title / Author / Progress
+  static constexpr int POPUP_POWER_COUNT = 2;  // Next in Row / Next Book
 
   // ---- View state ---------------------------------------------------------
   // GridHelper
   GridHelper gridHelper = GridHelper(0, 0, 0, 0);
+
+  // The active library view (All Books vs. a collection / auto-group filter).
+  // view_ holds pointers into LIBRARY_INDEX in sorted order, filtered to the
+  // active view. Rebuilt after every sort and on entry. When the view is
+  // filtered, a synthetic "back tile" occupies grid slot 0 (page 0) — so the
+  // grid item count is view_.size() + (hasBackTile_ ? 1 : 0). Pointers are
+  // only valid between sorts (sortBy reorders the index in place), so view_
+  // is always rebuilt immediately after sortBy.
+  std::vector<const LibraryBook*> view_;
+  bool hasBackTile_ = false;
+  // Cached header title for the active view ("Library" for All Books,
+  // otherwise the collection / series / author / genre name).
+  std::string viewTitle_;
 
   // The cascading popup (Sort / Files / Settings). Owns its own selection
   // state, level, and chrome — LibraryActivity routes button presses to it
@@ -157,6 +172,22 @@ class LibraryActivity final : public Activity {
   // Resume normal prefetch + render-side cache loading after a rapid-jump
   // continuous-hold ends. No-op if not currently rapid-jumping.
   void endRapidJumpIfActive();
+
+  // ---- Active view helpers ------------------------------------------------
+  // Read the persisted active view from settings, validate it (a missing
+  // collection or an empty auto-group falls back to All Books and resaves),
+  // then rebuild view_ / hasBackTile_ / viewTitle_ from the (sorted) index.
+  // Call after every sortBy and on entry.
+  void rebuildView();
+  // Number of grid items in the active view (filtered books + back tile).
+  int viewItemCount() const;
+  // True when gridIndex addresses the synthetic back tile (slot 0, filtered).
+  bool isBackTileIndex(int gridIndex) const;
+  // The book at a grid index, or nullptr for the back tile / out of range.
+  const LibraryBook* bookForGridIndex(int gridIndex) const;
+  // Switch back to All Books (used by the back tile), persist, and repaint.
+  void activateBack();
+  void renderBackTile(const Rect& cell, bool selected);
 
   void doSelect();
   // Dispatches the activity action for an active popup row (leaf or submenu

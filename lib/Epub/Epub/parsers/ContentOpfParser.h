@@ -18,6 +18,9 @@ class ContentOpfParser final : public Print {
     IN_BOOK_TITLE,
     IN_BOOK_AUTHOR,
     IN_BOOK_LANGUAGE,
+    IN_BOOK_SUBJECT,     // dc:subject text (primary genre)
+    IN_META_COLLECTION,  // EPUB3 <meta property="belongs-to-collection"> text (series)
+    IN_META_GROUPPOS,    // EPUB3 <meta property="group-position"> text (series index)
     IN_MANIFEST,
     IN_SPINE,
     IN_GUIDE,
@@ -59,6 +62,9 @@ class ContentOpfParser final : public Print {
   std::string title;
   std::string author;
   std::string language;
+  std::string series;       // calibre:series or EPUB3 belongs-to-collection
+  std::string seriesIndex;  // calibre:series_index or EPUB3 group-position (raw text)
+  std::string genre;        // first dc:subject (primary genre)
   std::string tocNcxPath;
   std::string tocNavPath;  // EPUB 3 nav document path
   std::string coverItemHref;

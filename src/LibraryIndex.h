@@ -16,6 +16,12 @@ struct LibraryBook {
   std::string path;
   std::string title;
   std::string author;
+  // Series/genre drive the "By Series" / "By Genre" auto-group collections.
+  // Parsed from the EPUB OPF and cached so grouping needs no re-parse.
+  std::string series;
+  std::string genre;
+  // 0 = no/unknown series index. Cached for future Details/series sort.
+  uint16_t seriesIndex = 0;
   // std::hash<std::string>{}(path), matching Epub's cachePath hash so we can
   // locate the per-book cache dir as /.crosspoint/epub_<pathHash>/.
   uint32_t pathHash = 0;
@@ -62,7 +68,6 @@ class LibraryIndex {
   // unaffected since height binds first.
   static constexpr int THUMB_HEIGHT = 120;
   static constexpr int THUMB_MAX_WIDTH = 120;
-
 
   // Sort options for the library shelf. Plain enums so this header has no
   // dependency on CrossPointSettings. LibraryActivity maps from settings.

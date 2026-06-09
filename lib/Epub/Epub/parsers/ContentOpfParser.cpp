@@ -104,6 +104,14 @@ void XMLCALL ContentOpfParser::startElement(void* userData, const XML_Char* name
     return;
   }
 
+  if (self->state == IN_METADATA && strcmp(name, "dc:subject") == 0) {
+    // Only capture the first subject as the primary genre.
+    if (self->genre.empty()) {
+      self->state = IN_BOOK_SUBJECT;
+    }
+    return;
+  }
+
   if (self->state == IN_PACKAGE && (strcmp(name, "manifest") == 0 || strcmp(name, "opf:manifest") == 0)) {
     self->state = IN_MANIFEST;
     if (!Storage.openFileForWrite("COF", self->cachePath + itemCacheFile, self->tempItemStore)) {
@@ -139,19 +147,32 @@ void XMLCALL ContentOpfParser::startElement(void* userData, const XML_Char* name
   }
 
   if (self->state == IN_METADATA && (strcmp(name, "meta") == 0 || strcmp(name, "opf:meta") == 0)) {
-    bool isCover = false;
-    std::string coverItemId;
+    const char* metaName = nullptr;
+    const char* metaContent = nullptr;
+    const char* metaProperty = nullptr;
 
     for (int i = 0; atts[i]; i += 2) {
-      if (strcmp(atts[i], "name") == 0 && strcmp(atts[i + 1], "cover") == 0) {
-        isCover = true;
+      if (strcmp(atts[i], "name") == 0) {
+        metaName = atts[i + 1];
       } else if (strcmp(atts[i], "content") == 0) {
-        coverItemId = atts[i + 1];
+        metaContent = atts[i + 1];
+      } else if (strcmp(atts[i], "property") == 0) {
+        metaProperty = atts[i + 1];
       }
     }
 
-    if (isCover) {
-      self->coverItemId = coverItemId;
+    if (metaName && strcmp(metaName, "cover") == 0) {
+      if (metaContent) self->coverItemId = metaContent;
+    } else if (metaName && metaContent && strcmp(metaName, "calibre:series") == 0) {
+      if (self->series.empty()) self->series = metaContent;
+    } else if (metaName && metaContent && strcmp(metaName, "calibre:series_index") == 0) {
+      if (self->seriesIndex.empty()) self->seriesIndex = metaContent;
+    } else if (metaProperty && strcmp(metaProperty, "belongs-to-collection") == 0) {
+      // EPUB3 series name is the element text; capture it (first only).
+      if (self->series.empty()) self->state = IN_META_COLLECTION;
+    } else if (metaProperty && strcmp(metaProperty, "group-position") == 0) {
+      // EPUB3 series index is the element text; capture it (first only).
+      if (self->seriesIndex.empty()) self->state = IN_META_GROUPPOS;
     }
     return;
   }
@@ -324,6 +345,21 @@ void XMLCALL ContentOpfParser::characterData(void* userData, const XML_Char* s, 
     self->language.append(s, len);
     return;
   }
+
+  if (self->state == IN_BOOK_SUBJECT) {
+    self->genre.append(s, len);
+    return;
+  }
+
+  if (self->state == IN_META_COLLECTION) {
+    self->series.append(s, len);
+    return;
+  }
+
+  if (self->state == IN_META_GROUPPOS) {
+    self->seriesIndex.append(s, len);
+    return;
+  }
 }
 
 void XMLCALL ContentOpfParser::endElement(void* userData, const XML_Char* name) {
@@ -359,6 +395,17 @@ void XMLCALL ContentOpfParser::endElement(void* userData, const XML_Char* name) 
   }
 
   if (self->state == IN_BOOK_LANGUAGE && strcmp(name, "dc:language") == 0) {
+    self->state = IN_METADATA;
+    return;
+  }
+
+  if (self->state == IN_BOOK_SUBJECT && strcmp(name, "dc:subject") == 0) {
+    self->state = IN_METADATA;
+    return;
+  }
+
+  if ((self->state == IN_META_COLLECTION || self->state == IN_META_GROUPPOS) &&
+      (strcmp(name, "meta") == 0 || strcmp(name, "opf:meta") == 0)) {
     self->state = IN_METADATA;
     return;
   }
