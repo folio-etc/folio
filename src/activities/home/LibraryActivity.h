@@ -172,12 +172,12 @@ class LibraryActivity final : public Activity {
   // Split out from render() so the prewarming and clear/display bookends
   // stay tidy.
   void renderPasses();
-  void renderHeader();
-  void renderLibraryShelf();
-  void renderPageRail();
+  void renderHeader(const Rect& box);
+  void renderLibraryShelf(const Rect& shelfArea);
+  void renderPageRail(const Rect& railArea);
   void renderPopup();
-  void renderBookTile(int slotIndex, const LibraryBook& book, bool selected);
-  void renderEmptyState();
+  void renderBookTile(const Rect& cell, int slotIndex, const LibraryBook& book, bool selected);
+  void renderEmptyState(const Rect& body);
 
   // Returns the rect actually occupied by a book tile's content (cover +
   // title + author + progress bar) inside its cell. Shorter than the cell
@@ -185,12 +185,6 @@ class LibraryActivity final : public Activity {
   // Used by the selection frame so it hugs the visible content the way the
   // prototype's CSS outline does.
   Rect tileContentRect(const LibraryBook& book, const Rect& cell) const;
-
-
-  // Bounding rect of the (row, col) cell inside the shelf area. Pure geometry,
-  // marked static so the renderer code keeps direct access to COLS/ROWS without
-  // a `this` indirection.
-  static Rect cellRect(int row, int col, int shelfX, int shelfY, int shelfW, int shelfH);
 
  public:
   explicit LibraryActivity(GfxRenderer& renderer, MappedInputManager& mappedInput)

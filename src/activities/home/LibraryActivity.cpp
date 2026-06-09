@@ -17,9 +17,13 @@
 #include "CrossPointSettings.h"
 #include "LibraryIndex.h"
 #include "MappedInputManager.h"
+#include "util/Flex.h"
 #include "util/GridHelper.h"
 #include "components/UITheme.h"
 #include "components/ui/ButtonHints/ButtonHints.h"
+#include "components/ui/Cover/Cover.h"
+#include "components/ui/ProgressBar/ProgressBar.h"
+#include "components/ui/TextBlock/TextBlock.h"
 #include "components/themes/BaseTheme.h"
 #include "components/themes/ThemeData.generated.h"
 #include "components/ui/CascadingPopupMenu/CascadingPopupMenu.h"
@@ -62,20 +66,9 @@ constexpr int TILE_PROGRESS_TOTAL_H = TILE_PROGRESS_HEIGHT + 2;  // + 2 for 1-px
 constexpr int TILE_CONTENT_H = COVER_H + TILE_TEXT_AREA_H + TILE_PROGRESS_MARGIN_TOP + TILE_PROGRESS_TOTAL_H;
 
 // Page rail tick geometry.
-constexpr int RAIL_TICK = 9;
-constexpr int RAIL_TICK_GAP = 10;
 constexpr int RAIL_PAD_TOP = 8;
 
-// constexpr int RAIL_POWER_HINT_BOTTOM = 225;
-constexpr int RAIL_TOP_GAP = 10;
-
 }  // namespace
-
-Rect LibraryActivity::cellRect(int row, int col, int shelfX, int shelfY, int shelfW, int shelfH) {
-  const int cellW = (shelfW - CELL_GAP * (COLS - 1)) / COLS;
-  const int cellH = (shelfH - CELL_GAP * (ROWS - 1)) / ROWS;
-  return Rect{shelfX + col * (cellW + CELL_GAP), shelfY + row * (cellH + CELL_GAP), cellW, cellH};
-}
 
 // ---- Lifecycle --------------------------------------------------------------
 
@@ -830,12 +823,22 @@ void LibraryActivity::render(RenderLock&&) {
 }
 
 void LibraryActivity::renderPasses() {
-  renderHeader();
+  // Top-level layout: header band, body (shelf + rail or empty state),
+  // footer hint band. Outer Vstack spans the full screen — header and
+  // footer are full-width by design; the body Hstack applies the content
+  // padding that insets the shelf and anchors the rail to the right edge.
+  const Rect screen{0, 0, renderer.getScreenWidth(), renderer.getScreenHeight()};
+  flex::Vstack top(screen,
+                   {flex::fixed(HEADER_HEIGHT), flex::grow(), flex::fixed(FOOTER_HEIGHT)});
+
+  renderHeader(top[0]);
   if (LIBRARY_INDEX.isEmpty()) {
-    renderEmptyState();
+    renderEmptyState(top[1]);
   } else {
-    renderLibraryShelf();
-    renderPageRail();
+    flex::Hstack body(top[1], {flex::grow(), flex::fixed(RAIL_WIDTH)}, RAIL_GAP,
+                      flex::xy(CONTENT_PAD_X, CONTENT_PAD_Y));
+    renderLibraryShelf(body[0]);
+    renderPageRail(body[1]);
   }
 
   if (popup_.isOpen()) {
@@ -871,25 +874,69 @@ bool LibraryActivity::handlePowerShortPress() {
   return true;
 }
 
-void LibraryActivity::renderHeader() {
-  // 3px inner bottom border at the bottom of the 89-px header band.
-  renderer.fillRect(0, HEADER_HEIGHT - HEADER_BOTTOM_BORDER, renderer.getScreenWidth(), HEADER_BOTTOM_BORDER);
+void LibraryActivity::renderHeader(const Rect& headerBox) {
+  // Header band — 89 px tall with a 3 px bottom rule. Outer Vstack in
+  // renderPasses sizes the band; this function lays out the interior.
+  const int titleFont = libFont(FontRole::Title);
+  const int captionFont = libFont(FontRole::Caption);
+  const int titleLineH = renderer.getLineHeight(titleFont);
+  const int captionLineH = renderer.getLineHeight(captionFont);
+
+  // Title text starts at y=20, subtitle text starts at y=56 (both
+  // historical — they match FolioTheme::drawHeader). The intervening band
+  // has to absorb the title's line height; the trailing grow() takes
+  // whatever's left above the 3 px bottom border.
+  constexpr int kTitleTopOffset = 20;
+  constexpr int kSubtitleTopOffset = 56;
+  const int titleToSubtitleGap = kSubtitleTopOffset - kTitleTopOffset - titleLineH;
+  flex::Vstack header(headerBox,
+                      {flex::fixed(kTitleTopOffset),
+                       flex::fixed(titleLineH),
+                       flex::fixed(titleToSubtitleGap),
+                       flex::fixed(captionLineH),
+                       flex::grow(),
+                       flex::fixed(HEADER_BOTTOM_BORDER)});
+  const Rect& titleRow = header[1];
+  const Rect& subtitleRow = header[3];
+  const Rect& bottomBorder = header[5];
 
   // Battery icon top-right. Delegates to whichever theme is active —
   // intentional, the battery is one of the few elements LibraryActivity
   // happily inherits from the user's chosen theme.
   const auto& td = *GUI.getData();
-  constexpr int maxBatteryWidth = 80;
-  renderer.fillRect(renderer.getScreenWidth() - maxBatteryWidth, 5, maxBatteryWidth, td.battery.height + 10, false);
+  constexpr int kBatteryEraseWidth = 80;
+  constexpr int kBatteryTopOffset = 5;
+  constexpr int kBatteryRightInset = 12;
+
+  // Eraser strip: 80 px wide, right-flush against the header's right edge,
+  // tall enough to cover the battery widget. Wipes any prior content under
+  // where the battery + percentage will render.
+  const Rect eraseRow{headerBox.x, headerBox.y + kBatteryTopOffset, headerBox.width,
+                      td.battery.height + 10};
+  const Rect eraseRect = flex::align(eraseRow, kBatteryEraseWidth, eraseRow.height,
+                                     flex::HAlign::End, flex::VAlign::Start);
+  renderer.fillRect(eraseRect.x, eraseRect.y, eraseRect.width, eraseRect.height, false);
+
+  // Battery widget: same row, right-flush after subtracting the 12 px right
+  // inset that breathes the icon away from the bezel.
   const bool showBatteryPct =
       SETTINGS.hideBatteryPercentage != CrossPointSettings::HIDE_BATTERY_PERCENTAGE::HIDE_ALWAYS;
-  const int batteryX = renderer.getScreenWidth() - 12 - td.battery.width;
-  GUI.drawBatteryRight(renderer, Rect{batteryX, 5, td.battery.width, td.battery.height}, showBatteryPct);
+  const Rect batteryRow{headerBox.x, headerBox.y + kBatteryTopOffset,
+                        headerBox.width - kBatteryRightInset, td.battery.height};
+  const Rect batteryRect = flex::align(batteryRow, td.battery.width, td.battery.height,
+                                       flex::HAlign::End, flex::VAlign::Start);
+  GUI.drawBatteryRight(renderer, batteryRect, showBatteryPct);
 
-  // Title and subtitle — match FolioTheme::drawHeader's positions so the
-  // Library reads identically whether or not Folio is the active theme.
+  // Title — match FolioTheme::drawHeader's positions so the Library reads
+  // identically whether or not Folio is the active theme.
   const char* title = tr(STR_LIBRARY);
+  const int titleMaxWidth = batteryRect.x - (headerBox.x + CONTENT_PAD_X) - CONTENT_PAD_X;
+  const std::string truncatedTitle =
+      renderer.truncatedText(titleFont, title, titleMaxWidth, EpdFontFamily::BOLD);
+  renderer.drawText(titleFont, titleRow.x + CONTENT_PAD_X, titleRow.y, truncatedTitle.c_str(),
+                    true, EpdFontFamily::BOLD);
 
+  // Subtitle — sort state and pagination indicator.
   std::string subtitleText;
   if (!LIBRARY_INDEX.isEmpty()) {
     StrId sortedKey = StrId::STR_LIBRARY_SORTED_RECENT;
@@ -906,45 +953,36 @@ void LibraryActivity::renderHeader() {
     const char* arrow =
         (SETTINGS.librarySortDirection == CrossPointSettings::LIB_SORT_ASC) ? "(asc)" : "(desc)";
     subtitleText = std::string(I18n::getInstance().get(sortedKey)) + " " + arrow + "  ·  " +
-                   std::to_string(this->gridHelper.currentPage()) + " / " + std::to_string(this->gridHelper.pageCount());
+                   std::to_string(this->gridHelper.currentPage()) + " / " +
+                   std::to_string(this->gridHelper.pageCount());
   }
-
-  const int titleFont = libFont(FontRole::Title);
-  const int captionFont = libFont(FontRole::Caption);
-
-  const int titleMaxWidth = batteryX - CONTENT_PAD_X * 2;
-  const std::string truncatedTitle =
-      renderer.truncatedText(titleFont, title, titleMaxWidth, EpdFontFamily::BOLD);
-  renderer.drawText(titleFont, CONTENT_PAD_X, 20, truncatedTitle.c_str(), true, EpdFontFamily::BOLD);
-
   if (!subtitleText.empty()) {
-    const std::string truncatedSub = renderer.truncatedText(
-        captionFont, subtitleText.c_str(), renderer.getScreenWidth() - CONTENT_PAD_X * 2, EpdFontFamily::ITALIC);
-    renderer.drawText(captionFont, CONTENT_PAD_X, 56, truncatedSub.c_str(), true, EpdFontFamily::ITALIC);
+    const std::string truncatedSub =
+        renderer.truncatedText(captionFont, subtitleText.c_str(),
+                               headerBox.width - CONTENT_PAD_X * 2, EpdFontFamily::ITALIC);
+    renderer.drawText(captionFont, subtitleRow.x + CONTENT_PAD_X, subtitleRow.y,
+                      truncatedSub.c_str(), true, EpdFontFamily::ITALIC);
   }
+
+  // 3 px inner bottom rule separating header from the shelf.
+  renderer.fillRect(bottomBorder.x, bottomBorder.y, bottomBorder.width, bottomBorder.height);
 }
 
-void LibraryActivity::renderLibraryShelf() {
-  const int screenW = renderer.getScreenWidth();
-  const int screenH = renderer.getScreenHeight();
+void LibraryActivity::renderLibraryShelf(const Rect& shelfArea) {
+  // 3×3 grid of book tiles. Flex::Grid handles the cell math (integer
+  // truncation rounding, same as the prior hand-rolled helper).
+  flex::Grid cells(shelfArea, ROWS, COLS, CELL_GAP, CELL_GAP);
 
-  const int shelfX = CONTENT_PAD_X;
-  const int shelfY = HEADER_HEIGHT + CONTENT_PAD_Y;
-  const int shelfW = screenW - CONTENT_PAD_X * 2 - RAIL_WIDTH - RAIL_GAP;
-  const int shelfH = screenH - HEADER_HEIGHT - FOOTER_HEIGHT - CONTENT_PAD_Y * 2;
-
-  const uint8_t currentIndexOnPage = gridHelper.currentIndexOnPage(); 
-
-  const uint8_t currentPage = gridHelper.currentPage(); 
-  const uint8_t itemsPerPage = gridHelper.itemsPerPage(); 
-
+  const uint8_t currentIndexOnPage = gridHelper.currentIndexOnPage();
+  const uint8_t currentPage = gridHelper.currentPage();
+  const uint8_t itemsPerPage = gridHelper.itemsPerPage();
   const uint16_t baseIndex = currentPage * itemsPerPage;
 
   for (int slot = 0; slot < PER_PAGE; ++slot) {
     const LibraryBook* book = LIBRARY_INDEX.getAt(baseIndex + slot);
     if (book == nullptr) continue;
 
-    const Rect cell = cellRect(slot / COLS, slot % COLS, shelfX, shelfY, shelfW, shelfH);
+    const Rect& cell = cells[slot];
     const bool selected = slot == currentIndexOnPage;
 
     // Selection is split into a background pass (fills — drawn BEFORE tile
@@ -967,7 +1005,7 @@ void LibraryActivity::renderLibraryShelf() {
                            content.width + kFrameInsetX * 2, content.height + kFrameInsetY * 2};
       GUI.drawSelectionBackground(renderer, selectionRect);
     }
-    renderBookTile(slot, *book, selected);
+    renderBookTile(cell, slot, *book, selected);
     if (selected) {
       GUI.drawSelectionForeground(renderer, selectionRect);
     }
@@ -983,131 +1021,47 @@ Rect LibraryActivity::tileContentRect(const LibraryBook& /*book*/, const Rect& c
   return Rect{cell.x, cell.y + TILE_PAD_TOP, cell.width, TILE_CONTENT_H};
 }
 
-void LibraryActivity::renderBookTile(int slotIndex, const LibraryBook& book, bool selected) {
+void LibraryActivity::renderBookTile(const Rect& cell, int /*slotIndex*/,
+                                     const LibraryBook& book, bool selected) {
   // When the active theme paints a dark selection background (Classic's
   // SolidFill, RoundedRaff's RoundedRowAlways), the tile's text + progress
   // bar need to render in inverted (white) ink to stay legible. The cover
-  // bitmap is unaffected — renderBookTile fills the cover area to white
+  // bitmap is unaffected — Cover::render fills the cover area to white
   // before drawing the BMP, so the cover always sits on a white substrate
   // regardless of selection background.
   const bool invertText = selected && GUI.getData()->selection.textInverted;
-  const int screenW = renderer.getScreenWidth();
-  const int screenH = renderer.getScreenHeight();
-  const int shelfX = CONTENT_PAD_X;
-  const int shelfY = HEADER_HEIGHT + CONTENT_PAD_Y;
-  const int shelfW = screenW - CONTENT_PAD_X * 2 - RAIL_WIDTH - RAIL_GAP;
-  const int shelfH = screenH - HEADER_HEIGHT - FOOTER_HEIGHT - CONTENT_PAD_Y * 2;
-  const Rect cell = cellRect(slotIndex / COLS, slotIndex % COLS, shelfX, shelfY, shelfW, shelfH);
 
   const int captionFont = libFont(FontRole::CaptionCompact);
   const int captionLineH = renderer.getLineHeight(captionFont);
 
-  // ---- Cover (centered horizontally within the cell, top-aligned) -----
-  // pageCache_ is a fixed-capacity path-keyed cache sized to the visible
-  // grid. First paint of a thumb loads from SD into pageCache_; subsequent
-  // paints rasterize from cached pixel data. Library just queries
-  // dimensions, computes the centered frame, and calls drawCachedBitmap.
-  //
-  // The "cover area" is the full cell width × COVER_H — lets wider
-  // thumbnails (square or near-square sources) keep their natural size
-  // instead of being clipped to a fixed 80-px slot.
-  const int coverAreaX = cell.x;
-  const int coverAreaW = cell.width;
+  // ---- Cover -----
+  // The cover slot is the full cell width × COVER_H — wide thumbnails
+  // keep their natural width instead of being clipped to an 80-px slot.
+  // Cover::render handles aspect-fit, drop shadow, border, and the
+  // title-text fallback for books that don't have a cached thumbnail.
   const int coverY = cell.y + TILE_PAD_TOP;
-
-  const auto& lib = GUI.getData()->library;
-
-  // Default frame for the title-only fallback (no thumb on disk).
-  int frameX = cell.x + (cell.width - COVER_W) / 2;
-  int frameY = coverY;
-  int frameW = COVER_W;
-  int frameH = COVER_H;
+  const Rect coverBox{cell.x, coverY, cell.width, COVER_H};
 
   char thumbPath[64];
   snprintf(thumbPath, sizeof(thumbPath), "/.crosspoint/epub_%lu/thumb_%d.bmp",
            static_cast<unsigned long>(book.pathHash), LibraryIndex::THUMB_HEIGHT);
 
-  // Hold cacheLock_ across the dimension probe AND the later
-  // drawCachedBitmap call so the worker can't evict / mutate the entry
-  // between them. The lock is taken just before the lookup and released
-  // after the bitmap draw (or the fallback path) further down. The
-  // read-only peek variant is used in two cases: (1) while a rapid-jump
-  // is in progress (no SD reads at all until the button releases),
-  // and (2) while lazy-load is active (sort change / rapid-jump
-  // release — the prefetch worker fills the cache asynchronously, so
-  // a miss here falls through to the placeholder and the activity
-  // repaints when the batch-done signal arrives).
-  xSemaphoreTake(cacheLock_, portMAX_DELAY);
-
+  // Hold cacheLock_ across Cover::render — the widget probes dims and
+  // calls drawCachedBitmap, both of which touch pageCache_. The read-only
+  // peek variant is used in two cases: (1) while a rapid-jump is in
+  // progress (no SD reads at all until the button releases), and (2)
+  // while lazy-load is active (sort change / rapid-jump release — the
+  // prefetch worker fills the cache asynchronously, so a miss here falls
+  // through to the title-text fallback and the activity repaints when
+  // the batch-done signal arrives).
   const bool useReadOnly = rapidJumping_ || lazyLoadCurrentPage_;
-  int bmpW = 0, bmpH = 0;
-  const bool haveThumb = useReadOnly
-      ? (renderer.peekCachedBitmapDimensions(pageCache_, thumbPath, &bmpW, &bmpH) && bmpW > 0 && bmpH > 0)
-      : (renderer.getCachedBitmapDimensions(pageCache_, thumbPath, &bmpW, &bmpH) && bmpW > 0 && bmpH > 0);
-
-  if (haveThumb) {
-    // Fit-to-box against (cell.width × COVER_H), preserving aspect.
-    float scale = 1.0f;
-    if (bmpW > coverAreaW) scale = static_cast<float>(coverAreaW) / static_cast<float>(bmpW);
-    if (bmpH > COVER_H) scale = std::min(scale, static_cast<float>(COVER_H) / static_cast<float>(bmpH));
-    const int drawnW = static_cast<int>(bmpW * scale);
-    const int drawnH = static_cast<int>(bmpH * scale);
-    // Center within the cell horizontally and within the cover height
-    // vertically. Tall covers naturally bottom-align since drawnH hits
-    // COVER_H first.
-    frameX = coverAreaX + (coverAreaW - drawnW) / 2;
-    frameY = coverY + (COVER_H - drawnH) / 2;
-    frameW = drawnW;
-    frameH = drawnH;
-  }
-
-  /** Cover draw **/
-  // 1. Draw drop shadow 
-  if (lib.coverDropShadowOffsetX > 0 || lib.coverDropShadowOffsetY > 0) {
-    renderer.fillRoundedRect(frameX + lib.coverDropShadowOffsetX, frameY + lib.coverDropShadowOffsetY,
-                             frameW, frameH, lib.coverBorderRadius,
-                             invertText ? Color::White : Color::Black);
-  }
-
-  // 2. Draw cover bitmap
-  bool drewCover = false;
-  if (haveThumb) {
-    // Pass the original cover-area constraints (not frameW/frameH) so
-    // drawCachedBitmap's internal fit-to-box arrives at the same drawnW ×
-    // drawnH we computed above. Feeding it the already-truncated frame
-    // dims would introduce a fresh binding constraint via int truncation
-    // — e.g. a 100×180 thumb against 80×120 truncates to drawnH=120 but
-    // re-scaling against (66,120) shrinks targetH to 118, leaving a 2-px
-    // strip of shadow visible inside the bottom of the cover.
-    drewCover = renderer.drawCachedBitmap<true>(pageCache_, thumbPath, frameX, frameY, coverAreaW,
-                                                COVER_H, lib.coverBorderRadius);
-  }
-  // Cache work is done — release the lock before the fallback / text /
-  // progress-bar paths so the worker can proceed in parallel with the
-  // rest of this tile's render.
+  const Cover::Fallback coverFallback{book.title.c_str(), captionFont, EpdFontFamily::BOLD};
+  xSemaphoreTake(cacheLock_, portMAX_DELAY);
+  Cover::render(renderer, coverBox, pageCache_, thumbPath, useReadOnly, invertText,
+                COVER_W, COVER_H, &coverFallback);
   xSemaphoreGive(cacheLock_);
 
-  // 2a. Fallback cover for books without covers
-  if (!drewCover) {
-    if (lib.coverBorderRadius > 0) {
-      renderer.fillRoundedRect(frameX, frameY, frameW, frameH, lib.coverBorderRadius, Color::White);
-    } else {
-      renderer.fillRect(frameX, frameY, frameW, frameH, false);
-    }
-    const std::string trunc =
-        renderer.truncatedText(captionFont, book.title.c_str(), COVER_W - 12, EpdFontFamily::BOLD);
-    const int tw = renderer.getTextWidth(captionFont, trunc.c_str(), EpdFontFamily::BOLD);
-    renderer.drawText(captionFont, frameX + (COVER_W - tw) / 2, frameY + (COVER_H - captionLineH) / 2,
-                      trunc.c_str(), true, EpdFontFamily::BOLD);
-  }
 
-  // 3. Draw border
-  if (lib.coverBorderWidth > 0) {
-    renderer.drawRoundedRect(frameX, frameY, frameW, frameH, lib.coverBorderWidth, lib.coverBorderRadius,
-                             !invertText);
-  }
-  /** ----------- **/
-  
 
   // ---- Text area (fixed-height, title + author centered vertically) -----
   // Card height is fixed (see TILE_CONTENT_H), so the title + author block
@@ -1129,33 +1083,33 @@ void LibraryActivity::renderBookTile(int slotIndex, const LibraryBook& book, boo
   const int authorReserved = book.author.empty() ? 0 : (TILE_TITLE_AUTHOR_GAP + captionLineH);
   const int titleBudget = centeringH - authorReserved;
   const int maxTitleLines = std::min(2, std::max(1, titleBudget / captionLineH));
-  std::vector<std::string> titleLines =
-      renderer.wrappedText(captionFont, book.title.c_str(), cell.width - 8, maxTitleLines, EpdFontFamily::BOLD);
-  const int titleLineCount = std::max(1, static_cast<int>(titleLines.size()));
+  const std::vector<std::string> titleLines = renderer.wrappedText(
+      captionFont, book.title.c_str(), cell.width - 8, maxTitleLines, EpdFontFamily::BOLD);
 
-  const int titleH = titleLineCount * captionLineH;
-  const int blockH = titleH + authorReserved;
-  const int blockTop = textAreaY + (centeringH - blockH) / 2;
+  // Pre-truncate the author here so TextBlock's per-line truncation budget
+  // (which equals box.width) doesn't grant the author more horizontal room
+  // than the title's wrap budget. Empty when the book has no author.
+  const std::string authorTrunc =
+      book.author.empty()
+          ? std::string()
+          : renderer.truncatedText(captionFont, book.author.c_str(), cell.width - 8,
+                                   EpdFontFamily::ITALIC);
 
-  // Title — centered horizontally per line, stacked vertically from blockTop.
-  // Text color flips when the theme's selection paints a dark background.
+  // Assemble the text block: title lines (BOLD) + optional author (ITALIC,
+  // with a 1 px lead-in gap). TextBlock vertically centers the whole stack
+  // inside its box and horizontally centers each line on box.x + box.width/2.
+  TextBlock::Line tlines[3];  // up to 2 title lines + 1 author line
+  std::size_t tcount = 0;
+  for (const auto& l : titleLines) {
+    tlines[tcount++] = TextBlock::Line{l.c_str(), captionFont, EpdFontFamily::BOLD, 0, false};
+  }
+  if (!authorTrunc.empty()) {
+    tlines[tcount++] = TextBlock::Line{authorTrunc.c_str(), captionFont, EpdFontFamily::ITALIC,
+                                       TILE_TITLE_AUTHOR_GAP, false};
+  }
   const bool textBlack = !invertText;
-  for (size_t i = 0; i < titleLines.size(); ++i) {
-    const int lineW = renderer.getTextWidth(captionFont, titleLines[i].c_str(), EpdFontFamily::BOLD);
-    renderer.drawText(captionFont, cell.x + (cell.width - lineW) / 2,
-                      blockTop + static_cast<int>(i) * captionLineH, titleLines[i].c_str(), textBlack,
-                      EpdFontFamily::BOLD);
-  }
-
-  // Author — italic, single line, directly below the title's last line.
-  if (!book.author.empty()) {
-    const int authorY = blockTop + titleH + TILE_TITLE_AUTHOR_GAP;
-    const std::string author =
-        renderer.truncatedText(captionFont, book.author.c_str(), cell.width - 8, EpdFontFamily::ITALIC);
-    const int aw = renderer.getTextWidth(captionFont, author.c_str(), EpdFontFamily::ITALIC);
-    renderer.drawText(captionFont, cell.x + (cell.width - aw) / 2, authorY, author.c_str(), textBlack,
-                      EpdFontFamily::ITALIC);
-  }
+  const Rect textBox{cell.x, textAreaY, cell.width, centeringH};
+  TextBlock::render(renderer, textBox, tlines, tcount, textBlack);
 
   // ---- Progress bar (fixed position, only drawn when book has progress) -
   // Bar Y is anchored at the end of the reserved text area, so every row's
@@ -1163,62 +1117,54 @@ void LibraryActivity::renderBookTile(int slotIndex, const LibraryBook& book, boo
   // books just leave this area blank — preserving fixed card height.
   if (book.hasProgress()) {
     const int barY = textAreaY + TILE_TEXT_AREA_H + TILE_PROGRESS_MARGIN_TOP;
-    const int barX = cell.x + (cell.width - COVER_W) / 2;
-
-    // Draw background 
-    renderer.fillRect(barX, barY, COVER_W, TILE_PROGRESS_TOTAL_H, !textBlack);
-
-    //Draw border
-    renderer.drawRect(barX, barY, COVER_W, TILE_PROGRESS_TOTAL_H, textBlack);
-
-    // Draw progress
-    const int fillW = (COVER_W - 4) * book.progressPercent() / 100;
-    if (fillW > 0) {
-      renderer.fillRect(barX + 2, barY + 2, fillW, TILE_PROGRESS_HEIGHT - 2, textBlack);
-    }
+    const Rect progressSlot{cell.x, barY, cell.width, TILE_PROGRESS_TOTAL_H};
+    const Rect barBox = flex::align(progressSlot, COVER_W, TILE_PROGRESS_TOTAL_H,
+                                    flex::HAlign::Center, flex::VAlign::Start);
+    ProgressBar::render(renderer, barBox, book.progressPercent(), textBlack);
   }
 }
 
-void LibraryActivity::renderPageRail() {
+void LibraryActivity::renderPageRail(const Rect& railArea) {
   // Always render the rail so the user sees their position even on a single-
   // page library — the visual treatment is part of the Library's identity.
+  // railArea spans the full vertical extent of the shelf; ticks get an
+  // extra RAIL_PAD_TOP gap from the top so the first dot doesn't crowd
+  // the header separator.
   const int pages = std::max(1, static_cast<int>(gridHelper.pageCount()));
-  const int screenH = renderer.getScreenHeight();
-  const int railX = renderer.getScreenWidth() - CONTENT_PAD_X - RAIL_WIDTH;
-  
-  // Anchor the rail below the power-button hint slot — see RAIL_POWER_HINT_BOTTOM.
-  // const int railTop = RAIL_POWER_HINT_BOTTOM + RAIL_TOP_GAP;
-  const int railTop = HEADER_HEIGHT + CONTENT_PAD_Y + RAIL_PAD_TOP;
-  const int railBottom = screenH - FOOTER_HEIGHT - CONTENT_PAD_Y;
+  const int railTop = railArea.y + RAIL_PAD_TOP;
+  const int railBottom = railArea.y + railArea.height;
 
   const auto& lib = GUI.getData()->library;
   const int tickSize = lib.pageIndicatorSize;
-  const int tickX = railX + (RAIL_WIDTH - tickSize) / 2;
   const uint8_t currentPage = this->gridHelper.currentPage();
 
   for (int i = 0; i < pages; ++i) {
-    const int tickY = railTop + i * (tickSize + lib.pageIndicatorGap);
+    const int tickRowY = railTop + i * (tickSize + lib.pageIndicatorGap);
+    // Per-tick row slot spans the full rail width; the tick itself is
+    // centered horizontally inside it via flex::align.
+    const Rect tickRow{railArea.x, tickRowY, railArea.width, tickSize};
+    const Rect tick =
+        flex::align(tickRow, tickSize, tickSize, flex::HAlign::Center, flex::VAlign::Start);
 
     const Color fill = (i == currentPage) ? lib.pageIndicatorFillSelected : lib.pageIndicatorFill;
     const Color border = (i == currentPage) ? lib.pageIndicatorBorderSelected : lib.pageIndicatorBorder;
 
-    switch(lib.pageIndicatorShape) {
+    switch (lib.pageIndicatorShape) {
       case IndicatorShape::Circle: {
         const int r = tickSize / 2;
-        const int cx = tickX + r;
-        const int cy = tickY + r;
-        renderer.fillCircle(cx, cy, r, fill);
-        renderer.drawCircle(cx, cy, r, border);
+        renderer.fillCircle(tick.x + r, tick.y + r, r, fill);
+        renderer.drawCircle(tick.x + r, tick.y + r, r, border);
         break;
-      } 
+      }
       case IndicatorShape::Square:
-        renderer.fillRectDither(tickX, tickY, tickSize, tickSize, fill);
-        renderer.drawRect(tickX, tickY, tickSize, tickSize, border == Color::Black);
+        renderer.fillRectDither(tick.x, tick.y, tick.width, tick.height, fill);
+        renderer.drawRect(tick.x, tick.y, tick.width, tick.height, border == Color::Black);
         break;
       case IndicatorShape::RoundedRect:
-        renderer.fillRoundedRect(tickX, tickY, tickSize, tickSize, lib.pageIndicatorCornerRadius, fill);
-        renderer.drawRoundedRect(tickX, tickY, tickSize, tickSize, 1, lib.pageIndicatorCornerRadius,
-                                 border == Color::Black);
+        renderer.fillRoundedRect(tick.x, tick.y, tick.width, tick.height,
+                                 lib.pageIndicatorCornerRadius, fill);
+        renderer.drawRoundedRect(tick.x, tick.y, tick.width, tick.height, 1,
+                                 lib.pageIndicatorCornerRadius, border == Color::Black);
         break;
     }
   }
@@ -1232,18 +1178,21 @@ void LibraryActivity::renderPageRail() {
   char countBuf[16];
   snprintf(countBuf, sizeof(countBuf), "%d / %d", currentPage + 1, pages);
   const int countY = railBottom - 4;
-  const int countX = railX + RAIL_WIDTH / 2 + 4;
+  const int countX = railArea.x + railArea.width / 2 + 4;
   renderer.drawTextRotated90CW(accentFont, countX, countY, countBuf, true, EpdFontFamily::ITALIC);
 }
 
-void LibraryActivity::renderEmptyState() {
-  const int screenW = renderer.getScreenWidth();
-  const int screenH = renderer.getScreenHeight();
+void LibraryActivity::renderEmptyState(const Rect& body) {
+  // "No books on SD card" — italic heading, centered both axes inside the
+  // body region. The pre-flex build centered the text *top* on the body
+  // midpoint (no line-height subtraction); flex::center places the text
+  // *box* in the middle, which reads as the correct center.
   const int font = libFont(FontRole::Heading);
   const char* msg = tr(STR_LIBRARY_NO_BOOKS);
   const int textW = renderer.getTextWidth(font, msg, EpdFontFamily::ITALIC);
-  const int y = HEADER_HEIGHT + (screenH - HEADER_HEIGHT - FOOTER_HEIGHT) / 2;
-  renderer.drawText(font, (screenW - textW) / 2, y, msg, true, EpdFontFamily::ITALIC);
+  const int textH = renderer.getLineHeight(font);
+  const Rect at = flex::center(body, textW, textH);
+  renderer.drawText(font, at.x, at.y, msg, true, EpdFontFamily::ITALIC);
 }
 
 void LibraryActivity::renderPopup() {
