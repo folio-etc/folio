@@ -24,6 +24,14 @@ class GfxRenderer;
 // Stateless — no member state across calls.
 class Cover {
  public:
+  // Natural fallback frame for books without a cached thumbnail. The widget
+  // centers this box inside its slot and (optionally) prints the title text
+  // inside it. Tunes the visual character of the fallback badge — narrower
+  // than the cover slot so it reads as a small placeholder rather than a
+  // full-width tile.
+  static constexpr int kFallbackWidth = 80;
+  static constexpr int kFallbackHeight = 120;
+
   struct Fallback {
     const char* text = nullptr;
     int fontId = 0;

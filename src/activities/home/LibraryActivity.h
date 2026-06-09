@@ -173,18 +173,13 @@ class LibraryActivity final : public Activity {
   // stay tidy.
   void renderPasses();
   void renderHeader(const Rect& box);
+  void renderBattery(const Rect& headerBox);
+  std::string getHeaderSubtitleText();
   void renderLibraryShelf(const Rect& shelfArea);
   void renderPageRail(const Rect& railArea);
   void renderPopup();
-  void renderBookTile(const Rect& cell, int slotIndex, const LibraryBook& book, bool selected);
+  void renderBookTile(const Rect& cell, const LibraryBook& book, bool selected);
   void renderEmptyState(const Rect& body);
-
-  // Returns the rect actually occupied by a book tile's content (cover +
-  // title + author + progress bar) inside its cell. Shorter than the cell
-  // itself when the title fits on one line or there's no author / progress.
-  // Used by the selection frame so it hugs the visible content the way the
-  // prototype's CSS outline does.
-  Rect tileContentRect(const LibraryBook& book, const Rect& cell) const;
 
  public:
   explicit LibraryActivity(GfxRenderer& renderer, MappedInputManager& mappedInput)
