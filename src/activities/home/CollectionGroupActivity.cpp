@@ -14,6 +14,14 @@
 #include "components/UITheme.h"
 #include "components/ui/ButtonHints/ButtonHints.h"
 #include "fontIds.h"
+#include "util/Flex.h"
+
+namespace {
+// "1 book" / "N books" — matches the prototype's right-aligned row-meta count.
+std::string bookCountLabel(int n) {
+  return std::to_string(n) + " " + (n == 1 ? tr(STR_BOOK_SINGULAR) : tr(STR_BOOK_PLURAL));
+}
+}  // namespace
 
 const char* CollectionGroupActivity::headerTitle() const {
   switch (mode) {
@@ -101,21 +109,25 @@ void CollectionGroupActivity::render(RenderLock&&) {
   renderer.clearScreen();
 
   const auto& td = *GUI.getData();
-  const auto pageWidth = renderer.getScreenWidth();
-  const auto pageHeight = renderer.getScreenHeight();
+  const Rect screen{0, 0, renderer.getScreenWidth(), renderer.getScreenHeight()};
 
-  GUI.drawHeader(renderer, Rect{0, td.layout.topPadding, pageWidth, td.header.height}, headerTitle());
+  flex::Vstack page(
+      screen, {flex::fixed(td.header.height), flex::grow(), flex::fixed(td.buttonHints.height)},
+      /*gap=*/td.layout.verticalSpacing,
+      flex::Padding{static_cast<int16_t>(td.layout.topPadding), 0, static_cast<int16_t>(td.layout.verticalSpacing), 0});
 
-  const int contentTop = td.layout.topPadding + td.header.height + td.layout.verticalSpacing;
-  const int contentHeight = pageHeight - contentTop - td.buttonHints.height - td.layout.verticalSpacing * 2;
+  GUI.drawHeader(renderer, page[0], headerTitle());
 
   if (groups.empty()) {
-    renderer.drawCenteredText(UI_10_FONT_ID, pageHeight / 2, tr(STR_LIBRARY_NO_BOOKS));
+    const Rect& body = page[1];
+    const int y = body.y + (body.height - renderer.getLineHeight(UI_10_FONT_ID)) / 2;
+    renderer.drawCenteredText(UI_10_FONT_ID, y, tr(STR_LIBRARY_NO_BOOKS));
   } else {
     GUI.drawList(
-        renderer, Rect{0, contentTop, pageWidth, contentHeight}, static_cast<int>(groups.size()), selectedIndex,
+        renderer, page[1], static_cast<int>(groups.size()), selectedIndex,
         [this](int index) { return groups[index].first; }, nullptr, nullptr,
-        [this](int index) { return std::to_string(groups[index].second); });
+        [this](int index) { return bookCountLabel(groups[index].second); }, false, nullptr, nullptr, nullptr,
+        /*valueMetaStyle=*/true);
   }
 
   const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_SELECT), tr(STR_DIR_UP), tr(STR_DIR_DOWN));

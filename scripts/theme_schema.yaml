@@ -147,6 +147,12 @@ struct:
       - { cpp: rowHeightWithSubtitle, type: int,                 default: 60 }
       - { cpp: menuRowHeight,        type: int,                  default: 56 }
       - { cpp: menuSpacing,          type: int,                  default: 14 }
+      # List-row selection, independent of the book-grid selection (which keeps
+      # `selection.style`). Lets Folio invert list rows without touching the grid.
+      - { cpp: selectionStyle,        type: SelectionStyle, default: "SelectionStyle::SolidFill" }
+      - { cpp: selectionTextInverted, type: bool,           default: true }
+      # Hairline divider drawn under each unselected row (prototype fidelity).
+      - { cpp: showDividers,          type: bool,           default: true }
 
   # Top-level style dispatchers (interleaved between nested structs)
   - { cpp: buttonHintsStyle,     type: ButtonHintsStyle,     default: "ButtonHintsStyle::Hairline" }

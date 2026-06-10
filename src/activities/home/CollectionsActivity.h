@@ -22,7 +22,7 @@ class CollectionsActivity final : public Activity {
   void render(RenderLock&&) override;
 
  private:
-  enum class RowKind { GroupSeries, GroupAuthor, GroupGenre, NewCollection, ManualCollection };
+  enum class RowKind { GroupSeries, GroupAuthor, GroupGenre, Header, NewCollection, ManualCollection };
 
   struct Row {
     RowKind kind;
@@ -38,4 +38,7 @@ class CollectionsActivity final : public Activity {
 
   void buildRows();
   void handleSelection();
+  bool isSelectable(int index) const;
+  int nextSelectable(int from) const;
+  int prevSelectable(int from) const;
 };

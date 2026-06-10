@@ -79,11 +79,11 @@ class BaseTheme {
                 const std::function<std::string(int index)>& rowSubtitle = nullptr,
                 const std::function<UIIcon(int index)>& rowIcon = nullptr,
                 const std::function<std::string(int index)>& rowValue = nullptr, bool highlightValue = false,
-                const std::function<bool(int index)>& rowDimmed = nullptr) const;
-  void drawHeader(const GfxRenderer& renderer, Rect rect, const char* title,
-                  const char* subtitle = nullptr) const;
-  void drawSubHeader(const GfxRenderer& renderer, Rect rect, const char* label,
-                     const char* rightLabel = nullptr) const;
+                const std::function<bool(int index)>& rowDimmed = nullptr,
+                const std::function<bool(int index)>& rowIsHeader = nullptr,
+                const std::function<bool(int index)>& rowBold = nullptr, bool valueMetaStyle = false) const;
+  void drawHeader(const GfxRenderer& renderer, Rect rect, const char* title, const char* subtitle = nullptr) const;
+  void drawSubHeader(const GfxRenderer& renderer, Rect rect, const char* label, const char* rightLabel = nullptr) const;
   void drawTabBar(const GfxRenderer& renderer, Rect rect, const std::vector<TabInfo>& tabs, bool selected) const;
   void drawButtonMenu(GfxRenderer& renderer, Rect rect, int buttonCount, int selectedIndex,
                       const std::function<std::string(int index)>& buttonLabel,
@@ -119,10 +119,10 @@ class BaseTheme {
     LightGray,  // dithered light-gray wash (text stays black)
   };
   enum class SelectionBorder : uint8_t {
-    None,        // no border stroke
-    Single,      // 1-2 px ink outline
-    Double,      // outer 2 px ink + 1 px white gap + inner 2 px ink (Folio)
-    Brackets,    // diagonal corner brackets only (TL + BR)
+    None,      // no border stroke
+    Single,    // 1-2 px ink outline
+    Double,    // outer 2 px ink + 1 px white gap + inner 2 px ink (Folio)
+    Brackets,  // diagonal corner brackets only (TL + BR)
   };
   // Renders a selection treatment by composition. Borders are drawn after
   // fills so a Double border can sit cleanly over a fill. The Brackets

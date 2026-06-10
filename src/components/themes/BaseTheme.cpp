@@ -38,25 +38,40 @@ constexpr int kSubtitleY = 738;
 const uint8_t* iconForName(UIIcon icon, int size) {
   if (size == 24) {
     switch (icon) {
-      case UIIcon::Folder: return Folder24Icon;
-      case UIIcon::Text:   return Text24Icon;
-      case UIIcon::Image:  return Image24Icon;
-      case UIIcon::Book:   return Book24Icon;
-      case UIIcon::File:   return File24Icon;
-      default:             return nullptr;
+      case UIIcon::Folder:
+        return Folder24Icon;
+      case UIIcon::Text:
+        return Text24Icon;
+      case UIIcon::Image:
+        return Image24Icon;
+      case UIIcon::Book:
+        return Book24Icon;
+      case UIIcon::File:
+        return File24Icon;
+      default:
+        return nullptr;
     }
   }
   if (size == 32) {
     switch (icon) {
-      case UIIcon::Folder:   return FolderIcon;
-      case UIIcon::Book:     return BookIcon;
-      case UIIcon::Recent:   return RecentIcon;
-      case UIIcon::Settings: return Settings2Icon;
-      case UIIcon::Transfer: return TransferIcon;
-      case UIIcon::Library:  return LibraryIcon;
-      case UIIcon::Wifi:     return WifiIcon;
-      case UIIcon::Hotspot:  return HotspotIcon;
-      default:               return nullptr;
+      case UIIcon::Folder:
+        return FolderIcon;
+      case UIIcon::Book:
+        return BookIcon;
+      case UIIcon::Recent:
+        return RecentIcon;
+      case UIIcon::Settings:
+        return Settings2Icon;
+      case UIIcon::Transfer:
+        return TransferIcon;
+      case UIIcon::Library:
+        return LibraryIcon;
+      case UIIcon::Wifi:
+        return WifiIcon;
+      case UIIcon::Hotspot:
+        return HotspotIcon;
+      default:
+        return nullptr;
     }
   }
   return nullptr;
@@ -75,14 +90,22 @@ const char* BaseTheme::themeName() const { return data->id; }
 
 int BaseTheme::resolveFontRole(const ThemeData& data, FontRole role) {
   switch (role) {
-    case FontRole::Title:          return data.fonts.titleId;
-    case FontRole::Heading:        return data.fonts.headingId;
-    case FontRole::Body:           return data.fonts.bodyId;
-    case FontRole::Caption:        return data.fonts.captionId;
-    case FontRole::Accent:         return data.fonts.accentId;
-    case FontRole::BodyCompact:    return data.fonts.bodyIdCompact != 0 ? data.fonts.bodyIdCompact : data.fonts.bodyId;
-    case FontRole::CaptionCompact: return data.fonts.captionIdCompact != 0 ? data.fonts.captionIdCompact : data.fonts.captionId;
-    case FontRole::AccentCompact:  return data.fonts.accentIdCompact != 0 ? data.fonts.accentIdCompact : data.fonts.accentId;
+    case FontRole::Title:
+      return data.fonts.titleId;
+    case FontRole::Heading:
+      return data.fonts.headingId;
+    case FontRole::Body:
+      return data.fonts.bodyId;
+    case FontRole::Caption:
+      return data.fonts.captionId;
+    case FontRole::Accent:
+      return data.fonts.accentId;
+    case FontRole::BodyCompact:
+      return data.fonts.bodyIdCompact != 0 ? data.fonts.bodyIdCompact : data.fonts.bodyId;
+    case FontRole::CaptionCompact:
+      return data.fonts.captionIdCompact != 0 ? data.fonts.captionIdCompact : data.fonts.captionId;
+    case FontRole::AccentCompact:
+      return data.fonts.accentIdCompact != 0 ? data.fonts.accentIdCompact : data.fonts.accentId;
   }
   return data.fonts.bodyId;
 }
@@ -264,14 +287,12 @@ void BaseTheme::drawSelectionBackground(const GfxRenderer& renderer, Rect rect) 
       drawSelectionRect(renderer, rect, SelectionFill::Solid, SelectionBorder::None);
       break;
     case SelectionStyle::RoundedFill:
-      drawSelectionRect(renderer, rect, SelectionFill::LightGray, SelectionBorder::None,
-                        data->selection.cornerRadius);
+      drawSelectionRect(renderer, rect, SelectionFill::LightGray, SelectionBorder::None, data->selection.cornerRadius);
       break;
     case SelectionStyle::RoundedRowAlways:
       // For tile-grid contexts (Library), RoundedRaff gets the same rounded
       // inversion it uses for list rows.
-      drawSelectionRect(renderer, rect, SelectionFill::Solid, SelectionBorder::None,
-                        data->selection.cornerRadius);
+      drawSelectionRect(renderer, rect, SelectionFill::Solid, SelectionBorder::None, data->selection.cornerRadius);
       break;
     case SelectionStyle::LayeredFrame:
       // No background — the layered border + brackets are foreground-only.
@@ -312,17 +333,16 @@ void BaseTheme::drawHeader(const GfxRenderer& renderer, Rect rect, const char* t
   switch (data->header.style) {
     case HeaderStyle::CenteredTitle: {
       constexpr int maxBatteryWidth = 80;
-      renderer.fillRect(rect.x + rect.width - maxBatteryWidth, rect.y + 5, maxBatteryWidth, m.battery.height + 10, false);
-      const bool showPct =
-          SETTINGS.hideBatteryPercentage != CrossPointSettings::HIDE_BATTERY_PERCENTAGE::HIDE_ALWAYS;
+      renderer.fillRect(rect.x + rect.width - maxBatteryWidth, rect.y + 5, maxBatteryWidth, m.battery.height + 10,
+                        false);
+      const bool showPct = SETTINGS.hideBatteryPercentage != CrossPointSettings::HIDE_BATTERY_PERCENTAGE::HIDE_ALWAYS;
       const int batteryX = rect.x + rect.width - 12 - m.battery.width;
       drawBatteryRight(renderer, Rect{batteryX, rect.y + 5, m.battery.width, m.battery.height}, showPct);
 
       if (hasTitle) {
         const int padding = rect.width - batteryX + m.battery.width;
-        auto truncated =
-            renderer.truncatedText(titleFont, title, rect.width - padding * 2 - m.layout.contentSidePadding * 2,
-                                   data->header.titleStyle);
+        auto truncated = renderer.truncatedText(
+            titleFont, title, rect.width - padding * 2 - m.layout.contentSidePadding * 2, data->header.titleStyle);
         renderer.drawCenteredText(titleFont, rect.y + 5, truncated.c_str(), true, data->header.titleStyle);
       }
       if (hasSubtitle) {
@@ -336,14 +356,12 @@ void BaseTheme::drawHeader(const GfxRenderer& renderer, Rect rect, const char* t
     }
     case HeaderStyle::LeftAlignedWithRule: {
       renderer.fillRect(rect.x, rect.y, rect.width, rect.height, false);
-      const bool showPct =
-          SETTINGS.hideBatteryPercentage != CrossPointSettings::HIDE_BATTERY_PERCENTAGE::HIDE_ALWAYS;
+      const bool showPct = SETTINGS.hideBatteryPercentage != CrossPointSettings::HIDE_BATTERY_PERCENTAGE::HIDE_ALWAYS;
       const int batteryX = rect.x + rect.width - 12 - m.battery.width;
       drawBatteryRight(renderer, Rect{batteryX, rect.y + 5, m.battery.width, m.battery.height}, showPct);
 
       int titleW = hasTitle ? renderer.getTextWidth(titleFont, title, data->header.titleStyle) : 0;
-      int subtitleW =
-          hasSubtitle ? renderer.getTextWidth(captionFont, subtitle, data->header.subtitleStyle) : 0;
+      int subtitleW = hasSubtitle ? renderer.getTextWidth(captionFont, subtitle, data->header.subtitleStyle) : 0;
       const int available = rect.width - m.layout.contentSidePadding * 3;
       if (titleW + subtitleW > available) {
         if (titleW > available / 2 && subtitleW > available / 2) {
@@ -360,8 +378,7 @@ void BaseTheme::drawHeader(const GfxRenderer& renderer, Rect rect, const char* t
         renderer.drawText(titleFont, rect.x + m.layout.contentSidePadding, rect.y + m.battery.barHeight + 3,
                           truncated.c_str(), true, data->header.titleStyle);
         // Full-width rule at the bottom of the header.
-        renderer.drawLine(rect.x, rect.y + rect.height - 3, rect.x + rect.width - 1, rect.y + rect.height - 3, 3,
-                          true);
+        renderer.drawLine(rect.x, rect.y + rect.height - 3, rect.x + rect.width - 1, rect.y + rect.height - 3, 3, true);
       }
       if (hasSubtitle) {
         auto truncated = renderer.truncatedText(captionFont, subtitle, subtitleW, data->header.subtitleStyle);
@@ -378,9 +395,9 @@ void BaseTheme::drawHeader(const GfxRenderer& renderer, Rect rect, const char* t
       }
 
       constexpr int maxBatteryWidth = 80;
-      renderer.fillRect(rect.x + rect.width - maxBatteryWidth, rect.y + 5, maxBatteryWidth, m.battery.height + 10, false);
-      const bool showPct =
-          SETTINGS.hideBatteryPercentage != CrossPointSettings::HIDE_BATTERY_PERCENTAGE::HIDE_ALWAYS;
+      renderer.fillRect(rect.x + rect.width - maxBatteryWidth, rect.y + 5, maxBatteryWidth, m.battery.height + 10,
+                        false);
+      const bool showPct = SETTINGS.hideBatteryPercentage != CrossPointSettings::HIDE_BATTERY_PERCENTAGE::HIDE_ALWAYS;
       const int batteryX = rect.x + rect.width - 12 - m.battery.width;
       drawBatteryRight(renderer, Rect{batteryX, rect.y + 5, m.battery.width, m.battery.height}, showPct);
 
@@ -398,8 +415,7 @@ void BaseTheme::drawHeader(const GfxRenderer& renderer, Rect rect, const char* t
         // Shift up when a subtitle is present so both lines fit cleanly above
         // the bottom border.
         const int titleY = hasSubtitle ? 20 : 32;
-        auto truncated =
-            renderer.truncatedText(headerTitleFont, title, titleMaxWidth, data->header.titleStyle);
+        auto truncated = renderer.truncatedText(headerTitleFont, title, titleMaxWidth, data->header.titleStyle);
         renderer.drawText(headerTitleFont, rect.x + contentPad, rect.y + titleY, truncated.c_str(), true,
                           data->header.titleStyle);
       }
@@ -417,8 +433,7 @@ void BaseTheme::drawHeader(const GfxRenderer& renderer, Rect rect, const char* t
       const int sidePadding = m.layout.contentSidePadding;
       const int titleX = rect.x + sidePadding;
       const int titleY = rect.y + 14;
-      const bool showPct =
-          SETTINGS.hideBatteryPercentage != CrossPointSettings::HIDE_BATTERY_PERCENTAGE::HIDE_ALWAYS;
+      const bool showPct = SETTINGS.hideBatteryPercentage != CrossPointSettings::HIDE_BATTERY_PERCENTAGE::HIDE_ALWAYS;
       const int batteryIconX = rect.x + rect.width - sidePadding - m.battery.width;
 
       int batteryGroupLeftX = batteryIconX;
@@ -446,7 +461,8 @@ void BaseTheme::drawSubHeader(const GfxRenderer& renderer, Rect rect, const char
   if (rightLabel) {
     auto truncated = renderer.truncatedText(SMALL_FONT_ID, rightLabel, kMaxListValueWidth, EpdFontFamily::REGULAR);
     const int w = renderer.getTextWidth(SMALL_FONT_ID, truncated.c_str());
-    renderer.drawText(SMALL_FONT_ID, rect.x + rect.width - m.layout.contentSidePadding - w, rect.y + 7, truncated.c_str());
+    renderer.drawText(SMALL_FONT_ID, rect.x + rect.width - m.layout.contentSidePadding - w, rect.y + 7,
+                      truncated.c_str());
     rightSpace += w + 10;
   }
   auto truncatedLabel = renderer.truncatedText(titleFont, label, rect.width - m.layout.contentSidePadding - rightSpace,
@@ -544,8 +560,8 @@ void BaseTheme::drawTabBar(const GfxRenderer& renderer, const Rect rect, const s
 namespace {
 
 // Draw the configured scroll indicator on the right edge of `rect`.
-void drawScrollIndicator(const ThemeData& data, const GfxRenderer& renderer, Rect rect, int itemCount,
-                         int pageItems, int pageStartIndex) {
+void drawScrollIndicator(const ThemeData& data, const GfxRenderer& renderer, Rect rect, int itemCount, int pageItems,
+                         int pageStartIndex) {
   if (itemCount <= 0 || pageItems <= 0 || itemCount <= pageItems) return;
 
   switch (data.scrollIndicatorStyle) {
@@ -605,24 +621,30 @@ void BaseTheme::drawList(const GfxRenderer& renderer, Rect rect, int itemCount, 
                          const std::function<std::string(int index)>& rowSubtitle,
                          const std::function<UIIcon(int index)>& rowIcon,
                          const std::function<std::string(int index)>& rowValue, bool highlightValue,
-                         const std::function<bool(int index)>& rowDimmed) const {
+                         const std::function<bool(int index)>& rowDimmed,
+                         const std::function<bool(int index)>& rowIsHeader,
+                         const std::function<bool(int index)>& rowBold, bool valueMetaStyle) const {
   const auto& m = *data;
   const int bodyFont = getFontForRole(FontRole::Body);
   const int captionFont = getFontForRole(FontRole::Caption);
+  // Smaller face for the right-aligned meta value column and section-header
+  // notes (prototype's .row-meta / .listnote: ~20% smaller, italic, dimmed).
+  const int metaFont = getFontForRole(FontRole::BodyCompact);
   const bool hasSubtitle = static_cast<bool>(rowSubtitle);
 
   // Per-row layout — RoundedRowAlways uses an extra-tall subtitle row.
   int rowHeight;
   int rowStep;
-  if (data->selection.style == SelectionStyle::RoundedRowAlways && hasSubtitle) {
+  if (m.list.selectionStyle == SelectionStyle::RoundedRowAlways && hasSubtitle) {
     constexpr int subtitleTopPadding = 10;
     constexpr int subtitleBottomPadding = 10;
     constexpr int subtitleInterLineGap = 4;
     const int subtitleLineHeight = renderer.getLineHeight(captionFont);
     const int titleLineHeight = renderer.getLineHeight(bodyFont);
-    rowHeight = subtitleTopPadding + titleLineHeight + subtitleInterLineGap + subtitleLineHeight + subtitleBottomPadding;
+    rowHeight =
+        subtitleTopPadding + titleLineHeight + subtitleInterLineGap + subtitleLineHeight + subtitleBottomPadding;
     rowStep = rowHeight + 6;
-  } else if (data->selection.style == SelectionStyle::RoundedRowAlways) {
+  } else if (m.list.selectionStyle == SelectionStyle::RoundedRowAlways) {
     rowHeight = m.list.rowHeight;
     rowStep = rowHeight + 6;
   } else {
@@ -645,13 +667,35 @@ void BaseTheme::drawList(const GfxRenderer& renderer, Rect rect, int itemCount, 
   const int contentPad = m.layout.contentSidePadding;
   const int iconSize = hasSubtitle ? 32 : 24;
 
+  const auto isLastVisible = [&](int i) { return i == itemCount - 1 || i == pageStartIndex + pageItems - 1; };
+
   for (int i = pageStartIndex; i < itemCount && i < pageStartIndex + pageItems; ++i) {
     const int row = i - pageStartIndex;
     const int itemY = rect.y + row * rowStep;
-    const bool selected = (i == selectedIndex);
+    const bool isHeader = rowIsHeader && rowIsHeader(i);
+    const bool selected = (i == selectedIndex) && !isHeader;
+
+    // ----- Section-header row: a non-selectable italic, dimmed note ------
+    if (isHeader) {
+      const int headerTextX = rect.x + contentPad;
+      const int headerTextW = contentWidth - contentPad * 2;
+      const std::string headerText =
+          renderer.truncatedText(metaFont, rowTitle(i).c_str(), headerTextW, EpdFontFamily::ITALIC);
+      const int headerY = itemY + (rowHeight - renderer.getLineHeight(metaFont)) / 2;
+      renderer.drawText(metaFont, headerTextX, headerY, headerText.c_str(), true, EpdFontFamily::ITALIC);
+      // Dither-dim the label so it reads as a quiet section divider.
+      const int hW = renderer.getTextWidth(metaFont, headerText.c_str(), EpdFontFamily::ITALIC);
+      const int hH = renderer.getLineHeight(metaFont);
+      for (int py = headerY; py < headerY + hH; ++py) {
+        for (int px = headerTextX; px < headerTextX + hW; ++px) {
+          if ((px + py) % 2 == 0) renderer.drawPixel(px, py, false);
+        }
+      }
+      continue;  // no selection, no divider, no value
+    }
 
     // ----- Selection background -----------------------------------------
-    switch (data->selection.style) {
+    switch (m.list.selectionStyle) {
       case SelectionStyle::SolidFill:
         if (selected) {
           renderer.fillRect(rect.x, itemY - 2, rect.width, rowHeight);
@@ -672,21 +716,30 @@ void BaseTheme::drawList(const GfxRenderer& renderer, Rect rect, int itemCount, 
       }
       case SelectionStyle::LayeredFrame:
         if (selected) {
-          drawSelectionFrame(renderer,
-                             Rect{rect.x + contentPad, itemY, rect.width - contentPad * 2, rowHeight});
+          drawSelectionFrame(renderer, Rect{rect.x + contentPad, itemY, rect.width - contentPad * 2, rowHeight});
         }
         break;
+    }
+
+    // ----- Hairline divider under unselected rows -----------------------
+    // Dithered light-gray so it reads as the prototype's faint ~12% rule on
+    // 1-bit e-ink. Skipped on the selected row (its fill covers it) and after
+    // the last visible row. Card style provides its own gaps, so skip there.
+    if (m.list.showDividers && !selected && m.list.selectionStyle != SelectionStyle::RoundedRowAlways &&
+        !isLastVisible(i)) {
+      renderer.fillRectDither(rect.x + contentPad, itemY + rowHeight - 1, contentWidth - contentPad * 2, 1,
+                              Color::LightGray);
     }
 
     // ----- Inset for the row content ------------------------------------
     int textX = rect.x + contentPad;
     int textWidth = contentWidth - contentPad * 2;
-    if (data->selection.style == SelectionStyle::RoundedFill ||
-        data->selection.style == SelectionStyle::RoundedRowAlways) {
+    if (m.list.selectionStyle == SelectionStyle::RoundedFill ||
+        m.list.selectionStyle == SelectionStyle::RoundedRowAlways) {
       textX += kSelectionHPad;
       textWidth -= kSelectionHPad * 2;
     }
-    if (data->selection.style == SelectionStyle::LayeredFrame) {
+    if (m.list.selectionStyle == SelectionStyle::LayeredFrame) {
       textX += 8;
       textWidth -= 16;
     }
@@ -696,6 +749,10 @@ void BaseTheme::drawList(const GfxRenderer& renderer, Rect rect, int itemCount, 
     }
 
     // ----- Value ---------------------------------------------------------
+    // The right-aligned meta column (counts, chevrons) renders smaller + italic
+    // than the main label when valueMetaStyle is set (prototype's .row-meta).
+    const int valueFont = valueMetaStyle ? metaFont : bodyFont;
+    const EpdFontFamily::Style valueStyle = valueMetaStyle ? EpdFontFamily::ITALIC : EpdFontFamily::REGULAR;
     int valueWidth = 0;
     std::string valueText;
     constexpr int minValueGap = 10;
@@ -703,27 +760,27 @@ void BaseTheme::drawList(const GfxRenderer& renderer, Rect rect, int itemCount, 
       valueText = rowValue(i);
       if (!valueText.empty()) {
         const int maxValW = std::max(0, textWidth - 40 - minValueGap);
-        valueText = renderer.truncatedText(bodyFont, valueText.c_str(), maxValW);
-        valueWidth = renderer.getTextWidth(bodyFont, valueText.c_str()) + minValueGap;
+        valueText = renderer.truncatedText(valueFont, valueText.c_str(), maxValW, valueStyle);
+        valueWidth = renderer.getTextWidth(valueFont, valueText.c_str(), valueStyle) + minValueGap;
         textWidth -= valueWidth;
       }
     }
 
     // ----- Title ---------------------------------------------------------
+    const bool boldRow = (rowBold && rowBold(i)) || data->list.buttonMenuLabelStyle == EpdFontFamily::BOLD;
+    const EpdFontFamily::Style titleStyle = boldRow ? EpdFontFamily::BOLD : EpdFontFamily::REGULAR;
     const std::string itemName = rowTitle(i);
-    const std::string truncated = renderer.truncatedText(bodyFont, itemName.c_str(), textWidth,
-                                                         data->list.buttonMenuLabelStyle);
+    const std::string truncated = renderer.truncatedText(bodyFont, itemName.c_str(), textWidth, titleStyle);
     // Themes declare `textInverted` when their selection background is
     // dark enough that content text needs to render in white ink.
-    const bool invertText = selected && data->selection.textInverted;
+    const bool invertText = selected && m.list.selectionTextInverted;
     int titleY;
     if (hasSubtitle) {
-      titleY = (data->selection.style == SelectionStyle::RoundedRowAlways) ? itemY + 10 : itemY + 8;
+      titleY = (m.list.selectionStyle == SelectionStyle::RoundedRowAlways) ? itemY + 10 : itemY + 8;
     } else {
       titleY = itemY + (rowHeight - renderer.getLineHeight(bodyFont)) / 2;
     }
-    renderer.drawText(bodyFont, textX, titleY, truncated.c_str(), !invertText,
-                      data->list.buttonMenuLabelStyle == EpdFontFamily::BOLD ? EpdFontFamily::BOLD : EpdFontFamily::REGULAR);
+    renderer.drawText(bodyFont, textX, titleY, truncated.c_str(), !invertText, titleStyle);
 
     // ----- Dimmed checkerboard ------------------------------------------
     if (rowDimmed && rowDimmed(i) && !selected) {
@@ -751,7 +808,7 @@ void BaseTheme::drawList(const GfxRenderer& renderer, Rect rect, int itemCount, 
       if (!subtitleText.empty()) {
         const std::string truncatedSub =
             renderer.truncatedText(captionFont, subtitleText.c_str(), textWidth, data->list.subtitleStyle);
-        const int subtitleY = (data->selection.style == SelectionStyle::RoundedRowAlways)
+        const int subtitleY = (m.list.selectionStyle == SelectionStyle::RoundedRowAlways)
                                   ? titleY + renderer.getLineHeight(bodyFont) + 4
                                   : itemY + 30;
         renderer.drawText(captionFont, textX, subtitleY, truncatedSub.c_str(), !invertText, data->list.subtitleStyle);
@@ -761,14 +818,14 @@ void BaseTheme::drawList(const GfxRenderer& renderer, Rect rect, int itemCount, 
     // ----- Value text ----------------------------------------------------
     if (!valueText.empty()) {
       const int valueX = rect.x + contentWidth - contentPad - valueWidth + minValueGap;
-      int valueY = titleY;
+      int valueY = itemY + (rowHeight - renderer.getLineHeight(valueFont)) / 2;
       if (hasSubtitle) valueY = itemY + 10;
       const bool valueInverted = selected && highlightValue;
       if (valueInverted) {
         renderer.fillRoundedRect(valueX - kSelectionHPad / 2, itemY, valueWidth, rowHeight,
                                  data->selection.cornerRadius, Color::Black);
       }
-      renderer.drawText(bodyFont, valueX, valueY, valueText.c_str(), !invertText && !valueInverted);
+      renderer.drawText(valueFont, valueX, valueY, valueText.c_str(), !invertText && !valueInverted, valueStyle);
     }
   }
 }
@@ -959,9 +1016,9 @@ void BaseTheme::drawStatusBar(GfxRenderer& renderer, const float bookProgress, c
   const bool showBatteryPercentage =
       SETTINGS.hideBatteryPercentage == CrossPointSettings::HIDE_BATTERY_PERCENTAGE::HIDE_NEVER;
   if (SETTINGS.statusBarBattery) {
-    drawBatteryLeft(renderer,
-                    Rect{m.statusBar.horizontalMargin + orientedMarginLeft + 1, textY, m.battery.width, m.battery.height},
-                    showBatteryPercentage);
+    drawBatteryLeft(
+        renderer, Rect{m.statusBar.horizontalMargin + orientedMarginLeft + 1, textY, m.battery.width, m.battery.height},
+        showBatteryPercentage);
   }
 
   int clockTextWidth = 0;
@@ -1007,8 +1064,8 @@ void BaseTheme::drawStatusBar(GfxRenderer& renderer, const float bookProgress, c
 
 void BaseTheme::drawHelpText(const GfxRenderer& renderer, Rect rect, const char* label) const {
   const auto& m = *data;
-  auto truncated =
-      renderer.truncatedText(SMALL_FONT_ID, label, rect.width - m.layout.contentSidePadding * 2, EpdFontFamily::REGULAR);
+  auto truncated = renderer.truncatedText(SMALL_FONT_ID, label, rect.width - m.layout.contentSidePadding * 2,
+                                          EpdFontFamily::REGULAR);
   renderer.drawCenteredText(SMALL_FONT_ID, rect.y, truncated.c_str());
 }
 
@@ -1019,8 +1076,8 @@ void BaseTheme::drawTextField(const GfxRenderer& renderer, Rect rect, const int 
   const int lineY = rect.y + rect.height + lineHeight + m.layout.verticalSpacing;
   const int thickness = cursorMode ? m.textField.cursorThickness : m.textField.normalThickness;
   if (contentWidth > 0) {
-    renderer.drawLine(rect.x + contentStartX, lineY,
-                      rect.x + contentStartX + contentWidth + m.textField.lineEndOffset, lineY, thickness, true);
+    renderer.drawLine(rect.x + contentStartX, lineY, rect.x + contentStartX + contentWidth + m.textField.lineEndOffset,
+                      lineY, thickness, true);
   } else {
     const int lineW = textWidth + m.textField.horizontalPadding * 2;
     const int lineStart = rect.x + (rect.width - lineW) / 2;

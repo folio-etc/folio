@@ -12,12 +12,21 @@
 #include "components/UITheme.h"
 #include "components/ui/ButtonHints/ButtonHints.h"
 #include "fontIds.h"
+#include "util/Flex.h"
+
+namespace {
+// "1 book" / "N books" — matches the prototype's right-aligned row-meta count.
+std::string bookCountLabel(int n) {
+  return std::to_string(n) + " " + (n == 1 ? tr(STR_BOOK_SINGULAR) : tr(STR_BOOK_PLURAL));
+}
+}  // namespace
 
 void CollectionsActivity::buildRows() {
   rows.clear();
   rows.push_back({RowKind::GroupSeries, 0, tr(STR_BY_SERIES), 0, false});
   rows.push_back({RowKind::GroupAuthor, 0, tr(STR_BY_AUTHOR), 0, false});
   rows.push_back({RowKind::GroupGenre, 0, tr(STR_BY_GENRE), 0, false});
+  rows.push_back({RowKind::Header, 0, tr(STR_YOUR_COLLECTIONS), 0, false});
   rows.push_back({RowKind::NewCollection, 0, tr(STR_NEW_COLLECTION), 0, false});
 
   const bool collectionViewActive = SETTINGS.libraryViewKind == CrossPointSettings::LIB_VIEW_COLLECTION;
@@ -27,11 +36,37 @@ void CollectionsActivity::buildRows() {
   }
 }
 
+bool CollectionsActivity::isSelectable(int index) const {
+  return index >= 0 && index < static_cast<int>(rows.size()) && rows[index].kind != RowKind::Header;
+}
+
+int CollectionsActivity::nextSelectable(int from) const {
+  const int n = static_cast<int>(rows.size());
+  if (n == 0) return 0;
+  int idx = from;
+  for (int step = 0; step < n; ++step) {
+    idx = ButtonNavigator::nextIndex(idx, n);
+    if (isSelectable(idx)) return idx;
+  }
+  return from;
+}
+
+int CollectionsActivity::prevSelectable(int from) const {
+  const int n = static_cast<int>(rows.size());
+  if (n == 0) return 0;
+  int idx = from;
+  for (int step = 0; step < n; ++step) {
+    idx = ButtonNavigator::previousIndex(idx, n);
+    if (isSelectable(idx)) return idx;
+  }
+  return from;
+}
+
 void CollectionsActivity::onEnter() {
   Activity::onEnter();
   COLLECTION_STORE.loadFromFile();
   buildRows();
-  selectedIndex = 0;
+  selectedIndex = isSelectable(0) ? 0 : nextSelectable(0);
   requestUpdate();
 }
 
@@ -50,12 +85,12 @@ void CollectionsActivity::loop() {
 
   const int itemCount = static_cast<int>(rows.size());
   if (itemCount > 0) {
-    buttonNavigator.onNext([this, itemCount] {
-      selectedIndex = ButtonNavigator::nextIndex(selectedIndex, itemCount);
+    buttonNavigator.onNext([this] {
+      selectedIndex = nextSelectable(selectedIndex);
       requestUpdate();
     });
-    buttonNavigator.onPrevious([this, itemCount] {
-      selectedIndex = ButtonNavigator::previousIndex(selectedIndex, itemCount);
+    buttonNavigator.onPrevious([this] {
+      selectedIndex = prevSelectable(selectedIndex);
       requestUpdate();
     });
   }
@@ -66,6 +101,8 @@ void CollectionsActivity::handleSelection() {
   const Row& row = rows[selectedIndex];
 
   switch (row.kind) {
+    case RowKind::Header:
+      return;  // not selectable
     case RowKind::GroupSeries:
       startActivityForResult(
           std::make_unique<CollectionGroupActivity>(renderer, mappedInput, CrossPointSettings::LIB_VIEW_SERIES),
@@ -106,21 +143,24 @@ void CollectionsActivity::render(RenderLock&&) {
   renderer.clearScreen();
 
   const auto& td = *GUI.getData();
-  const auto pageWidth = renderer.getScreenWidth();
-  const auto pageHeight = renderer.getScreenHeight();
+  const Rect screen{0, 0, renderer.getScreenWidth(), renderer.getScreenHeight()};
 
-  GUI.drawHeader(renderer, Rect{0, td.layout.topPadding, pageWidth, td.header.height}, tr(STR_COLLECTIONS));
+  // Page = header / body / footer. The footer slot reserves space for the
+  // self-positioning ButtonHints; the body grows to fill the rest.
+  flex::Vstack page(
+      screen, {flex::fixed(td.header.height), flex::grow(), flex::fixed(td.buttonHints.height)},
+      0,
+      flex::Padding{static_cast<int16_t>(td.layout.topPadding), 0, static_cast<int16_t>(td.layout.verticalSpacing), 0});
 
-  const int contentTop = td.layout.topPadding + td.header.height + td.layout.verticalSpacing;
-  const int contentHeight = pageHeight - contentTop - td.buttonHints.height - td.layout.verticalSpacing * 2;
+  GUI.drawHeader(renderer, page[0], tr(STR_COLLECTIONS));
 
   GUI.drawList(
-      renderer, Rect{0, contentTop, pageWidth, contentHeight}, static_cast<int>(rows.size()), selectedIndex,
+      renderer, page[1], static_cast<int>(rows.size()), selectedIndex,
       [this](int index) {
         const Row& r = rows[index];
-        // Mark the active manual collection with a leading middle dot.
+        // Mark the active manual collection with a leading checkmark.
         if (r.kind == RowKind::ManualCollection && r.active) {
-          return std::string("\xC2\xB7 ") + r.label;  // U+00B7 (·)
+          return std::string("\xE2\x9C\x93 ") + r.label;  // U+2713 (✓)
         }
         return r.label;
       },
@@ -133,12 +173,19 @@ void CollectionsActivity::render(RenderLock&&) {
           case RowKind::GroupGenre:
             return std::string("\xC2\xBB");  // U+00BB (»)
           case RowKind::ManualCollection:
-            return std::to_string(r.count);
+            return bookCountLabel(r.count);
+          case RowKind::Header:
           case RowKind::NewCollection:
           default:
             return std::string("");
         }
-      });
+      },
+      false,                                                                     // highlightValue
+      nullptr,                                                                   // rowDimmed
+      [this](int index) { return rows[index].kind == RowKind::Header; },         // rowIsHeader
+      [this](int index) { return rows[index].kind == RowKind::NewCollection; },  // rowBold
+      true                                                                       // valueMetaStyle (smaller italic)
+  );
 
   const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_SELECT), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
   ButtonHints::render(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);

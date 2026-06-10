@@ -348,6 +348,15 @@ sdkApiThatTakesOwnership(obj);  // SDK calls delete
 * No Hardcoding: Never assume 800 or 480. Use renderer.getScreenWidth() and renderer.getScreenHeight().
 * Viewable Area: Use renderer.getOrientedViewableTRBL() to stay within physical bezel margins.
 
+### Layout (Flex Primitives)
+* Compose every screen with the flex primitives in [src/util/Flex.h](../src/util/Flex.h)
+  (`Vstack`/`Hstack`/`Grid` + `fixed/grow/percent` + `Padding` + `align/center`). Do NOT hand-compute
+  page/row geometry (`contentTop = ... + ...`).
+* How and when to use them — page layout, grids, padding rules, orientation safety — is documented in
+  [docs/flex-layout.md](../docs/flex-layout.md). Read it before laying out new UI.
+* Size from theme metrics (`GUI.getData()->layout.*`, `header.height`, `buttonHints.height`), never
+  raw pixels, so layouts stay orientation-correct.
+
 ### Logical Button Mapping
 
 **Source**: [src/MappedInputManager.cpp:20-55](../src/MappedInputManager.cpp)
