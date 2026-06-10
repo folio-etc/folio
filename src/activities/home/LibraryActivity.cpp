@@ -1146,8 +1146,8 @@ void LibraryActivity::renderBookTile(const Rect& cell, const LibraryBook& book, 
     {
       const bool useReadOnly = rapidJumping_ || lazyLoadCurrentPage_;
       const Cover::Fallback coverFallback{book.title.c_str(), captionFont, EpdFontFamily::BOLD};
-      Cover::render(renderer, coverSlot, pageCache_, thumbPath, useReadOnly, invertText, Cover::kFallbackWidth,
-                    Cover::kFallbackHeight, &coverFallback);
+      Cover::render(renderer, coverSlot, pageCache_, thumbPath, useReadOnly, invertText, coverSlot.height * 2 / 3,
+                    coverSlot.height, &coverFallback);
     }
     xSemaphoreGive(cacheLock_);
 
