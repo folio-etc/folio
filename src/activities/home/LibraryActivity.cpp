@@ -1126,7 +1126,8 @@ void LibraryActivity::renderBookTile(const Rect& cell, const LibraryBook& book, 
   // so a box sized to the natural text height places the text at the slot top.
   const int textH =
       static_cast<int>(titleLines.size()) * captionLineH + (authorTrunc.empty() ? 0 : (kTitleAuthorGap + captionLineH));
-  const Rect textBox{textSlot.x, textSlot.y, textSlot.width, textH};
+
+  const Rect textBox = flex::center(textSlot, textSlot.width, textH);
 
   const int contentBottom =
       book.hasProgress() ? progressSlot.y + ProgressBar::kIntrinsicHeight : textBox.y + textBox.height;
