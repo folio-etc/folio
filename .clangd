@@ -1,31 +1,6 @@
 CompileFlags:
     Add:
         - -std=c++2a
-        # Tell clangd it's parsing for a riscv32-esp-elf target. Without this,
-        # the host driver tries to mix Apple's macOS SDK headers in with newlib
-        # — `#include_next <sys/lock.h>` from the framework lock shim then
-        # finds Apple's <sys/lock.h> (which doesn't define _LOCK_T) and the
-        # parse cascades into bogus "_LOCK_T not declared" /
-        # "Activity isn't a base of LibraryActivity" errors.
-        - --target=riscv32-esp-elf
-        # GCC adds its toolchain's C++ stdlib + newlib headers automatically.
-        # Clang under --target=riscv32-esp-elf doesn't, so we re-add them in
-        # the same order GCC searches (`-E -v -xc++ /dev/null` on the
-        # cross-g++ to verify).
-        # NOTE: these absolute prefixes are machine-specific. Update the
-        # home-directory prefix if PlatformIO is not installed under
-        # /Users/rmercado.
-        - -isystem/Users/rmercado/.platformio/packages/toolchain-riscv32-esp/riscv32-esp-elf/include/c++/14.2.0
-        - -isystem/Users/rmercado/.platformio/packages/toolchain-riscv32-esp/riscv32-esp-elf/include/c++/14.2.0/riscv32-esp-elf
-        - -isystem/Users/rmercado/.platformio/packages/toolchain-riscv32-esp/riscv32-esp-elf/include/c++/14.2.0/backward
-        - -isystem/Users/rmercado/.platformio/packages/toolchain-riscv32-esp/lib/gcc/riscv32-esp-elf/14.2.0/include
-        - -isystem/Users/rmercado/.platformio/packages/toolchain-riscv32-esp/riscv32-esp-elf/include
-        # Make newlib's sys/config.h take the RISC-V branch so
-        # _READ_WRITE_RETURN_TYPE (and similar arch-conditional typedefs) get
-        # defined. Without this, host clangd (arm64-apple-darwin) parses
-        # newlib's unistd.h and reports cascades of "unknown type name" errors.
-        - -D__riscv
-        - -D__riscv_xlen=32
         # Apple clang reserves __block for its blocks extension; newlib uses
         # it as a parameter name (e.g. sys/unistd.h's encrypt() prototype).
         # Disable the extension so the headers parse.
@@ -54,6 +29,14 @@ CompileFlags:
         # only supports trailing `*` globs). Update the home-directory
         # prefix if PlatformIO is not installed under /Users/rmercado.
         - -I/Users/rmercado/.platformio/packages/toolchain-riscv32-esp/picolibc*
+
+# The target triple and the cross GCC's system include paths (including the
+# version-pinned C++ stdlib dir) are discovered automatically from the real
+# compiler via clangd's --query-driver flag — see the clangd cmd in the
+# editor config (nvim: ~/.config/nvim/lua/plugins/lspconfig.lua). Do NOT
+# hardcode -isystem .../c++/<version> or --target here: those drift every
+# time PlatformIO bumps the toolchain package and were the cause of the
+# "cstddef not found" cascade.
 
 Diagnostics:
     Suppress:
