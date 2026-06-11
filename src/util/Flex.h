@@ -63,6 +63,10 @@
 //   flex::all(n)                                All four sides = n.
 //   flex::xy(x, y)                              Horizontal = x, vertical = y.
 //
+//   flex::inset(parent, pad) -> Rect            Shrink a rect by `pad` on all
+//                          sides. Containers apply this internally; call it
+//                          directly for site-specific padding outside a stack.
+//
 // -----------------------------------------------------------------------------
 //  Containers
 // -----------------------------------------------------------------------------
@@ -149,14 +153,16 @@ inline constexpr Padding xy(int x, int y) {
           static_cast<int16_t>(x)};
 }
 
-namespace detail {
-
-// Shrink `parent` by `pad` to produce the content rect.
-inline Rect applyPadding(const Rect& parent, const Padding& pad) {
+// Shrink `parent` by `pad` on all sides to produce the content rect. The same
+// operation containers apply internally, exposed for call sites that need
+// site-specific padding outside a stack/grid. Pure function, header-only.
+inline Rect inset(const Rect& parent, const Padding& pad) {
   return Rect{parent.x + pad.left, parent.y + pad.top,
               parent.width - pad.left - pad.right,
               parent.height - pad.top - pad.bottom};
 }
+
+namespace detail {
 
 // Resolve the main-axis size of every child given the available main-axis
 // span and per-child sizing requests. Writes resolved px sizes into `out`.
@@ -217,7 +223,7 @@ class Vstack {
   inline Vstack(const Rect& parent, std::initializer_list<Size> sizes, int gap = 0,
                 Padding pad = {}) {
     assert(sizes.size() <= kMaxChildren);
-    const Rect inner = detail::applyPadding(parent, pad);
+    const Rect inner = inset(parent, pad);
     int heights[kMaxChildren] = {};
     count_ = detail::resolveMainAxis(sizes, inner.height, gap, heights);
     int y = inner.y;
@@ -245,7 +251,7 @@ class Hstack {
   inline Hstack(const Rect& parent, std::initializer_list<Size> sizes, int gap = 0,
                 Padding pad = {}) {
     assert(sizes.size() <= kMaxChildren);
-    const Rect inner = detail::applyPadding(parent, pad);
+    const Rect inner = inset(parent, pad);
     int widths[kMaxChildren] = {};
     count_ = detail::resolveMainAxis(sizes, inner.width, gap, widths);
     int x = inner.x;
@@ -298,7 +304,7 @@ class Grid {
       : rows_(rows), cols_(cols) {
     assert(rows > 0 && cols > 0);
     assert(static_cast<size_t>(rows * cols) <= kMaxCells);
-    const Rect inner = detail::applyPadding(parent, pad);
+    const Rect inner = inset(parent, pad);
     const int cellW = (inner.width - colGap * (cols - 1)) / cols;
     const int cellH = (inner.height - rowGap * (rows - 1)) / rows;
     for (int r = 0; r < rows; ++r) {

@@ -165,10 +165,14 @@ void CascadingPopupMenu::render(GfxRenderer& renderer, int leftX, int bottomLimi
 void CascadingPopupMenu::renderFooterHints(GfxRenderer& renderer,
                                            const MappedInputManager& mappedInput) const {
   if (!open_) return;
+  const auto labels = getFooterLabels(mappedInput);
+  ButtonHints::render(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+}
+
+MappedInputManager::Labels CascadingPopupMenu::getFooterLabels(const MappedInputManager& mappedInput) const {
   const bool inSub = inSubmenu();
   const bool confirmEnters = !inSub && topRowHasSubmenu(top_.selectedIndex());
   const char* back = inSub ? tr(STR_BACK) : tr(STR_CLOSE);
   const char* confirm = confirmEnters ? tr(STR_ENTER) : tr(STR_SELECT);
-  const auto labels = mappedInput.mapLabels(back, confirm, "", "");
-  ButtonHints::render(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+  return mappedInput.mapLabels(back, confirm, "", "");
 }

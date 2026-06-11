@@ -11,6 +11,7 @@
 #include "activities/util/KeyboardEntryActivity.h"
 #include "components/UITheme.h"
 #include "components/ui/ButtonHints/ButtonHints.h"
+#include "components/ui/UIPage/UIPage.h"
 #include "fontIds.h"
 #include "util/Flex.h"
 
@@ -145,17 +146,17 @@ void CollectionsActivity::render(RenderLock&&) {
   const auto& td = *GUI.getData();
   const Rect screen{0, 0, renderer.getScreenWidth(), renderer.getScreenHeight()};
 
-  // Page = header / body / footer. The footer slot reserves space for the
-  // self-positioning ButtonHints; the body grows to fill the rest.
-  flex::Vstack page(
-      screen, {flex::fixed(td.header.height), flex::grow(), flex::fixed(td.buttonHints.height)},
-      0,
-      flex::Padding{static_cast<int16_t>(td.layout.topPadding), 0, static_cast<int16_t>(td.layout.verticalSpacing), 0});
+  const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_SELECT), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
 
-  GUI.drawHeader(renderer, page[0], tr(STR_COLLECTIONS));
+  const auto body = UIPage::render(
+      renderer,
+      tr(STR_COLLECTIONS),
+      nullptr,
+      labels
+  );
 
   GUI.drawList(
-      renderer, page[1], static_cast<int>(rows.size()), selectedIndex,
+      renderer, body, static_cast<int>(rows.size()), selectedIndex,
       [this](int index) {
         const Row& r = rows[index];
         // Mark the active manual collection with a leading checkmark.
@@ -187,8 +188,6 @@ void CollectionsActivity::render(RenderLock&&) {
       true                                                                       // valueMetaStyle (smaller italic)
   );
 
-  const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_SELECT), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
-  ButtonHints::render(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
 
   renderer.displayBuffer();
 }

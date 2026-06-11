@@ -102,6 +102,9 @@ class CascadingPopupMenu {
   // remapping still applies.
   void renderFooterHints(GfxRenderer& renderer, const MappedInputManager& mappedInput) const;
 
+  MappedInputManager::Labels getFooterLabels(const MappedInputManager& mappedInput) const;
+
+
  private:
   bool open_ = false;
   int activeSub_ = -1;  // -1 = focus on top panel; >=0 = inside submenu activeSub_

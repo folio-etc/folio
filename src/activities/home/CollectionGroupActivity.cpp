@@ -13,6 +13,7 @@
 #include "activities/ActivityManager.h"
 #include "components/UITheme.h"
 #include "components/ui/ButtonHints/ButtonHints.h"
+#include "components/ui/UIPage/UIPage.h"
 #include "fontIds.h"
 #include "util/Flex.h"
 
@@ -110,28 +111,25 @@ void CollectionGroupActivity::render(RenderLock&&) {
 
   const auto& td = *GUI.getData();
   const Rect screen{0, 0, renderer.getScreenWidth(), renderer.getScreenHeight()};
+  const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_SELECT), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
 
-  flex::Vstack page(
-      screen, {flex::fixed(td.header.height), flex::grow(), flex::fixed(td.buttonHints.height)},
-      0,
-      flex::Padding{static_cast<int16_t>(td.layout.topPadding), 0, static_cast<int16_t>(td.layout.verticalSpacing), 0});
-
-  GUI.drawHeader(renderer, page[0], headerTitle());
+  const auto body = UIPage::render(
+      renderer,
+      headerTitle(),
+      nullptr,
+      labels
+  );
 
   if (groups.empty()) {
-    const Rect& body = page[1];
     const int y = body.y + (body.height - renderer.getLineHeight(UI_10_FONT_ID)) / 2;
     renderer.drawCenteredText(UI_10_FONT_ID, y, tr(STR_LIBRARY_NO_BOOKS));
   } else {
     GUI.drawList(
-        renderer, page[1], static_cast<int>(groups.size()), selectedIndex,
+        renderer, body, static_cast<int>(groups.size()), selectedIndex,
         [this](int index) { return groups[index].first; }, nullptr, nullptr,
         [this](int index) { return bookCountLabel(groups[index].second); }, false, nullptr, nullptr, nullptr,
         /*valueMetaStyle=*/true);
   }
-
-  const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_SELECT), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
-  ButtonHints::render(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
 
   renderer.displayBuffer();
 }

@@ -203,7 +203,6 @@ class LibraryActivity final : public Activity {
   // Split out from render() so the prewarming and clear/display bookends
   // stay tidy.
   void renderPasses();
-  void renderHeader(const Rect& box);
   void renderBattery(const Rect& headerBox);
   std::string getHeaderSubtitleText();
   void renderLibraryShelf(const Rect& shelfArea);

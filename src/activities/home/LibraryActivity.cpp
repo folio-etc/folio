@@ -27,6 +27,7 @@
 #include "components/ui/CascadingPopupMenu/CascadingPopupMenu.h"
 #include "components/ui/Cover/Cover.h"
 #include "components/ui/ProgressBar/ProgressBar.h"
+#include "components/ui/UIPage/UIPage.h"
 #include "components/ui/TextBlock/TextBlock.h"
 #include "util/Flex.h"
 #include "util/GridHelper.h"
@@ -910,31 +911,28 @@ void LibraryActivity::render(RenderLock&&) {
 
 void LibraryActivity::renderPasses() {
   const Rect screen{0, 0, renderer.getScreenWidth(), renderer.getScreenHeight()};
+  const auto btnLabels = popup_.isOpen()
+    ? popup_.getFooterLabels(mappedInput)
+    : mappedInput.mapLabels(tr(STR_MENU_LABEL), tr(STR_SELECT), tr(STR_DIR_LEFT), tr(STR_DIR_RIGHT));
 
-  flex::Vstack top(screen, {flex::fixed(HEADER_HEIGHT), flex::grow(), flex::fixed(FOOTER_HEIGHT)});
-  {
-    renderHeader(top[0]);
+  const auto body = UIPage::render(
+    renderer,
+    viewTitle_.empty() ? tr(STR_LIBRARY) : viewTitle_.c_str(),
+    getHeaderSubtitleText().c_str(),
+    btnLabels
+  );
 
-    // Zero grid items means an empty device library (the All view with no
-    // books). A filtered-but-empty view still has its back tile, so it falls
-    // through to the shelf and renders just that tile.
-    if (viewItemCount() == 0) {
-      renderEmptyState(top[1]);
-    } else {
-      flex::Hstack body(top[1], {flex::grow(), flex::fixed(RAIL_WIDTH)}, RAIL_GAP,
-                        flex::xy(CONTENT_PAD_X, CONTENT_PAD_Y));
-      {
-        renderLibraryShelf(body[0]);
-        renderPageRail(body[1]);
-      }
-    }
-
-    if (popup_.isOpen()) {
-      popup_.renderFooterHints(renderer, mappedInput);
-    } else {
-      const auto labels =
-          mappedInput.mapLabels(tr(STR_MENU_LABEL), tr(STR_SELECT), tr(STR_DIR_LEFT), tr(STR_DIR_RIGHT));
-      ButtonHints::render(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+  // Zero grid items means an empty device library (the All view with no
+  // books). A filtered-but-empty view still has its back tile, so it falls
+  // through to the shelf and renders just that tile.
+  if (viewItemCount() == 0) {
+    renderEmptyState(body);
+  } else {
+    flex::Hstack bodyInner(body, {flex::grow(), flex::fixed(RAIL_WIDTH)}, RAIL_GAP,
+                      flex::xy(CONTENT_PAD_X, CONTENT_PAD_Y));
+    {
+      renderLibraryShelf(bodyInner[0]);
+      renderPageRail(bodyInner[1]);
     }
   }
 
@@ -1000,48 +998,6 @@ std::string LibraryActivity::getHeaderSubtitleText() {
 
   return std::string(I18n::getInstance().get(sortedKey)) + " " + arrow + "  ·  " +
          std::to_string(this->gridHelper.currentPage() + 1) + " / " + std::to_string(this->gridHelper.pageCount());
-}
-
-void LibraryActivity::renderHeader(const Rect& headerBox) {
-  renderBattery(headerBox);
-
-  const int titleFont = libFont(FontRole::Title);
-  const int captionFont = libFont(FontRole::Caption);
-
-  const int titleLineH = renderer.getLineHeight(titleFont);
-  const int captionLineH = renderer.getLineHeight(captionFont);
-
-  constexpr int kTitleToSubtitleGap = 3;
-  constexpr int kPaddingBottom = 6;
-  constexpr int kBorderHeight = 3;
-
-  const Rect headerBoxInner{headerBox.x, headerBox.y, headerBox.width, headerBox.height - kBorderHeight};
-
-  flex::Vstack header(
-      headerBoxInner,
-      {flex::grow(), flex::fixed(titleLineH), flex::fixed(kTitleToSubtitleGap), flex::fixed(captionLineH)}, 0,
-      flex::Padding{0, CONTENT_PAD_X, kPaddingBottom, CONTENT_PAD_X});
-  {
-    const Rect& titleRow = header[1];
-    const Rect& subtitleRow = header[3];
-
-    const char* title = viewTitle_.empty() ? tr(STR_LIBRARY) : viewTitle_.c_str();
-    const std::string truncatedTitle = renderer.truncatedText(titleFont, title, titleRow.width, EpdFontFamily::BOLD);
-
-    renderer.drawText(titleFont, titleRow.x, titleRow.y, truncatedTitle.c_str(), true, EpdFontFamily::BOLD);
-
-    std::string subtitleText = getHeaderSubtitleText();
-
-    if (!subtitleText.empty()) {
-      const std::string truncatedSub =
-          renderer.truncatedText(captionFont, subtitleText.c_str(), subtitleRow.width, EpdFontFamily::ITALIC);
-
-      renderer.drawText(captionFont, subtitleRow.x, subtitleRow.y, truncatedSub.c_str(), true, EpdFontFamily::ITALIC);
-    }
-  }
-
-  const Rect bottomBorder{0, headerBoxInner.height, headerBox.width, kBorderHeight};
-  renderer.fillRect(bottomBorder.x, bottomBorder.y, bottomBorder.width, bottomBorder.height);
 }
 
 void LibraryActivity::renderLibraryShelf(const Rect& shelfArea) {
