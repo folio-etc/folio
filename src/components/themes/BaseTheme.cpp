@@ -694,6 +694,21 @@ void BaseTheme::drawList(const GfxRenderer& renderer, Rect rect, int itemCount, 
       continue;  // no selection, no divider, no value
     }
 
+    Color bgColor;
+    switch(m.list.selectionStyle) {
+      case SelectionStyle::SolidFill:
+        bgColor = Color::Black;
+        break;
+      case SelectionStyle::LayeredFrame:
+        bgColor = Color::Clear;
+        break;
+      case SelectionStyle::RoundedFill:
+        bgColor = Color::LightGray;
+        break;
+      case SelectionStyle::RoundedRowAlways:
+        bgColor = Color::Black;
+    }
+
     // ----- Selection background -----------------------------------------
     switch (m.list.selectionStyle) {
       case SelectionStyle::SolidFill:
@@ -773,9 +788,9 @@ void BaseTheme::drawList(const GfxRenderer& renderer, Rect rect, int itemCount, 
     const EpdFontFamily::Style titleStyle = boldRow ? EpdFontFamily::BOLD : EpdFontFamily::REGULAR;
     const std::string itemName = rowTitle(i);
     const std::string truncated = renderer.truncatedText(bodyFont, itemName.c_str(), textWidth, titleStyle);
-    // Themes declare `textInverted` when their selection background is
-    // dark enough that content text needs to render in white ink.
-    const bool invertText = selected && m.list.selectionTextInverted;
+
+    const bool invertText = selected && (bgColor == Color::DarkGray || bgColor == Color::Black); 
+
     int titleY;
     if (hasSubtitle) {
       titleY = (m.list.selectionStyle == SelectionStyle::RoundedRowAlways) ? itemY + 10 : itemY + 8;

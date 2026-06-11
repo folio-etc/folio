@@ -150,7 +150,6 @@ struct:
       # List-row selection, independent of the book-grid selection (which keeps
       # `selection.style`). Lets Folio invert list rows without touching the grid.
       - { cpp: selectionStyle,        type: SelectionStyle, default: "SelectionStyle::SolidFill" }
-      - { cpp: selectionTextInverted, type: bool,           default: true }
       # Hairline divider drawn under each unselected row (prototype fidelity).
       - { cpp: showDividers,          type: bool,           default: true }
 
