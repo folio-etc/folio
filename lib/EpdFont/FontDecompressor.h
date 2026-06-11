@@ -64,6 +64,10 @@ class FontDecompressor {
     const EpdFontData* fontData = nullptr;
     PageGlyphEntry* glyphs = nullptr;
     uint16_t glyphCount = 0;
+    // Allocated size of `buffer` in bytes, and the append point for incremental
+    // prewarm growth (prewarmAppend grows the slot in place rather than
+    // rebuilding, so glyphs decompressed for earlier pages stay resident).
+    uint32_t bufferBytes = 0;
     // FNV-1a of the prewarm utf8Text. Lets prewarmCache short-circuit when
     // the same (fontData, text) is requested again — UI activities prewarm
     // on every render, and stable scenes (page navigation in a fixed grid,
@@ -82,6 +86,13 @@ class FontDecompressor {
   // Scratch buffer for compacting a single glyph from the hot group.
   // Valid until the next getBitmap() call.
   std::vector<uint8_t> hotGlyphBuf;
+
+  // Incrementally grow an existing page slot: decompress only the groups of
+  // `neededGlyphs` not already resident, appending them to the slot's buffer.
+  // `neededGlyphs` is filtered in place. Returns the number of glyphs that
+  // couldn't be loaded (0 on full success).
+  int prewarmAppend(PageSlot& slot, const EpdFontData* fontData, uint32_t* neededGlyphs, uint16_t neededCount,
+                    uint32_t newTextHash);
 
   void freePageBuffer();
   void freeHotGroup();
