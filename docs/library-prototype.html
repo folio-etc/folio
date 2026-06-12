@@ -2,7 +2,43 @@
 <html lang="en">
 <head>
 <meta charset="utf-8" />
-<title>CrossPoint Reader — Library Screen Prototype (Portrait, Folio)</title>
+<title>CrossPoint Reader — Library Prototype (Portrait, Folio)</title>
+<!--
+  ============================================================================
+  PROTOTYPE SCOPE
+  ============================================================================
+  Base screen mirrors src/activities/home/LibraryActivity.cpp at the current
+  (flex-based) iteration. Pixel geometry is derived from the flex tree in
+  renderPasses() + the Folio theme defaults (ThemeDefaults.generated.h):
+
+    screen            480 x 800
+    header            89 tall, 86 inner + 3px bottom border
+    footer            40 tall  (4 front-button hints)
+    content (body)    671 tall, Hstack pad x=18 y=8, gap 10
+      shelf col       grow  -> 416 wide
+      rail col        fixed 18 wide
+    grid              3x3, gap 14  -> cell 129 x 209
+    tile              Vstack pad {top:4, bottom:16}; inner 189 tall
+      cover slot      percent(60) -> 113   (cover aspect-fits, centered)
+      text slot       grow         -> 67/76 (title<=2 lines bold + author italic)
+      progress gap    fixed 3   (only when book has progress)
+      progress bar    fixed 6   (80px wide, centered)  ProgressBar::kIntrinsicHeight
+    selection frame   computeSelectionFrame(): cell -4 top, -3 sides,
+                      bottom at cell.h-8  -> LayeredFrame (double border + brackets)
+    page rail         9px square ticks, gap 10, pad-top 8; count rotated 90CW
+    popup             cascading; rowHeight 36, border 2, shadow 3/3, padX 12,
+                      panelGap 6; SolidFill inverted selection; anchored
+                      bottom-left at (CONTENT_PAD_X+12 = 30)
+
+  PROTOTYPED FEATURES (this file only — not yet in firmware):
+    1. Collections  — manual (keyboard-named) + auto grouped (By Series / By Author)
+    2. Metadata editing for a book
+    3. Book Details view
+    4. Open action setting (Book Details | Read Book), default Book Details
+
+  See the controllers in <script> for the per-screen button model.
+  ============================================================================
+-->
 <style>
   :root {
     --ink: #111;
@@ -20,6 +56,7 @@
     justify-content: center;
     font-family: "Iowan Old Style", "Charter", Georgia, "Times New Roman", serif;
     color: var(--ink);
+    padding: 24px;
   }
 
   /* Faux device bezel ------------------------------------------------------- */
@@ -54,26 +91,67 @@
       radial-gradient(rgba(0,0,0,0.03) 1px, transparent 1px);
     background-size: 3px 3px, 7px 7px;
     background-position: 0 0, 1px 2px;
+    filter: brightness(80%);
   }
 
-  /* Header — 89px tall with a 3px inner bottom border --------------------- */
-  .header {
-    height: 89px;
-    border-bottom: 3px solid var(--ink);
-    padding: 0 18px;
-    position: relative;
+  /* A "view" is a full-screen activity surface. Exactly one is visible. */
+  .view {
+    position: absolute;
+    inset: 0;
   }
+  .view[hidden] { display: none; }
+
+  /* ---- Shared header (89 tall, 86 inner + 3px border) ------------------- */
+  .header {
+    position: relative;
+    height: 89px;
+  }
+  .header-inner {
+    position: absolute;
+    left: 0; right: 0; top: 0;
+    height: 86px;
+    padding: 0 18px 6px;
+    display: flex;
+    flex-direction: column;
+    justify-content: flex-end;   /* title block bottom-aligned (grow spacer on top) */
+  }
+  .header-border {
+    position: absolute;
+    left: 0; right: 0; top: 86px;
+    height: 3px;
+    background: var(--ink);
+  }
+  .header h1 {
+    font-size: 22px;
+    font-weight: 700;
+    letter-spacing: 0.3px;
+    line-height: 1;
+  }
+  .header .subtitle {
+    margin-top: 3px;          /* kTitleToSubtitleGap */
+    font-size: 13px;
+    font-style: italic;
+    letter-spacing: 0.2px;
+    line-height: 1;
+  }
+  .header .subtitle .sep { margin: 0 6px; opacity: 0.6; }
+
   .battery {
     position: absolute;
-    top: 11px;
-    right: 12px;
+    top: 5px;                 /* kBatteryTopOffset */
+    right: 12px;              /* kBatteryRightInset */
     display: inline-flex;
     align-items: center;
     gap: 4px;
   }
+  .battery-pct {
+    font-family: "Iowan Old Style", "Charter", Georgia, serif;
+    font-size: 11px;
+    letter-spacing: 0.4px;
+  }
   .battery-cell {
-    width: 16px;
-    height: 12px;
+    width: 16px;              /* battery.width */
+    height: 12px;             /* battery.height */
     border: 1px solid var(--ink);
     position: relative;
     padding: 2px;
@@ -81,204 +159,13 @@
   .battery-cell::after {
     content: "";
     position: absolute;
-    right: -3px;
-    top: 4px;
-    width: 2px;
-    height: 4px;
+    right: -3px; top: 4px;
+    width: 2px; height: 4px;
     background: var(--ink);
   }
-  .battery-fill {
-    height: 100%;
-    width: 78%;
-    background: var(--ink);
-  }
-  .battery-pct {
-    font-family: "Iowan Old Style", "Charter", Georgia, serif;
-    font-size: 11px;
-    letter-spacing: 0.4px;
-  }
+  .battery-fill { height: 100%; width: 78%; background: var(--ink); }
 
-  .header h1 {
-    font-size: 22px;
-    font-weight: 700;
-    letter-spacing: 0.3px;
-    line-height: 1;
-    padding-top: 16px;
-  }
-  .header h1 .accent {
-    font-style: italic;
-    font-weight: 400;
-  }
-  .header .subtitle {
-    margin-top: 4px;
-    font-size: 13px;
-    font-style: italic;
-    letter-spacing: 0.2px;
-    color: var(--ink);
-  }
-  .header .subtitle .sep { margin: 0 6px; opacity: 0.6; }
-
-  /* Content area — 671px tall (800 − 89 − 40) ---------------------------- */
-  .content {
-    position: relative;
-    height: 671px;
-    padding: 8px 18px 8px;
-    display: grid;
-    grid-template-columns: 1fr 18px;
-    gap: 10px;
-  }
-  .shelf-pages {
-    height: 100%;
-    position: relative;
-  }
-  .shelf {
-    display: grid;
-    grid-template-columns: repeat(3, 1fr);
-    grid-template-rows: repeat(3, 1fr);
-    gap: 14px;
-    align-items: start;
-    height: 100%;
-  }
-  .book.page-hidden { display: none; }
-
-  /* Book tile — fixed content height so the selection frame and inter-tile */
-  /* spacing read the same for every card regardless of title length /      */
-  /* author presence / read state.                                          */
-  .book {
-    position: relative;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    padding-top: 4px;
-  }
-
-  /* Folio's LayeredFrame selection (book tile) --------------------------- */
-  .book.selected .frame {
-    position: absolute;
-    top: -4px;
-    bottom: -8px;
-    left: -3px;
-    right: -3px;
-    pointer-events: none;
-  }
-  .book.selected .frame::before {
-    content: "";
-    position: absolute;
-    inset: 0;
-    border: 2px solid var(--ink);
-  }
-  .book.selected .frame::after {
-    content: "";
-    position: absolute;
-    inset: 3px;
-    border: 2px solid var(--ink);
-  }
-  .corner {
-    position: absolute;
-    width: 8px;
-    height: 8px;
-    pointer-events: none;
-  }
-  .book.selected .corner.tl {
-    top: -3px; left: -2px;
-    border-top: 2px solid var(--ink);
-    border-left: 2px solid var(--ink);
-  }
-  .book.selected .corner.br {
-    bottom: -7px; right: -2px;
-    border-bottom: 2px solid var(--ink);
-    border-right: 2px solid var(--ink);
-  }
-  .book .frame,
-  .book .corner { display: none; }
-  .book.selected .frame,
-  .book.selected .corner { display: block; }
-
-  /* Cover — 80 × 120 (Folio's COVER_W × COVER_H) + 1-px drop shadow ------ */
-  .cover {
-    width: 80px;
-    height: 120px;
-    border: var(--border);
-    background: #fff;
-    position: relative;
-    overflow: hidden;
-    box-shadow: 1px 1px 0 var(--ink);
-  }
-
-  /* Book text block — reserved 60-px area (TILE_TEXT_AREA_H) ------------- */
-  .book-text {
-    width: 100%;
-    height: 60px;
-    margin-top: 0;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    padding: 0 4px;
-  }
-  .book-title {
-    font-size: 12px;
-    font-weight: 700;
-    line-height: 1.15;
-    text-align: center;
-    display: -webkit-box;
-    -webkit-line-clamp: 2;
-    -webkit-box-orient: vertical;
-    overflow: hidden;
-  }
-  .book-author {
-    margin-top: 1px;
-    font-size: 11px;
-    font-style: italic;
-    text-align: center;
-    opacity: 0.85;
-  }
-
-  /* Progress bar --------------------------------------------------------- */
-  .progress {
-    margin-top: 3px;
-    width: 80px;
-    height: 6px;
-    border: 1px solid var(--ink);
-    background: var(--paper);
-    position: relative;
-    padding: 1px;
-  }
-  .progress > i {
-    display: block;
-    height: 100%;
-    background: var(--ink);
-  }
-  .progress.unread { visibility: hidden; }
-
-  /* Right-side page rail ------------------------------------------------- */
-  .rail {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    padding-top: 8px;
-    gap: 10px;
-  }
-  .rail[hidden] { display: none; }
-  .rail .tick {
-    width: 9px;
-    height: 9px;
-    border: 1px solid var(--ink);
-    background: transparent;
-  }
-  .rail .tick.current { background: var(--ink); }
-  .rail .count {
-    margin-top: auto;
-    margin-bottom: 4px;
-    writing-mode: vertical-rl;
-    transform: rotate(180deg);
-    font-family: "Iowan Old Style", "Charter", Georgia, serif;
-    font-style: italic;
-    font-size: 11px;
-    letter-spacing: 0.6px;
-  }
-
-  /* Footer — Folio Hairline button hints. -------------------------------- */
+  /* ---- Shared footer (40 tall, four front-button hints) ----------------- */
   .footer {
     position: absolute;
     bottom: 0; left: 0; right: 0;
@@ -296,7 +183,6 @@
     align-items: center;
     justify-content: flex-start;
     padding-top: 7px;
-    gap: 4px;
     font-family: "Iowan Old Style", "Charter", Georgia, serif;
     font-size: 14px;
     font-style: italic;
@@ -308,13 +194,11 @@
   .btn::after {
     content: "";
     display: block;
-    width: 22px;
-    height: 0;
+    width: 22px; height: 0;
     border-top: 1px solid var(--ink);
     position: absolute;
     bottom: 12px;
   }
-  .btn:disabled,
   .btn.hidden { visibility: hidden; }
   .btn.dimmed { opacity: 0.35; }
   .btn-1 { left: 25px; }
@@ -322,189 +206,214 @@
   .btn-3 { left: 245px; }
   .btn-4 { left: 350px; }
 
-  /* ---------------------------------------------------------------------- */
-  /*  Popup menu — cascading panels anchored to the bottom-left of content. */
-  /*  Pops "up" from the Menu button hint. Each panel is a paper-coloured   */
-  /*  block with a 2-px ink border and a hard offset shadow (matches the    */
-  /*  cover-tile shadow vocabulary).                                        */
-  /* ---------------------------------------------------------------------- */
-  .popup-host {
+  /* ====================================================================== */
+  /*  LIBRARY view                                                          */
+  /* ====================================================================== */
+  .content {
     position: absolute;
-    left: 0;
-    bottom: 0;
-    z-index: 20;
-    display: flex;
-    align-items: flex-end;
-    gap: 6px;
-    pointer-events: none;
+    top: 89px; left: 0; right: 0;
+    height: 671px;
+    padding: 8px 18px;
+    display: grid;
+    grid-template-columns: 1fr 18px;
+    gap: 10px;
   }
-  .popup-host[hidden] { display: none; }
-  .popup-list {
-    list-style: none;
-    margin: 0;
-    padding: 4px;
-    background: var(--paper);
-    border: 2px solid var(--ink);
-    box-shadow: 2px 2px 0 var(--ink);
-    min-width: 168px;
-    pointer-events: auto;
+  .shelf {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    grid-template-rows: repeat(3, 1fr);
+    gap: 14px;
+    height: 100%;
   }
-  .popup-list[hidden] { display: none; }
-  .popup-item {
-    position: relative;
-    padding: 7px 10px;
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    font-family: "Iowan Old Style", "Charter", Georgia, serif;
-    font-size: 13px;
-    line-height: 1.15;
-    cursor: pointer;
-  }
-  .popup-item.selected {
-    background: var(--ink);
-    color: var(--paper);
-  }
-  .popup-label {
-    flex: 1;
-    white-space: nowrap;
-  }
-  .popup-hint {
-    font-size: 11px;
-    font-style: italic;
-    opacity: 0.7;
-  }
-  .popup-item.selected .popup-hint { opacity: 0.95; }
-  .popup-chev {
-    font-size: 11px;
-    opacity: 0.8;
-  }
-  .popup-dir {
-    display: inline-block;
-    width: 12px;
-    text-align: center;
-    font-weight: 700;
-    font-size: 13px;
-  }
-  .popup-dir.inactive { visibility: hidden; }
 
-  /* ---------------------------------------------------------------------- */
-  /*  Cover designs — fit the 80 × 120 frame.                               */
-  /* ---------------------------------------------------------------------- */
-  .cover-slab {
-    background: var(--ink);
-    color: #fff;
+  /* Each grid cell is the full 129 x 209 slot. The tile is top-anchored and
+     only as tall as its content (see .tile below). */
+  .cell { position: relative; }
+
+  /* The tile is top-anchored at the cell's tile-pad-top; its height is its
+     content (cover + text [+ progress band]). Progress tiles get a fixed
+     height so the bar pins to the bottom and bars line up across the grid;
+     bar-less tiles (and the back tile) collapse to their content height. */
+  .tile {
+    position: absolute;
+    top: 4px;                  /* kTilePadTop */
+    left: 0; right: 0;
     display: flex;
     flex-direction: column;
-    justify-content: space-between;
-    padding: 8px 6px;
-    text-align: center;
   }
-  .cover-slab .t {
-    font-size: 11px;
-    line-height: 1.05;
+  .tile.has-progress { height: 189px; }   /* inner height; bar pins to bottom */
+
+  /* LayeredFrame selection, drawn relative to the TILE so it hugs the actual
+     content. Outward offsets reproduce computeSelectionFrame(): 4px lift above
+     the cell top (tile top is +4, so -8 here), 3px sides, 8px below content. */
+  .cell.selected .frame {
+    position: absolute;
+    top: -8px; left: -3px; right: -3px; bottom: -8px;
+    pointer-events: none;
+  }
+  .cell.selected .frame::before {
+    content: ""; position: absolute; inset: 0;
+    border: 2px solid var(--ink);
+  }
+  .cell.selected .frame::after {
+    content: ""; position: absolute; inset: 3px;
+    border: 2px solid var(--ink);
+  }
+  .cell.selected .corner {
+    position: absolute; width: 8px; height: 8px; pointer-events: none;
+  }
+  .cell.selected .corner.tl {
+    top: -7px; left: -2px;
+    border-top: 2px solid var(--ink);
+    border-left: 2px solid var(--ink);
+  }
+  .cell.selected .corner.br {
+    bottom: -7px; right: -2px;
+    border-bottom: 2px solid var(--ink);
+    border-right: 2px solid var(--ink);
+  }
+  .cell .frame, .cell .corner { display: none; }
+  .cell.selected .frame, .cell.selected .corner { display: block; }
+
+  .cover-slot {
+    flex: 0 0 113px;           /* fixed (== old percent(60) of 189) so covers
+                                  stay aligned regardless of tile height */
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 0;
+    margin-bottom: 16px;       /* gap between cover and title */
+  }
+  .text-slot {
+    flex: 0 0 auto;            /* natural height; bar-less tiles end here */
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: flex-start;
+    padding: 0 4px;
+    overflow: hidden;
+  }
+  .tile.has-progress .text-slot { flex: 1 1 0; }   /* grow so the bar sinks to the bottom */
+  .pgap { flex: 0 0 3px; }      /* kProgressGap */
+  .tile .progress {
+    flex: 0 0 6px;             /* ProgressBar::kIntrinsicHeight */
+    width: 80px;               /* Cover::kFallbackWidth, centered via align-self */
+    align-self: center;
+    border: 1px solid var(--ink);
+    background: var(--paper);
+    padding: 1px;
+  }
+  .tile .progress > i { display: block; height: 100%; background: var(--ink); }
+
+  .book-title {
+    font-size: 12px;
     font-weight: 700;
-    letter-spacing: 0.4px;
-    margin-top: 8px;
+    line-height: 1.15;
+    text-align: center;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
   }
-  .cover-slab .a {
-    font-size: 7px;
-    letter-spacing: 1.8px;
-    text-transform: uppercase;
-    border-top: 1px solid #fff;
-    padding-top: 4px;
+  .book-author {
+    margin-top: 1px;           /* kTitleAuthorGap */
+    font-size: 11px;
+    font-style: italic;
+    text-align: center;
+    opacity: 0.85;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 100%;
   }
 
-  .cover-wave {
+  /* Cover — aspect-fit inside the 60% slot. 1px border + 3/3 drop shadow. */
+  .cover {
+    height: 100%;
+    aspect-ratio: 2 / 3;
+    border: var(--border);
     background: #fff;
     position: relative;
-    padding: 6px;
+    overflow: hidden;
+    box-shadow: 3px 3px 0 var(--ink);   /* coverDropShadowOffset 3,3 */
   }
+  .cover.fallback {
+    display: flex; align-items: center; justify-content: center;
+    text-align: center; padding: 0 6px;
+    font-size: 11px; font-weight: 700;
+  }
+
+  /* Back tile — occupies the cover slot like a cover, with a dashed frame and
+     a large left-arrow so "leave this collection" reads at a glance. */
+  .back-box {
+    height: 100%;
+    aspect-ratio: 2 / 3;
+    border: 2px dashed var(--ink);
+    border-radius: 2px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 42px; font-weight: 700; line-height: 1;
+    background: rgba(0,0,0,0.03);
+  }
+  .backcell .book-title { font-style: italic; }
+
+  /* ---------------------------------------------------------------------- */
+  /*  Cover designs — fit the aspect-ratio frame (faux cached thumbnails).  */
+  /* ---------------------------------------------------------------------- */
+  .cover-slab {
+    background: var(--ink); color: #fff;
+    display: flex; flex-direction: column; justify-content: space-between;
+    padding: 8px 6px; text-align: center;
+  }
+  .cover-slab .t {
+    font-size: 11px; line-height: 1.05; font-weight: 700; letter-spacing: 0.4px;
+    margin-top: 8px;
+    display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden;
+  }
+  .cover-slab .a {
+    font-size: 7px; letter-spacing: 1.8px; text-transform: uppercase;
+    border-top: 1px solid #fff; padding-top: 4px;
+  }
+
+  .cover-wave { background: #fff; position: relative; padding: 6px; }
   .cover-wave::before {
-    content: "";
-    position: absolute; inset: 6px 6px auto 6px; height: 60px;
-    background:
-      repeating-linear-gradient(
-        0deg,
-        var(--ink) 0 2px,
-        #fff 2px 6px
-      );
+    content: ""; position: absolute; inset: 6px 6px auto 6px; height: 54px;
+    background: repeating-linear-gradient(0deg, var(--ink) 0 2px, #fff 2px 6px);
   }
   .cover-wave .plaque {
-    position: absolute;
-    left: 5px; right: 5px; bottom: 8px;
-    background: #fff;
-    border-top: 1px solid var(--ink);
-    border-bottom: 1px solid var(--ink);
-    padding: 3px 2px;
-    text-align: center;
-    font-size: 9px;
-    font-weight: 700;
-    letter-spacing: 0.4px;
-    line-height: 1.05;
+    position: absolute; left: 5px; right: 5px; bottom: 8px;
+    background: #fff; border-top: 1px solid var(--ink); border-bottom: 1px solid var(--ink);
+    padding: 3px 2px; text-align: center; font-size: 9px; font-weight: 700;
+    letter-spacing: 0.4px; line-height: 1.05;
+    display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;
   }
 
   .cover-type {
-    background: #fff;
-    padding: 6px 4px;
-    display: flex;
-    flex-direction: column;
-    justify-content: space-between;
-    text-align: center;
+    background: #fff; padding: 6px 4px;
+    display: flex; flex-direction: column; justify-content: space-between; text-align: center;
   }
   .cover-type .drop {
     font-family: "Iowan Old Style", Georgia, serif;
-    font-size: 48px;
-    line-height: 0.85;
-    font-weight: 700;
-    margin-top: 2px;
+    font-size: 44px; line-height: 0.85; font-weight: 700; margin-top: 2px;
   }
   .cover-type .t {
-    font-size: 9px;
-    font-weight: 700;
-    letter-spacing: 0.4px;
-    line-height: 1.1;
+    font-size: 9px; font-weight: 700; letter-spacing: 0.4px; line-height: 1.1;
+    display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;
   }
-  .cover-type .a {
-    font-size: 7px;
-    font-style: italic;
-    letter-spacing: 0.3px;
-    margin-top: 2px;
-  }
-  .cover-type .rule {
-    height: 0;
-    border-top: 1px solid var(--ink);
-    margin: 3px 12px;
-  }
+  .cover-type .a { font-size: 7px; font-style: italic; letter-spacing: 0.3px; margin-top: 2px; }
+  .cover-type .rule { height: 0; border-top: 1px solid var(--ink); margin: 3px 12px; }
 
   .cover-slash {
-    background:
-      repeating-linear-gradient(
-        135deg,
-        var(--ink) 0 5px,
-        #fff 5px 12px
-      );
+    background: repeating-linear-gradient(135deg, var(--ink) 0 5px, #fff 5px 12px);
     position: relative;
   }
   .cover-slash .label {
-    position: absolute;
-    left: 5px; right: 5px;
-    top: 50%;
-    transform: translateY(-50%);
-    background: #fff;
-    border: 1px solid var(--ink);
-    padding: 4px 3px;
-    text-align: center;
-    font-size: 9px;
-    font-weight: 700;
-    line-height: 1.1;
+    position: absolute; left: 5px; right: 5px; top: 50%; transform: translateY(-50%);
+    background: #fff; border: 1px solid var(--ink); padding: 4px 3px; text-align: center;
+    font-size: 9px; font-weight: 700; line-height: 1.1;
   }
   .cover-slash .label .a {
-    display: block;
-    font-size: 7px;
-    font-weight: 400;
-    font-style: italic;
-    margin-top: 2px;
+    display: block; font-size: 7px; font-weight: 400; font-style: italic; margin-top: 2px;
   }
 
   .cover-halftone {
@@ -517,449 +426,463 @@
     position: relative;
   }
   .cover-halftone .strip {
-    position: absolute;
-    left: 0; right: 0; bottom: 8px;
-    background: var(--ink);
-    color: #fff;
-    text-align: center;
-    padding: 3px 3px;
-    font-size: 9px;
-    font-weight: 700;
-    letter-spacing: 0.4px;
-    line-height: 1.05;
+    position: absolute; left: 0; right: 0; bottom: 8px;
+    background: var(--ink); color: #fff; text-align: center; padding: 3px 3px;
+    font-size: 9px; font-weight: 700; letter-spacing: 0.4px; line-height: 1.05;
   }
   .cover-halftone .strip .a {
-    display: block;
-    font-weight: 400;
-    font-style: italic;
-    font-size: 7px;
-    letter-spacing: 0.2px;
-    margin-top: 1px;
+    display: block; font-weight: 400; font-style: italic; font-size: 7px;
+    letter-spacing: 0.2px; margin-top: 1px;
   }
+
+  /* Empty-state heading (No books in /Books) */
+  .empty {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-style: italic;
+    font-size: 18px;
+  }
+
+  /* Right-side page rail (always reserved; ticks for each page) */
+  .rail {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding-top: 8px;          /* RAIL_PAD_TOP */
+    gap: 10px;                 /* pageIndicatorGap */
+  }
+  .rail .tick {
+    width: 9px; height: 9px;   /* pageIndicatorSize, Square */
+    border: 1px solid var(--ink);
+    background: transparent;
+  }
+  .rail .tick.current { background: var(--ink); }
+  .rail .count {
+    margin-top: auto;
+    margin-bottom: 4px;
+    writing-mode: vertical-rl;
+    transform: rotate(180deg);
+    font-style: italic;
+    font-size: 11px;
+    letter-spacing: 0.6px;
+  }
+
+  /* ---- Cascading popup (anchored bottom-left of content) ---------------- */
+  .popup-host {
+    position: absolute;
+    left: 30px;                /* CONTENT_PAD_X + 12 */
+    bottom: 49px;              /* panel bottom ~ y=751 (bottomLimit - shadow) */
+    z-index: 20;
+    display: flex;
+    align-items: flex-end;     /* baseline-align panel bottoms */
+    gap: 6px;                  /* panelGap */
+    pointer-events: none;
+  }
+  .popup-host[hidden] { display: none; }
+  .popup-list {
+    list-style: none;
+    background: var(--paper);
+    border: 2px solid var(--ink);          /* borderThickness 2 */
+    box-shadow: 3px 3px 0 var(--ink);       /* shadowOffset 3,3 */
+    min-width: 150px;
+    pointer-events: auto;
+  }
+  .popup-list[hidden] { display: none; }
+  .popup-item {
+    position: relative;
+    height: 36px;              /* rowHeight */
+    padding: 0 12px;           /* paddingX */
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 14px;
+    line-height: 1;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .popup-item.selected { background: var(--ink); color: var(--paper); }
+  .popup-item.muted { opacity: 0.55; }     /* owning row when its submenu is open */
+  .popup-label { flex: 1; }
+  .popup-chev { font-size: 12px; opacity: 0.85; }
+  .popup-item.selected .popup-chev { opacity: 1; }
+  .popup-dir {
+    display: inline-block; width: 12px; text-align: center;
+    font-weight: 700; font-size: 13px;
+  }
+  .popup-dir.inactive { visibility: hidden; }
+  .popup-list.scrolling { max-height: 220px; overflow: hidden; }  /* collections can be long */
+
+  /* ====================================================================== */
+  /*  Generic LIST view (Group list / Details actions / Metadata / Picker)  */
+  /* ====================================================================== */
+  .listbody {
+    position: absolute;
+    top: 89px; left: 0; right: 0;
+    height: 671px;
+    padding: 10px 18px 8px;
+    overflow: hidden;
+  }
+  .listnote {
+    font-size: 12px; font-style: italic; opacity: 0.7;
+    padding: 2px 4px 8px;
+  }
+  .listnote.section-gap { margin-top: 12px; }   /* small breather between sections */
+  .row {
+    height: 44px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 0 12px;
+    border-bottom: 1px solid rgba(0,0,0,0.12);
+  }
+  .row.selected { background: var(--ink); color: var(--paper); }
+  .row .row-label { flex: 1; font-size: 15px; }
+  .row .row-meta { font-size: 12px; font-style: italic; opacity: 0.7; }
+  .row.selected .row-meta { opacity: 0.95; }
+  .row .row-check { width: 16px; text-align: center; font-weight: 700; }
+  .row.action .row-label { font-weight: 600; }
+
+  /* ====================================================================== */
+  /*  BOOK DETAILS view                                                     */
+  /* ====================================================================== */
+  .details-body {
+    position: absolute;
+    top: 89px; left: 0; right: 0;
+    height: 671px;
+    padding: 16px 18px 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+  }
+  .details-top { display: flex; gap: 16px; }
+  .details-cover {
+    flex: 0 0 auto;
+    width: 200px; height: 300px;   /* large hero cover — uses the available space */
+    border: var(--border);
+    background: #fff;
+    box-shadow: 3px 3px 0 var(--ink);
+    position: relative;
+    overflow: hidden;
+  }
+  .details-meta { flex: 1 1 auto; min-width: 0; }
+  .details-meta h2 {
+    font-size: 19px; font-weight: 700; line-height: 1.2;
+    margin-bottom: 4px;
+  }
+  .details-meta .dm-author { font-size: 14px; font-style: italic; margin-bottom: 8px; }
+  /* Shared by meta rows (series/collections) and the lower progress/file rows
+     so they read identically wherever they sit. Inline `.k` labels match the
+     description's `.dd-label`; row text matches `.dd-text`. */
+  .details-body .dm-row { font-size: 13px; margin-bottom: 5px; }
+  .details-body .dm-row .k { font-size: 12px; font-style: italic; opacity: 0.6; margin-right: 4px; }
+  /* Progress sits below the file row with a clear gap. The percentage floats
+     just above the top-right of the full-width bar. */
+  .det-progress-block { margin-top: 16px; }
+  .dpb-head {
+    display: flex; justify-content: space-between; align-items: baseline;
+    margin-bottom: 4px;
+  }
+  .dpb-head .k { font-size: 12px; font-style: italic; opacity: 0.6; }
+  .dpb-pct { font-size: 13px; }
+  .details-progress {
+    width: 100%;                 /* full page width */
+    height: 8px; border: 1px solid var(--ink); background: var(--paper); padding: 1px;
+  }
+  .details-progress > i { display: block; height: 100%; background: var(--ink); }
+
+  /* Lower info block: description grows to fill, with progress + file rows
+     (moved out of the meta column beside the cover) pinned beneath it so the
+     screen fills top-to-bottom. */
+  .details-info {
+    flex: 1 1 auto;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+  }
+  .details-desc {
+    flex: 1 1 auto;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    margin-bottom: 10px;
+  }
+  /* Shared block-label (description + file): caption on its own line above the
+     body text it introduces. */
+  .dd-label {
+    display: block;
+    font-size: 12px; font-style: italic; opacity: 0.6;
+    margin-bottom: 5px;
+  }
+  /* File path reads in the same font as the description body. */
+  .det-file-path { font-size: 13px; line-height: 1.5; word-break: break-all; }
+  /* Preview only — not scrollable here. Clamp to the lines that fit (count set
+     in JS from the box height) with a real "…" on the last line, matching the
+     firmware's truncate-to-fit. */
+  .details-desc .dd-text {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow: hidden;
+    font-size: 13px; line-height: 1.5;
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+  }
+  .details-actions {
+    border-top: 3px solid var(--ink);
+    padding-top: 6px;
+  }
+
+  /* ====================================================================== */
+  /*  KEYBOARD view (representative — flow prototype)                       */
+  /* ====================================================================== */
+  .kb-body {
+    position: absolute;
+    top: 89px; left: 0; right: 0;
+    height: 671px;
+    padding: 16px 18px;
+    display: flex;
+    flex-direction: column;
+  }
+  .kb-prompt { font-size: 13px; font-style: italic; opacity: 0.7; margin-bottom: 8px; }
+  .kb-field {
+    border: 1px solid var(--ink);
+    min-height: 44px;
+    padding: 10px 12px;
+    font-size: 18px;
+    display: flex;
+    align-items: center;
+  }
+  .kb-field .cursor {
+    display: inline-block; width: 2px; height: 22px; background: var(--ink);
+    margin-left: 1px; animation: blink 1s steps(1) infinite;
+  }
+  @keyframes blink { 50% { opacity: 0; } }
+  .kb-keys {
+    margin-top: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    padding-bottom: 4px;
+  }
+  .kb-row { display: flex; gap: 4px; justify-content: center; }
+  .key {
+    flex: 1 1 0;
+    height: 38px;
+    border: 1px solid var(--ink);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 15px;
+    background: transparent;
+  }
+  .key.wide { flex: 2 1 0; }
+  .key.selected { background: var(--ink); color: var(--paper); }
+
+  /* Small hint that side buttons (Up/Down) drive vertical navigation. */
+  .side-hint {
+    position: absolute;
+    right: 6px; top: 50%;
+    transform: translateY(-50%);
+    writing-mode: vertical-rl;
+    font-size: 9px; letter-spacing: 2px;
+    color: rgba(0,0,0,0.35);
+    pointer-events: none;
+  }
+  .side-hint[hidden] { display: none; }
 </style>
 </head>
 <body>
   <div class="bezel">
-    <!-- 480 × 800 e-ink screen (X4 portrait) ----------------------------- -->
-    <div class="screen" role="application" aria-label="Library">
+    <div class="screen" id="screen" role="application" aria-label="Library">
 
-      <!-- ===== Header (89px + 3px inner bottom border) ================ -->
-      <header class="header">
-        <div class="battery" aria-label="Battery 78 percent">
-          <span class="battery-pct">78%</span>
-          <span class="battery-cell"><span class="battery-fill"></span></span>
-        </div>
+      <!-- ============================================================ -->
+      <!--  VIEW: LIBRARY                                               -->
+      <!-- ============================================================ -->
+      <section class="view" id="view-library">
+        <header class="header">
+          <div class="battery" aria-label="Battery 78 percent">
+            <span class="battery-pct">78%</span>
+            <span class="battery-cell"><span class="battery-fill"></span></span>
+          </div>
+          <div class="header-inner">
+            <h1 id="lib-title">Library</h1>
+            <div class="subtitle" id="lib-subtitle"></div>
+          </div>
+          <div class="header-border"></div>
+        </header>
 
-        <h1 id="page-title">Library<span class="accent">.</span></h1>
-        <div class="subtitle" id="page-subtitle">
-          Sorted by Recently Opened ↓ <span class="sep">·</span> 1 / 2
-        </div>
-      </header>
+        <section class="content">
+          <div class="shelf-pages" style="position:relative;height:100%;">
+            <div class="shelf" id="shelf"></div>
+            <div class="empty" id="lib-empty" hidden></div>
+          </div>
+          <aside class="rail" id="rail" aria-label="Page indicator">
+            <span class="count" id="page-count">1 / 1</span>
+          </aside>
 
-      <!-- ===== Content ================================================ -->
-      <section class="content">
+          <!-- Cascading popup. Panels rendered by JS.
+               Top level: Sort / Collections (opens its own screen) / Files /
+               Power Button / Settings.
+               NOTE: the "Open on select" preference — Book Details (default)
+               vs Read Book — is deliberately NOT in this menu. It's a setting,
+               not a one-shot action, so it belongs in the main Settings
+               activity (not modeled in this prototype). See state.openAction. -->
+          <aside class="popup-host" id="popup" hidden>
+            <ul class="popup-list" id="popup-top" data-level="top"></ul>
+            <ul class="popup-list" id="popup-sub" data-level="sub" hidden></ul>
+          </aside>
+        </section>
 
-        <!-- All 18 books in a single shelf. JS sorts the DOM order, then  -->
-        <!-- toggles .page-hidden so only the current page's 9 books       -->
-        <!-- participate in the 3×3 grid layout.                           -->
-        <div class="shelf-pages">
-
-          <div class="shelf" id="shelf">
-            <!-- recency is a date proxy: higher = more recently opened.   -->
-            <!-- progress is 0-100, or -1 for unread.                       -->
-            <div class="book"
-                 data-title="Moby-Dick"
-                 data-author="Herman Melville"
-                 data-progress="42"
-                 data-recency="17">
-              <span class="frame"></span><span class="corner tl"></span><span class="corner br"></span>
-              <div class="cover cover-slab">
-                <div class="t">MOBY-<br/>DICK</div>
-                <div class="a">Melville</div>
-              </div>
-              <div class="book-text">
-                <div class="book-title">Moby-Dick</div>
-                <div class="book-author">Herman Melville</div>
-              </div>
-              <div class="progress"><i style="width: 42%"></i></div>
-            </div>
-
-            <div class="book"
-                 data-title="Brave New World"
-                 data-author="Aldous Huxley"
-                 data-progress="12"
-                 data-recency="16">
-              <span class="frame"></span><span class="corner tl"></span><span class="corner br"></span>
-              <div class="cover cover-wave">
-                <div class="plaque">BRAVE<br/>NEW WORLD</div>
-              </div>
-              <div class="book-text">
-                <div class="book-title">Brave New World</div>
-                <div class="book-author">Aldous Huxley</div>
-              </div>
-              <div class="progress"><i style="width: 12%"></i></div>
-            </div>
-
-            <div class="book"
-                 data-title="Persuasion"
-                 data-author="Jane Austen"
-                 data-progress="-1"
-                 data-recency="15">
-              <span class="frame"></span><span class="corner tl"></span><span class="corner br"></span>
-              <div class="cover cover-type">
-                <div class="drop">P.</div>
-                <div>
-                  <div class="rule"></div>
-                  <div class="t">Persuasion</div>
-                  <div class="a">Jane Austen</div>
-                </div>
-              </div>
-              <div class="book-text">
-                <div class="book-title">Persuasion</div>
-                <div class="book-author">Jane Austen</div>
-              </div>
-              <div class="progress unread"></div>
-            </div>
-
-            <div class="book"
-                 data-title="Foundation"
-                 data-author="Isaac Asimov"
-                 data-progress="88"
-                 data-recency="14">
-              <span class="frame"></span><span class="corner tl"></span><span class="corner br"></span>
-              <div class="cover cover-slash">
-                <div class="label">
-                  FOUNDATION
-                  <span class="a">Isaac Asimov</span>
-                </div>
-              </div>
-              <div class="book-text">
-                <div class="book-title">Foundation</div>
-                <div class="book-author">Isaac Asimov</div>
-              </div>
-              <div class="progress"><i style="width: 88%"></i></div>
-            </div>
-
-            <div class="book"
-                 data-title="Beloved"
-                 data-author="Toni Morrison"
-                 data-progress="-1"
-                 data-recency="13">
-              <span class="frame"></span><span class="corner tl"></span><span class="corner br"></span>
-              <div class="cover cover-halftone">
-                <div class="strip">
-                  BELOVED
-                  <span class="a">Toni Morrison</span>
-                </div>
-              </div>
-              <div class="book-text">
-                <div class="book-title">Beloved</div>
-                <div class="book-author">Toni Morrison</div>
-              </div>
-              <div class="progress unread"></div>
-            </div>
-
-            <div class="book"
-                 data-title="The Left Hand of Darkness"
-                 data-author="Ursula K. Le Guin"
-                 data-progress="64"
-                 data-recency="12">
-              <span class="frame"></span><span class="corner tl"></span><span class="corner br"></span>
-              <div class="cover cover-slab">
-                <div class="t">THE LEFT<br/>HAND OF<br/>DARKNESS</div>
-                <div class="a">Le Guin</div>
-              </div>
-              <div class="book-text">
-                <div class="book-title">The Left Hand of Darkness</div>
-                <div class="book-author">Ursula K. Le Guin</div>
-              </div>
-              <div class="progress"><i style="width: 64%"></i></div>
-            </div>
-
-            <div class="book"
-                 data-title="Dune"
-                 data-author="Frank Herbert"
-                 data-progress="100"
-                 data-recency="11">
-              <span class="frame"></span><span class="corner tl"></span><span class="corner br"></span>
-              <div class="cover cover-wave">
-                <div class="plaque">DUNE</div>
-              </div>
-              <div class="book-text">
-                <div class="book-title">Dune</div>
-                <div class="book-author">Frank Herbert</div>
-              </div>
-              <div class="progress"><i style="width: 100%"></i></div>
-            </div>
-
-            <div class="book"
-                 data-title="1984"
-                 data-author="George Orwell"
-                 data-progress="-1"
-                 data-recency="10">
-              <span class="frame"></span><span class="corner tl"></span><span class="corner br"></span>
-              <div class="cover cover-type">
-                <div class="drop">19<br/>84</div>
-                <div>
-                  <div class="rule"></div>
-                  <div class="t">Nineteen Eighty-Four</div>
-                  <div class="a">George Orwell</div>
-                </div>
-              </div>
-              <div class="book-text">
-                <div class="book-title">1984</div>
-                <div class="book-author">George Orwell</div>
-              </div>
-              <div class="progress unread"></div>
-            </div>
-
-            <div class="book"
-                 data-title="The Road"
-                 data-author="Cormac McCarthy"
-                 data-progress="28"
-                 data-recency="9">
-              <span class="frame"></span><span class="corner tl"></span><span class="corner br"></span>
-              <div class="cover cover-slash">
-                <div class="label">
-                  THE ROAD
-                  <span class="a">Cormac McCarthy</span>
-                </div>
-              </div>
-              <div class="book-text">
-                <div class="book-title">The Road</div>
-                <div class="book-author">Cormac McCarthy</div>
-              </div>
-              <div class="progress"><i style="width: 28%"></i></div>
-            </div>
-
-            <div class="book"
-                 data-title="The Great Gatsby"
-                 data-author="F. Scott Fitzgerald"
-                 data-progress="35"
-                 data-recency="8">
-              <span class="frame"></span><span class="corner tl"></span><span class="corner br"></span>
-              <div class="cover cover-slab">
-                <div class="t">THE<br/>GREAT<br/>GATSBY</div>
-                <div class="a">Fitzgerald</div>
-              </div>
-              <div class="book-text">
-                <div class="book-title">The Great Gatsby</div>
-                <div class="book-author">F. Scott Fitzgerald</div>
-              </div>
-              <div class="progress"><i style="width: 35%"></i></div>
-            </div>
-
-            <div class="book"
-                 data-title="To Kill a Mockingbird"
-                 data-author="Harper Lee"
-                 data-progress="-1"
-                 data-recency="7">
-              <span class="frame"></span><span class="corner tl"></span><span class="corner br"></span>
-              <div class="cover cover-wave">
-                <div class="plaque">TO KILL A<br/>MOCKINGBIRD</div>
-              </div>
-              <div class="book-text">
-                <div class="book-title">To Kill a Mockingbird</div>
-                <div class="book-author">Harper Lee</div>
-              </div>
-              <div class="progress unread"></div>
-            </div>
-
-            <div class="book"
-                 data-title="Crime and Punishment"
-                 data-author="Fyodor Dostoyevsky"
-                 data-progress="18"
-                 data-recency="6">
-              <span class="frame"></span><span class="corner tl"></span><span class="corner br"></span>
-              <div class="cover cover-type">
-                <div class="drop">C.</div>
-                <div>
-                  <div class="rule"></div>
-                  <div class="t">Crime &amp; Punishment</div>
-                  <div class="a">F. Dostoyevsky</div>
-                </div>
-              </div>
-              <div class="book-text">
-                <div class="book-title">Crime and Punishment</div>
-                <div class="book-author">Fyodor Dostoyevsky</div>
-              </div>
-              <div class="progress"><i style="width: 18%"></i></div>
-            </div>
-
-            <div class="book"
-                 data-title="Slaughterhouse-Five"
-                 data-author="Kurt Vonnegut"
-                 data-progress="76"
-                 data-recency="5">
-              <span class="frame"></span><span class="corner tl"></span><span class="corner br"></span>
-              <div class="cover cover-slash">
-                <div class="label">
-                  SLAUGHTER-<br/>HOUSE&#8209;FIVE
-                  <span class="a">Kurt Vonnegut</span>
-                </div>
-              </div>
-              <div class="book-text">
-                <div class="book-title">Slaughterhouse-Five</div>
-                <div class="book-author">Kurt Vonnegut</div>
-              </div>
-              <div class="progress"><i style="width: 76%"></i></div>
-            </div>
-
-            <div class="book"
-                 data-title="The Bell Jar"
-                 data-author="Sylvia Plath"
-                 data-progress="-1"
-                 data-recency="4">
-              <span class="frame"></span><span class="corner tl"></span><span class="corner br"></span>
-              <div class="cover cover-halftone">
-                <div class="strip">
-                  THE BELL JAR
-                  <span class="a">Sylvia Plath</span>
-                </div>
-              </div>
-              <div class="book-text">
-                <div class="book-title">The Bell Jar</div>
-                <div class="book-author">Sylvia Plath</div>
-              </div>
-              <div class="progress unread"></div>
-            </div>
-
-            <div class="book"
-                 data-title="Wuthering Heights"
-                 data-author="Emily Brontë"
-                 data-progress="100"
-                 data-recency="3">
-              <span class="frame"></span><span class="corner tl"></span><span class="corner br"></span>
-              <div class="cover cover-type">
-                <div class="drop">W.</div>
-                <div>
-                  <div class="rule"></div>
-                  <div class="t">Wuthering Heights</div>
-                  <div class="a">Emily Brontë</div>
-                </div>
-              </div>
-              <div class="book-text">
-                <div class="book-title">Wuthering Heights</div>
-                <div class="book-author">Emily Brontë</div>
-              </div>
-              <div class="progress"><i style="width: 100%"></i></div>
-            </div>
-
-            <div class="book"
-                 data-title="The Sun Also Rises"
-                 data-author="Ernest Hemingway"
-                 data-progress="50"
-                 data-recency="2">
-              <span class="frame"></span><span class="corner tl"></span><span class="corner br"></span>
-              <div class="cover cover-slab">
-                <div class="t">THE SUN<br/>ALSO<br/>RISES</div>
-                <div class="a">Hemingway</div>
-              </div>
-              <div class="book-text">
-                <div class="book-title">The Sun Also Rises</div>
-                <div class="book-author">Ernest Hemingway</div>
-              </div>
-              <div class="progress"><i style="width: 50%"></i></div>
-            </div>
-
-            <div class="book"
-                 data-title="East of Eden"
-                 data-author="John Steinbeck"
-                 data-progress="22"
-                 data-recency="1">
-              <span class="frame"></span><span class="corner tl"></span><span class="corner br"></span>
-              <div class="cover cover-wave">
-                <div class="plaque">EAST OF<br/>EDEN</div>
-              </div>
-              <div class="book-text">
-                <div class="book-title">East of Eden</div>
-                <div class="book-author">John Steinbeck</div>
-              </div>
-              <div class="progress"><i style="width: 22%"></i></div>
-            </div>
-
-            <div class="book"
-                 data-title="Anna Karenina"
-                 data-author="Leo Tolstoy"
-                 data-progress="-1"
-                 data-recency="0">
-              <span class="frame"></span><span class="corner tl"></span><span class="corner br"></span>
-              <div class="cover cover-halftone">
-                <div class="strip">
-                  ANNA KARENINA
-                  <span class="a">Leo Tolstoy</span>
-                </div>
-              </div>
-              <div class="book-text">
-                <div class="book-title">Anna Karenina</div>
-                <div class="book-author">Leo Tolstoy</div>
-              </div>
-              <div class="progress unread"></div>
-            </div>
-          </div><!-- /.shelf -->
-
-        </div><!-- /.shelf-pages -->
-
-        <!-- Vertical page rail on the right (ticks rendered by JS) -->
-        <aside class="rail" id="rail" aria-label="Page indicator">
-          <span class="count" id="page-count">1 / 2</span>
-        </aside>
-
-        <!-- Cascading popup menu (anchored bottom-left) ------------------ -->
-        <aside class="popup-host" id="popup" hidden>
-          <ul class="popup-list" data-level="top">
-            <li class="popup-item" data-key="sort">
-              <span class="popup-label">Sort</span>
-              <span class="popup-hint" id="sort-hint">Recent ↓</span>
-              <span class="popup-chev">▸</span>
-            </li>
-            <li class="popup-item" data-key="files">
-              <span class="popup-label">Files</span>
-              <span class="popup-chev">▸</span>
-            </li>
-            <li class="popup-item" data-key="settings">
-              <span class="popup-label">Settings</span>
-            </li>
-          </ul>
-
-          <ul class="popup-list popup-sub" data-level="sort" hidden>
-            <li class="popup-item" data-sort="recent">
-              <span class="popup-label">Recently Opened</span>
-              <span class="popup-dir">↓</span>
-            </li>
-            <li class="popup-item" data-sort="title">
-              <span class="popup-label">Title</span>
-              <span class="popup-dir inactive">↑</span>
-            </li>
-            <li class="popup-item" data-sort="author">
-              <span class="popup-label">Author</span>
-              <span class="popup-dir inactive">↑</span>
-            </li>
-            <li class="popup-item" data-sort="progress">
-              <span class="popup-label">Reading Progress</span>
-              <span class="popup-dir inactive">↓</span>
-            </li>
-          </ul>
-
-          <ul class="popup-list popup-sub" data-level="files" hidden>
-            <li class="popup-item" data-key="browse">
-              <span class="popup-label">Browse</span>
-            </li>
-            <li class="popup-item" data-key="transfer">
-              <span class="popup-label">Transfer</span>
-            </li>
-          </ul>
-        </aside>
-
+        <footer class="footer" data-footer="library"></footer>
       </section>
 
-      <!-- ===== Footer (40px, four Folio Hairline button hints) ======== -->
-      <footer class="footer">
-        <button class="btn btn-1" type="button" id="btn-menu">Menu</button>
-        <button class="btn btn-2" type="button" id="btn-select">Select</button>
-        <button class="btn btn-3" type="button" id="btn-left">Left</button>
-        <button class="btn btn-4" type="button" id="btn-right">Right</button>
-      </footer>
+      <!-- ============================================================ -->
+      <!--  VIEW: GROUP LIST (By Series / By Author)                   -->
+      <!-- ============================================================ -->
+      <section class="view" id="view-grouplist" hidden>
+        <header class="header">
+          <div class="battery"><span class="battery-pct">78%</span>
+            <span class="battery-cell"><span class="battery-fill"></span></span></div>
+          <div class="header-inner">
+            <h1 id="gl-title">By Series</h1>
+            <div class="subtitle" id="gl-subtitle"></div>
+          </div>
+          <div class="header-border"></div>
+        </header>
+        <section class="listbody">
+          <div class="listnote" id="gl-note"></div>
+          <div id="gl-rows"></div>
+        </section>
+        <div class="side-hint">▲ NAV ▼</div>
+        <footer class="footer" data-footer="grouplist"></footer>
+      </section>
+
+      <!-- ============================================================ -->
+      <!--  VIEW: COLLECTIONS (dedicated list)                         -->
+      <!-- ============================================================ -->
+      <section class="view" id="view-collections" hidden>
+        <header class="header">
+          <div class="battery"><span class="battery-pct">78%</span>
+            <span class="battery-cell"><span class="battery-fill"></span></span></div>
+          <div class="header-inner">
+            <h1>Collections</h1>
+            <div class="subtitle" id="col-subtitle"></div>
+          </div>
+          <div class="header-border"></div>
+        </header>
+        <section class="listbody">
+          <div id="col-rows"></div>
+        </section>
+        <div class="side-hint">▲ NAV ▼</div>
+        <footer class="footer" data-footer="collections"></footer>
+      </section>
+
+      <!-- ============================================================ -->
+      <!--  VIEW: BOOK DETAILS                                         -->
+      <!-- ============================================================ -->
+      <section class="view" id="view-details" hidden>
+        <header class="header">
+          <div class="battery"><span class="battery-pct">78%</span>
+            <span class="battery-cell"><span class="battery-fill"></span></span></div>
+          <div class="header-inner">
+            <h1>Book Details</h1>
+            <div class="subtitle" id="det-subtitle"></div>
+          </div>
+          <div class="header-border"></div>
+        </header>
+        <section class="details-body">
+          <div class="details-top">
+            <div class="details-cover" id="det-cover"></div>
+            <div class="details-meta">
+              <h2 id="det-title"></h2>
+              <div class="dm-author" id="det-author"></div>
+              <div class="dm-row" id="det-series"></div>
+              <div class="dm-row" id="det-collections"></div>
+            </div>
+          </div>
+          <div class="details-info">
+            <div class="details-desc" id="det-desc">
+              <span class="dd-label">Description</span>
+              <div class="dd-text" id="det-desc-text"></div>
+            </div>
+            <div class="det-file-block">
+              <span class="dd-label">File</span>
+              <div class="det-file-path" id="det-file"></div>
+            </div>
+            <div class="det-progress-block" id="det-progress-block">
+              <div class="dpb-head">
+                <span class="k" id="det-progress-label">Progress</span>
+                <span class="dpb-pct" id="det-progress-pct"></span>
+              </div>
+              <div class="details-progress" id="det-progress" hidden><i></i></div>
+            </div>
+          </div>
+          <div class="details-actions" id="det-actions"></div>
+        </section>
+        <div class="side-hint">▲ NAV ▼</div>
+        <footer class="footer" data-footer="details"></footer>
+      </section>
+
+      <!-- ============================================================ -->
+      <!--  VIEW: EDIT METADATA                                        -->
+      <!-- ============================================================ -->
+      <section class="view" id="view-metadata" hidden>
+        <header class="header">
+          <div class="battery"><span class="battery-pct">78%</span>
+            <span class="battery-cell"><span class="battery-fill"></span></span></div>
+          <div class="header-inner">
+            <h1>Edit Metadata</h1>
+            <div class="subtitle" id="meta-subtitle"></div>
+          </div>
+          <div class="header-border"></div>
+        </header>
+        <section class="listbody">
+          <div id="meta-rows"></div>
+        </section>
+        <div class="side-hint">▲ NAV ▼</div>
+        <footer class="footer" data-footer="metadata"></footer>
+      </section>
+
+      <!-- ============================================================ -->
+      <!--  VIEW: ADD TO COLLECTION (picker)                           -->
+      <!-- ============================================================ -->
+      <section class="view" id="view-picker" hidden>
+        <header class="header">
+          <div class="battery"><span class="battery-pct">78%</span>
+            <span class="battery-cell"><span class="battery-fill"></span></span></div>
+          <div class="header-inner">
+            <h1>Add to Collection</h1>
+            <div class="subtitle" id="pick-subtitle"></div>
+          </div>
+          <div class="header-border"></div>
+        </header>
+        <section class="listbody">
+          <div class="listnote">Toggle membership with Select.</div>
+          <div id="pick-rows"></div>
+        </section>
+        <div class="side-hint">▲ NAV ▼</div>
+        <footer class="footer" data-footer="picker"></footer>
+      </section>
+
+      <!-- ============================================================ -->
+      <!--  VIEW: KEYBOARD                                             -->
+      <!-- ============================================================ -->
+      <section class="view" id="view-keyboard" hidden>
+        <header class="header">
+          <div class="battery"><span class="battery-pct">78%</span>
+            <span class="battery-cell"><span class="battery-fill"></span></span></div>
+          <div class="header-inner">
+            <h1 id="kb-title">Enter Text</h1>
+          </div>
+          <div class="header-border"></div>
+        </header>
+        <section class="kb-body">
+          <div class="kb-prompt" id="kb-prompt"></div>
+          <div class="kb-field"><span id="kb-text"></span><span class="cursor"></span></div>
+          <div class="kb-keys" id="kb-keys"></div>
+        </section>
+        <footer class="footer" data-footer="keyboard"></footer>
+      </section>
 
     </div><!-- /.screen -->
     <div class="bezel-label">XTEINK X4 &middot; 480 × 800 &middot; B/W E-INK &middot; FOLIO</div>
@@ -967,384 +890,1134 @@
 
 <script>
 (function () {
-  // ----- Constants -------------------------------------------------------
+  "use strict";
+
+  // ===== Constants =========================================================
   const COLS = 3, ROWS = 3, PAGE_SIZE = 9;
 
-  const SORT_LABELS_LONG = {
-    recent:   'Recently Opened',
-    title:    'Title',
-    author:   'Author',
-    progress: 'Reading Progress',
+  const SORT_LABELS_LONG = {                  // popup submenu (STR_SORT_*)
+    recent: 'Recently Opened', title: 'Title', author: 'Author', progress: 'Reading Progress',
   };
-  const SORT_LABELS_SHORT = {
-    recent:   'Recent',
-    title:    'Title',
-    author:   'Author',
-    progress: 'Progress',
+  const SORT_HEADER = {                       // header subtitle (STR_LIBRARY_SORTED_*)
+    recent: 'Sorted by recently opened', title: 'Sorted by title',
+    author: 'Sorted by author', progress: 'Sorted by progress',
   };
   const SORT_ORDER = ['recent', 'title', 'author', 'progress'];
 
-  // ----- State -----------------------------------------------------------
+  // ===== Book data =========================================================
+  // recency: higher = more recently opened. progress: 0-100, or -1 unread.
+  // series/seriesIndex drive the "By Series" grouped auto-collection.
+  function mk(id, title, author, variant, progress, recency, series, seriesIndex, file) {
+    return { id, title, author, variant, progress, recency,
+             series: series || '', seriesIndex: seriesIndex || 0,
+             file: file || ('/Books/' + title.replace(/[^a-z0-9]+/gi, '_') + '.epub') };
+  }
+  const books = [
+    mk(1,  'Moby-Dick', 'Herman Melville', 'slab', 42, 21),
+    mk(2,  'Brave New World', 'Aldous Huxley', 'wave', 12, 20),
+    mk(3,  'Persuasion', 'Jane Austen', 'type', -1, 19),
+    mk(4,  'Foundation', 'Isaac Asimov', 'slash', 88, 18, 'Foundation', 1),
+    mk(5,  'Beloved', 'Toni Morrison', 'halftone', -1, 17),
+    mk(6,  'The Left Hand of Darkness', 'Ursula K. Le Guin', 'slab', 64, 16),
+    mk(7,  'Dune', 'Frank Herbert', 'wave', 100, 15, 'Dune', 1),
+    mk(8,  '1984', 'George Orwell', 'type', -1, 14),
+    mk(9,  'The Road', 'Cormac McCarthy', 'slash', 28, 13),
+    mk(10, 'The Great Gatsby', 'F. Scott Fitzgerald', 'slab', 35, 12),
+    mk(11, 'To Kill a Mockingbird', 'Harper Lee', 'wave', -1, 11),
+    mk(12, 'Crime and Punishment', 'Fyodor Dostoyevsky', 'type', 18, 10),
+    mk(13, 'Slaughterhouse-Five', 'Kurt Vonnegut', 'slash', 76, 9),
+    mk(14, 'The Bell Jar', 'Sylvia Plath', 'halftone', -1, 8),
+    mk(15, 'Wuthering Heights', 'Emily Brontë', 'type', 100, 7),
+    mk(16, 'The Sun Also Rises', 'Ernest Hemingway', 'slab', 50, 6),
+    mk(17, 'East of Eden', 'John Steinbeck', 'wave', 22, 5),
+    mk(18, 'Anna Karenina', 'Leo Tolstoy', 'halftone', -1, 4),
+    // Series volumes — make "By Series" meaningful (Asimov x3, Herbert x2).
+    mk(19, 'Foundation and Empire', 'Isaac Asimov', 'slash', 55, 3, 'Foundation', 2),
+    mk(20, 'Second Foundation', 'Isaac Asimov', 'slash', -1, 2, 'Foundation', 3),
+    mk(21, 'Dune Messiah', 'Frank Herbert', 'wave', 8, 1, 'Dune', 2),
+  ];
+  // Genre drives the "By Genre" grouped auto-collection. Kept as a side map so
+  // the mk() positional list stays readable.
+  const GENRES = {
+    1: 'Adventure', 2: 'Science Fiction', 3: 'Romance', 4: 'Science Fiction',
+    5: 'Literary', 6: 'Science Fiction', 7: 'Science Fiction', 8: 'Science Fiction',
+    9: 'Literary', 10: 'Literary', 11: 'Literary', 12: 'Literary',
+    13: 'Science Fiction', 14: 'Literary', 15: 'Romance', 16: 'Literary',
+    17: 'Literary', 18: 'Literary', 19: 'Science Fiction', 20: 'Science Fiction',
+    21: 'Science Fiction',
+  };
+  books.forEach((b) => { b.genre = GENRES[b.id] || ''; });
+
+  // Description / synopsis — stands in for the EPUB OPF `dc:description`. Shown
+  // on the Book Details screen to fill the space below the cover/meta block.
+  // Lengths vary on purpose so truncation (the "…" fade) gets exercised.
+  const DESCRIPTIONS = {
+    1: 'The sailor Ishmael recounts the obsessive quest of Ahab, captain of the whaler Pequod, for revenge against Moby Dick, the giant white sperm whale that on a previous voyage destroyed his ship and severed his leg at the knee.',
+    2: 'Far in the future, the World Controllers have created the ideal society. Through clever use of genetic engineering, brainwashing and recreational drugs the population is permanently content — but the price of universal happiness is the surrender of freedom.',
+    3: 'Anne Elliot, persuaded years ago to break her engagement to a then-impoverished naval officer, gets a second chance at love when he returns from the sea a wealthy captain. A quietly devastating study of constancy and regret.',
+    4: 'As the Galactic Empire decays, psychohistorian Hari Seldon foresees its fall and a thirty-thousand-year dark age. To shorten the chaos he establishes the Foundation, a sanctuary of knowledge at the edge of the galaxy.',
+    5: 'Sethe, born a slave and escaped to Ohio, has too few years of freedom. Eighteen years later she is still not free — haunted by the ghost of her baby, whose tombstone is marked with a single word: Beloved.',
+    6: 'A human envoy is sent to the planet Gethen, whose inhabitants are ambisexual, shifting between genders. His mission of alliance founders on a profound failure to understand a people without a fixed sex.',
+    7: 'Set on the desert planet Arrakis, the only source of the spice melange, this is the story of Paul Atreides — heir to a noble family tasked with ruling an inhospitable world where the only thing of value is the spice.',
+    8: 'Winston Smith works for the Ministry of Truth, rewriting history to match the Party line. Under the gaze of Big Brother he begins a forbidden affair and a doomed rebellion against a regime that controls even thought itself.',
+    9: 'A father and his young son walk alone through burned America, heading slowly for the coast. Nothing moves in the ravaged landscape save the ash on the wind. They have nothing but a pistol, the clothes they are wearing, and each other.',
+    10: 'Jay Gatsby throws lavish parties in the hope of winning back Daisy Buchanan, the love he lost. Narrated by Nick Carraway, it is a tale of the Jazz Age and the corrosion of the American Dream.',
+    11: 'Through the eyes of young Scout Finch, a lawyer’s defense of a black man falsely accused in the Depression-era South becomes a lesson in conscience, courage, and the loss of innocence.',
+    12: 'The impoverished ex-student Raskolnikov conceives a theory that extraordinary men may transgress moral law. He murders a pawnbroker to test it — and is consumed by guilt long before the law closes in.',
+    13: 'Billy Pilgrim has come unstuck in time. A survivor of the firebombing of Dresden, he drifts between his wartime past, his suburban present, and captivity in an alien zoo, in this anti-war classic.',
+    14: 'Esther Greenwood is brilliant, beautiful, and talented, but slowly going under — maybe for the last time. A vivid, often funny portrait of a young woman’s descent into mental illness.',
+    15: 'On the wild Yorkshire moors, the passionate, doomed bond between Catherine Earnshaw and the foundling Heathcliff spirals across two generations into obsession, cruelty, and revenge.',
+    16: 'A group of American and British expatriates drift through 1920s Paris and on to the bullfights of Pamplona. Beneath the drinking and banter lies the wound the Great War left on a lost generation.',
+    17: 'Spanning the Salinas Valley from the Civil War to the First World War, two families re-enact the fall of Adam and Eve and the rivalry of Cain and Abel in this sprawling story of good and evil.',
+    18: 'Beautiful, generous Anna Karenina risks everything for a passionate affair with the dashing Count Vronsky, while the earnest Levin searches for meaning on his estate — two intertwined paths through love and Russian society.',
+    19: 'The Foundation has grown rich and strong, but a mutant called the Mule arises with the power to bend minds and conquer worlds — a threat Seldon’s plan never foresaw.',
+    20: 'Hidden somewhere is the Second Foundation, guardian of Seldon’s plan. Both the Mule and the First Foundation hunt for it, but no one knows where — or what — it truly is.',
+    21: 'Twelve years after he became Emperor, Paul Atreides rules a galaxy ruptured by holy war waged in his name. Now a conspiracy of his oldest enemies gathers to topple him through the one thing he cannot control: his own visions.',
+  };
+  books.forEach((b) => { b.desc = DESCRIPTIONS[b.id] || ''; });
+
+  const bookById = (id) => books.find((b) => b.id === id);
+
+  // Manual collections — id -> {name, members:Set<bookId>}.
+  let collectionSeq = 1;
+  const collections = [
+    { id: 'c' + (collectionSeq++), name: 'Favorites', members: new Set([7, 5, 9]) },
+    // 12 books -> 13 grid items (incl. the back tile) -> 2 pages. Test fodder.
+    { id: 'c' + (collectionSeq++), name: 'Book Club 2026',
+      members: new Set([1, 2, 3, 6, 8, 10, 11, 12, 13, 14, 15, 16]) },
+  ];
+
+  // ===== Sort helpers ======================================================
+  const titleKey = (t) => t.replace(/^(the|a|an)\s+/i, '').toLowerCase();
+  const authorKey = (name) => {
+    const parts = name.trim().split(/\s+/);
+    const last = parts[parts.length - 1] || '';
+    return (last + ' ' + parts.slice(0, -1).join(' ')).toLowerCase();
+  };
+  function compareBooks(a, b) {
+    const s = currentSort();
+    const mult = s.dir[s.field] === 'asc' ? 1 : -1;
+    switch (s.field) {
+      case 'recent':   return mult * (a.recency - b.recency);
+      case 'title':    return mult * titleKey(a.title).localeCompare(titleKey(b.title));
+      case 'author':   return mult * authorKey(a.author).localeCompare(authorKey(b.author));
+      case 'progress': return mult * (a.progress - b.progress);
+    }
+    return 0;
+  }
+
+  // ===== Per-view sort =====================================================
+  // Stable identity for the active view, used to key its saved sort.
+  function viewKey() {
+    const v = state.view;
+    if (v.kind === 'all') return 'all';
+    if (v.kind === 'collection') return 'collection:' + v.id;
+    return v.kind + ':' + v.name;        // series:… / author:… / genre:…
+  }
+  // The active view's sort, lazily created with sensible defaults. Author
+  // views never sort by author (meaningless) — normalized to title here so
+  // the rule holds even for a previously-saved 'author' selection.
+  function currentSort() {
+    const k = viewKey();
+    if (!state.sorts[k]) {
+      state.sorts[k] = {
+        field: 'recent',
+        dir: { recent: 'desc', title: 'asc', author: 'asc', progress: 'desc' },
+      };
+    }
+    const s = state.sorts[k];
+    if (state.view.kind === 'author' && s.field === 'author') s.field = 'title';
+    return s;
+  }
+
+  // ===== Cover markup ======================================================
+  function surname(name) { const p = name.trim().split(/\s+/); return p[p.length - 1]; }
+  function coverMarkup(b) {
+    const t = b.title, a = b.author;
+    switch (b.variant) {
+      case 'slab':
+        return `<div class="cover cover-slab"><div class="t">${t.toUpperCase()}</div>` +
+               `<div class="a">${surname(a)}</div></div>`;
+      case 'wave':
+        return `<div class="cover cover-wave"><div class="plaque">${t.toUpperCase()}</div></div>`;
+      case 'type':
+        return `<div class="cover cover-type"><div class="drop">${t[0]}.</div>` +
+               `<div><div class="rule"></div><div class="t">${t}</div>` +
+               `<div class="a">${a}</div></div></div>`;
+      case 'slash':
+        return `<div class="cover cover-slash"><div class="label">${t.toUpperCase()}` +
+               `<span class="a">${a}</span></div></div>`;
+      case 'halftone':
+        return `<div class="cover cover-halftone"><div class="strip">${t.toUpperCase()}` +
+               `<span class="a">${a}</span></div></div>`;
+      default:
+        return `<div class="cover fallback">${t}</div>`;
+    }
+  }
+
+  // ===== State =============================================================
   const state = {
-    // Popup
+    screen: 'library',              // active view / controller key
+    // Library shelf
+    page: 0,                        // 0-based current page
+    sel: 0,                         // 0..8 within current page
+    totalPages: 1,
+    // Sort is saved PER VIEW (keyed by viewKey()). Each entry:
+    // { field, dir:{recent,title,author,progress} }. See currentSort().
+    sorts: {},
+    // Active library view filter
+    view: { kind: 'all' },          // {kind:'all'} | {kind:'collection',id} | {kind:'series'|'author'|'genre',name}
+    openAction: 'details',          // feature 4: 'details' (default) | 'read'
+
+    // Popup (library only)
     popupOpen: false,
-    popupLevel: 'top',         // 'top' | 'sort' | 'files'
-    popupSel:   { top: 0, sort: 0, files: 0 },
+    popupLevel: 'top',              // 'top' | 'sub'
+    popupTopSel: 0,
+    popupSubSel: 0,
+    popupSubKey: null,              // which top key the open submenu belongs to
 
-    // Library
-    libraryPage:     1,
-    librarySelected: 0,        // 0..PAGE_SIZE-1, within the current page
-    totalPages:      1,
-
-    // Sort
-    sortField: 'recent',
-    sortDir:   { recent: 'desc', title: 'asc', author: 'asc', progress: 'desc' },
+    // Collections screen
+    col: { sel: 0 },
+    // Group list
+    gl: { mode: 'series', items: [], sel: 0, top: 0 },
+    // Details
+    det: { bookId: null, sel: 0 },
+    // Metadata
+    meta: { bookId: null, sel: 0, draft: null },
+    // Picker
+    pick: { bookId: null, sel: 0 },
+    // Keyboard
+    kb: { title: '', prompt: '', value: '', shift: true, r: 0, c: 0, onDone: null, back: 'library' },
   };
 
   const $  = (sel, root = document) => root.querySelector(sel);
   const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
 
-  // ----- Sort key helpers -----------------------------------------------
-  // Library convention: ignore leading "The/A/An" when sorting titles.
-  const titleKey = (t) =>
-    t.replace(/^(the|a|an)\s+/i, '').toLowerCase();
+  // ===== Library view filtering ============================================
+  function viewBooks() {
+    let list;
+    switch (state.view.kind) {
+      case 'collection': {
+        const col = collections.find((c) => c.id === state.view.id);
+        list = col ? books.filter((b) => col.members.has(b.id)) : [];
+        break;
+      }
+      case 'series': list = books.filter((b) => b.series === state.view.name); break;
+      case 'author': list = books.filter((b) => b.author === state.view.name); break;
+      case 'genre':  list = books.filter((b) => b.genre === state.view.name); break;
+      default:       list = books.slice();
+    }
+    return list.sort(compareBooks);
+  }
+  // Bare display name for the active view (used as the header title), or null
+  // for All Books. Series/author/genre use the group name verbatim.
+  function viewName() {
+    switch (state.view.kind) {
+      case 'collection': {
+        const col = collections.find((c) => c.id === state.view.id);
+        return col ? col.name : 'Collection';
+      }
+      case 'series':
+      case 'author':
+      case 'genre':  return state.view.name;
+      default:       return null;
+    }
+  }
 
-  // Sort authors by surname (last whitespace-separated token).
-  const authorKey = (name) => {
-    const parts = name.trim().split(/\s+/);
-    const last  = parts[parts.length - 1] || '';
-    const rest  = parts.slice(0, -1).join(' ');
-    return (last + ' ' + rest).toLowerCase();
+  // Grid items for the active view. Any filtered view prepends a synthetic
+  // "back" tile at slot 0 (page 0) so leaving the collection is visible on the
+  // shelf itself, not just via the menu. Books carry no __back flag.
+  // The back tile always returns to All Books regardless of how the view was
+  // entered — a single, predictable destination (per-view back was confusing).
+  function viewItems() {
+    const list = viewBooks();
+    if (state.view.kind === 'all') return list;
+    return [{ __back: true, label: 'All Books' }, ...list];
+  }
+  function activateBack() {
+    state.view = { kind: 'all' };
+    resetLibraryView();
+    render();
+  }
+
+  // ===== Footer ============================================================
+  // Renders 4 front-button hints into the active view's footer. Empty label
+  // => hidden slot (mirrors ButtonHints with blank labels).
+  function setHints(footerEl, b1, b2, b3, b4) {
+    const labels = [b1, b2, b3, b4];
+    footerEl.innerHTML = '';
+    labels.forEach((label, i) => {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'btn btn-' + (i + 1) + (label ? '' : ' hidden');
+      btn.textContent = label || '';
+      btn.dataset.slot = i;
+      footerEl.appendChild(btn);
+    });
+  }
+
+  // ===== Controllers =======================================================
+  const Screens = {};
+
+  // ---- LIBRARY ------------------------------------------------------------
+  Screens.library = {
+    render() {
+      const list = viewItems();
+      state.totalPages = Math.max(1, Math.ceil(list.length / PAGE_SIZE));
+      if (state.page >= state.totalPages) state.page = state.totalPages - 1;
+      const start = state.page * PAGE_SIZE;
+      const onPage = list.slice(start, start + PAGE_SIZE);
+      if (state.sel >= onPage.length) state.sel = Math.max(0, onPage.length - 1);
+
+      // Header — title is the active view's name (collection / series / author
+      // / genre), or "Library" for All Books. The subtitle always carries the
+      // sort + page info (same structure for every view).
+      $('#lib-title').textContent = viewName() || 'Library';
+      const s = currentSort();
+      const arrow = s.dir[s.field] === 'asc' ? '(asc)' : '(desc)';
+      // NOTE: mirrors getHeaderSubtitleText() — page is 0-based here while the
+      // rail count below is 1-based (a discrepancy that exists in the C++ too).
+      $('#lib-subtitle').innerHTML = SORT_HEADER[s.field] + ' ' + arrow +
+        ` <span class="sep">·</span> ${state.page} / ${state.totalPages}`;
+
+      // Shelf
+      const shelf = $('#shelf');
+      const empty = $('#lib-empty');
+      const FRAME = '<span class="frame"></span><span class="corner tl"></span><span class="corner br"></span>';
+      if (list.length === 0) {
+        // Only reachable for the "All Books" view (filtered views always carry
+        // a back tile, so their item list is never empty).
+        shelf.innerHTML = '';
+        empty.hidden = false;
+        empty.textContent = 'No books in /Books';
+      } else {
+        empty.hidden = true;
+        shelf.innerHTML = '';
+        for (let slot = 0; slot < PAGE_SIZE; slot++) {
+          const cell = document.createElement('div');
+          cell.className = 'cell';
+          const item = onPage[slot];
+          if (item) {
+            const selected = !state.popupOpen && slot === state.sel;
+            if (selected) cell.classList.add('selected');
+          }
+          if (item && item.__back) {
+            // Back tile — cover-slot + label, content height. No progress band;
+            // the selection frame hugs its (shorter) content.
+            cell.classList.add('backcell');
+            cell.innerHTML =
+              '<div class="tile">' +
+                FRAME +
+                '<div class="cover-slot"><div class="back-box">←</div></div>' +
+                '<div class="text-slot">' +
+                  `<div class="book-title">${item.label}</div>` +
+                '</div>' +
+              '</div>';
+          } else if (item) {
+            const b = item;
+            // Bar-less tiles render no progress band — their content (and the
+            // selection frame around it) ends at the author. Titles still align
+            // because the cover slot is a fixed height.
+            const hasProgress = b.progress >= 0;
+            cell.innerHTML =
+              '<div class="tile' + (hasProgress ? ' has-progress' : '') + '">' +
+                FRAME +
+                '<div class="cover-slot">' + coverMarkup(b) + '</div>' +
+                '<div class="text-slot">' +
+                  `<div class="book-title">${b.title}</div>` +
+                  (b.author ? `<div class="book-author">${b.author}</div>` : '') +
+                '</div>' +
+                (hasProgress
+                  ? '<div class="pgap"></div><div class="progress"><i style="width:' + b.progress + '%"></i></div>'
+                  : '') +
+              '</div>';
+          }
+          shelf.appendChild(cell);
+        }
+      }
+
+      // Rail (always reserved; 1-based count)
+      const rail = $('#rail');
+      $$('.tick', rail).forEach((t) => t.remove());
+      const count = $('#page-count');
+      for (let i = 0; i < state.totalPages; i++) {
+        const tick = document.createElement('span');
+        tick.className = 'tick' + (i === state.page ? ' current' : '');
+        rail.insertBefore(tick, count);
+      }
+      count.textContent = `${state.page + 1} / ${state.totalPages}`;
+
+      // Popup
+      renderPopup();
+    },
+    hints(footerEl) {
+      if (state.popupOpen) {
+        const inSub = state.popupLevel === 'sub';
+        const top = popupTop();
+        const back = inSub ? '« Back' : 'Close';
+        const confirm = (!inSub && top.sub) ? 'Enter' : 'Select';
+        setHints(footerEl, back, confirm, '', '');
+      } else {
+        setHints(footerEl, 'Menu', 'Select', 'Left', 'Right');
+      }
+    },
+    up() {
+      if (state.popupOpen) { popupMove(-1); return; }
+      const row = Math.floor(state.sel / COLS), col = state.sel % COLS;
+      if (row > 0) state.sel = (row - 1) * COLS + col;
+      else if (state.page > 0) { state.page--; state.sel = (ROWS - 1) * COLS + col; clampSel(); }
+      render();
+    },
+    down() {
+      if (state.popupOpen) { popupMove(1); return; }
+      const row = Math.floor(state.sel / COLS), col = state.sel % COLS;
+      if (row < ROWS - 1 && hasSlot((row + 1) * COLS + col)) state.sel = (row + 1) * COLS + col;
+      else if (state.page < state.totalPages - 1) { state.page++; state.sel = col; clampSel(); }
+      render();
+    },
+    left() {
+      if (state.popupOpen) return;                 // Left/Right are no-ops in popup
+      if (state.sel % COLS > 0) { state.sel--; render(); }
+    },
+    right() {
+      if (state.popupOpen) return;
+      if (state.sel % COLS < COLS - 1 && hasSlot(state.sel + 1)) { state.sel++; render(); }
+    },
+    confirm() {
+      if (state.popupOpen) { popupActivate(); return; }
+      const item = currentLibraryItem();
+      if (!item) return;
+      if (item.__back) { activateBack(); return; }
+      // Open a book per the Open-action setting (feature 4).
+      if (state.openAction === 'read') openReader(item);
+      else gotoDetails(item.id);
+    },
+    back() {
+      if (state.popupOpen) { popupBack(); return; }
+      openPopup();
+    },
   };
 
-  function compareBooks(a, b) {
-    const field = state.sortField;
-    const mult  = state.sortDir[field] === 'asc' ? 1 : -1;
-    switch (field) {
-      case 'recent':
-        return mult * (Number(a.dataset.recency) - Number(b.dataset.recency));
-      case 'title':
-        return mult * titleKey(a.dataset.title).localeCompare(titleKey(b.dataset.title));
-      case 'author':
-        return mult * authorKey(a.dataset.author).localeCompare(authorKey(b.dataset.author));
-      case 'progress':
-        return mult * (Number(a.dataset.progress) - Number(b.dataset.progress));
+  function pageSlice() {
+    return viewItems().slice(state.page * PAGE_SIZE, state.page * PAGE_SIZE + PAGE_SIZE);
+  }
+  function clampSel() {
+    const onPage = pageSlice();
+    while (state.sel > 0 && state.sel >= onPage.length) state.sel--;
+  }
+  function hasSlot(idx) { return idx < pageSlice().length; }
+  function currentLibraryItem() { return pageSlice()[state.sel] || null; }
+  function openReader(b) {
+    alert('▶ Opening reader:\n\n' + b.title + '\nby ' + b.author +
+          '\n\n(stub — would launch EpubReaderActivity)');
+  }
+
+  // ===== Popup menu engine =================================================
+  // Top-level menu definition. Each entry: {key, label, sub?:[{key,label,...}]}.
+  // Entries without `sub` are leaves: Collections opens its own full-screen
+  // list (better for scrolling many collections + surfacing "New Collection"),
+  // and Settings would push the main settings activity.
+  //
+  // NOTE: the Open-on-select behavior ("Book Details" vs "Read Book", default
+  // Book Details) is intentionally NOT here — it reads as a one-shot action in
+  // a menu, not a setting. It belongs in the main Settings activity (which this
+  // prototype doesn't model). state.openAction stands in for that setting.
+  function buildPopupModel() {
+    // Author views drop the "Author" sort option (everything shares one author).
+    const sortFields = state.view.kind === 'author'
+      ? SORT_ORDER.filter((f) => f !== 'author')
+      : SORT_ORDER;
+    const sortSub = sortFields.map((f) => ({
+      key: 'sort:' + f, label: SORT_LABELS_LONG[f], sortField: f,
+    }));
+    const filesSub = [
+      { key: 'files:browse', label: 'Browse' },
+      { key: 'files:transfer', label: 'Transfer' },
+    ];
+    const powerSub = [
+      { key: 'power:row', label: 'Next in Row', powerVal: 0 },
+      { key: 'power:book', label: 'Next Book', powerVal: 1 },
+    ];
+    return [
+      { key: 'sort', label: 'Sort', sub: sortSub },
+      { key: 'collections', label: 'Collections' },    // leaf -> Collections screen
+      { key: 'files', label: 'Files', sub: filesSub },
+      { key: 'power', label: 'Power Button', sub: powerSub },
+      { key: 'settings', label: 'Settings' },          // leaf
+    ];
+  }
+  let POPUP = buildPopupModel();
+  const powerSetting = { val: 0 };                     // 0 = Next in Row
+
+  const popupTop = () => POPUP[state.popupTopSel];
+  function popupSubItems() {
+    const t = POPUP.find((e) => e.key === state.popupSubKey);
+    return (t && t.sub) || [];
+  }
+  // Initial submenu cursor when entering — seat on the active option. (Sort's
+  // sub list can be filtered, so find the row by field rather than by index.)
+  function initialSubSel(topKey) {
+    if (topKey === 'sort') {
+      const idx = popupSubItems().findIndex((it) => it.sortField === currentSort().field);
+      return Math.max(0, idx);
     }
+    if (topKey === 'power') return powerSetting.val;
     return 0;
   }
 
-  // ----- Render ----------------------------------------------------------
-  function applySort() {
-    const shelf = $('#shelf');
-    const books = $$('.book', shelf);
-
-    // Sort the full set and reflect into DOM order.
-    books.sort(compareBooks);
-    for (const b of books) shelf.appendChild(b);
-
-    // Paginate: only the current page's 9 books are visible to the grid.
-    state.totalPages = Math.max(1, Math.ceil(books.length / PAGE_SIZE));
-    if (state.libraryPage > state.totalPages) state.libraryPage = state.totalPages;
-
-    books.forEach((b, i) => {
-      const page = Math.floor(i / PAGE_SIZE) + 1;
-      b.classList.toggle('page-hidden', page !== state.libraryPage);
-    });
-
-    const onPage = books.slice(
-      (state.libraryPage - 1) * PAGE_SIZE,
-      state.libraryPage * PAGE_SIZE,
-    );
-    if (state.librarySelected >= onPage.length) {
-      state.librarySelected = Math.max(0, onPage.length - 1);
+  function openPopup() {
+    POPUP = buildPopupModel();                         // refresh manual collections
+    state.popupOpen = true;
+    state.popupLevel = 'top';
+    state.popupTopSel = 0;
+    state.popupSubKey = null;
+    render();
+  }
+  function closePopup() { state.popupOpen = false; render(); }
+  function popupMove(delta) {
+    if (state.popupLevel === 'top') {
+      state.popupTopSel = clamp(state.popupTopSel + delta, 0, POPUP.length - 1);
+    } else {
+      state.popupSubSel = clamp(state.popupSubSel + delta, 0, popupSubItems().length - 1);
     }
-
-    return { onPage };
+    render();
   }
-
-  function updateHeader() {
-    $('#page-title').innerHTML = 'Library<span class="accent">.</span>';
-    const label = SORT_LABELS_LONG[state.sortField];
-    const arrow = state.sortDir[state.sortField] === 'asc' ? '↑' : '↓';
-    $('#page-subtitle').innerHTML =
-      `Sorted by ${label} ${arrow}` +
-      ` <span class="sep">·</span> ${state.libraryPage} / ${state.totalPages}`;
+  function popupBack() {
+    if (state.popupLevel === 'sub') { state.popupLevel = 'top'; state.popupSubKey = null; render(); }
+    else closePopup();
   }
-
-  function updateRail() {
-    const rail  = $('#rail');
-    const count = $('#page-count');
-
-    // Hide rail when there's only one page (nothing to indicate).
-    rail.hidden = state.totalPages <= 1;
-
-    // Rebuild ticks each render — total page count is dynamic.
-    $$('.rail .tick').forEach((t) => t.remove());
-    for (let i = 1; i <= state.totalPages; i++) {
-      const tick = document.createElement('span');
-      tick.className = 'tick' + (i === state.libraryPage ? ' current' : '');
-      rail.insertBefore(tick, count);
+  function popupActivate() {
+    if (state.popupLevel === 'top') {
+      const t = popupTop();
+      if (t.sub) {
+        state.popupLevel = 'sub';
+        state.popupSubKey = t.key;
+        state.popupSubSel = initialSubSel(t.key);
+        render();
+      } else {
+        leafAction(t.key);
+      }
+      return;
     }
-    count.textContent = `${state.libraryPage} / ${state.totalPages}`;
+    // Submenu item activated.
+    subItemAction(popupSubItems()[state.popupSubSel]);
   }
 
-  function updateBookSelection(onPage) {
-    $$('.book').forEach((b) => b.classList.remove('selected'));
-    if (state.popupOpen) return;            // hide tile selection while popup is open
-    const target = onPage[state.librarySelected];
-    if (target) target.classList.add('selected');
+  function leafAction(key) {
+    if (key === 'collections') {
+      state.popupOpen = false;           // hand off to the Collections screen
+      state.col.sel = 0;
+      goScreen('collections');
+      return;
+    }
+    if (key === 'settings') {
+      alert('⚙ Settings\n\n(stub — would push SettingsActivity)');
+      closePopup();
+    }
+  }
+  function subItemAction(item) {
+    if (!item) return;
+    const [group] = item.key.split(':');
+    if (group === 'sort') {
+      const f = item.sortField;
+      const s = currentSort();           // per-view sort — saved against this view
+      if (s.field === f) {
+        s.dir[f] = s.dir[f] === 'asc' ? 'desc' : 'asc';
+      } else {
+        s.field = f;
+      }
+      state.page = 0; state.sel = 0;
+      render();                          // stay in submenu (like the C++ which re-sorts live)
+      return;
+    }
+    if (group === 'power') {
+      powerSetting.val = item.powerVal;
+      closePopup();
+      return;
+    }
+    if (group === 'files') {
+      alert((item.key === 'files:browse' ? '📂 Browse Files' : '⇅ Transfer') +
+            '\n\n(stub — would push the corresponding activity)');
+      closePopup();
+      return;
+    }
   }
 
-  function updatePopup() {
-    $('#popup').hidden = !state.popupOpen;
+  function resetLibraryView() { state.page = 0; state.sel = 0; }
+
+  function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
+
+  // ===== Popup rendering ===================================================
+  function renderPopup() {
+    const host = $('#popup');
+    host.hidden = !state.popupOpen;
     if (!state.popupOpen) return;
 
-    // Show only the panel(s) for the current depth.
-    $$('.popup-list').forEach((list) => {
-      const level = list.dataset.level;
-      if (level === 'top') {
-        list.hidden = false;
-      } else {
-        list.hidden = state.popupLevel !== level;
-      }
+    // Top panel.
+    const topEl = $('#popup-top');
+    topEl.innerHTML = '';
+    POPUP.forEach((e, i) => {
+      const li = document.createElement('li');
+      li.className = 'popup-item';
+      const ownsOpenSub = state.popupLevel === 'sub' && state.popupSubKey === e.key;
+      if (state.popupLevel === 'top' && i === state.popupTopSel) li.classList.add('selected');
+      if (ownsOpenSub) li.classList.add('muted');
+      let html = `<span class="popup-label">${e.label}</span>`;
+      if (e.sub) html += '<span class="popup-chev">▸</span>';
+      li.innerHTML = html;
+      li.dataset.idx = i;
+      topEl.appendChild(li);
     });
 
-    // Refresh sort hint on the top-level Sort row.
-    const arrow = state.sortDir[state.sortField] === 'asc' ? '↑' : '↓';
-    $('#sort-hint').textContent = `${SORT_LABELS_SHORT[state.sortField]} ${arrow}`;
-
-    // Refresh direction arrows in the sort submenu (only the active row shows one).
-    $$('.popup-list[data-level="sort"] .popup-item').forEach((item) => {
-      const isActive = item.dataset.sort === state.sortField;
-      const dirSpan  = $('.popup-dir', item);
-      if (isActive) {
-        dirSpan.classList.remove('inactive');
-        dirSpan.textContent = state.sortDir[state.sortField] === 'asc' ? '↑' : '↓';
-      } else {
-        dirSpan.classList.add('inactive');
-      }
-    });
-
-    // Apply the selection highlight to the active panel only.
-    $$('.popup-item').forEach((item) => item.classList.remove('selected'));
-    const activeList = $(`.popup-list[data-level="${state.popupLevel}"]`);
-    const items      = $$('.popup-item', activeList);
-    const sel        = state.popupSel[state.popupLevel];
-    if (items[sel]) items[sel].classList.add('selected');
-  }
-
-  function updateFooter() {
-    const menu   = $('#btn-menu');
-    const select = $('#btn-select');
-    const left   = $('#btn-left');
-    const right  = $('#btn-right');
-
-    if (state.popupOpen) {
-      menu.textContent   = 'Close';
-      select.textContent = 'Select';
-      left.textContent   = 'Back';
-      right.textContent  = 'Enter';
-
-      const topItem = currentTopKey();
-      const hasSub  = topItem === 'sort' || topItem === 'files';
-      const inSub   = state.popupLevel !== 'top';
-
-      // Dim hints that won't do anything from the current depth.
-      left.classList.toggle('dimmed',  !inSub);
-      right.classList.toggle('dimmed', inSub || !hasSub);
+    // Submenu panel.
+    const subEl = $('#popup-sub');
+    if (state.popupLevel !== 'sub') {
+      subEl.hidden = true;
     } else {
-      menu.textContent   = 'Menu';
-      select.textContent = 'Select';
-      left.textContent   = 'Left';
-      right.textContent  = 'Right';
-      left.classList.remove('dimmed');
-      right.classList.remove('dimmed');
+      subEl.hidden = false;
+      subEl.classList.toggle('scrolling', popupSubItems().length > 6);
+      subEl.innerHTML = '';
+      popupSubItems().forEach((it, i) => {
+        const li = document.createElement('li');
+        li.className = 'popup-item';
+        if (i === state.popupSubSel) li.classList.add('selected');
+        let dir = '';
+        if (state.popupSubKey === 'sort') {
+          const s = currentSort();
+          const active = it.sortField === s.field;
+          const arrow = s.dir[s.field] === 'asc' ? '↑' : '↓';
+          dir = `<span class="popup-dir${active ? '' : ' inactive'}">${active ? arrow : '↑'}</span>`;
+        }
+        li.innerHTML = `<span class="popup-label">${it.label}</span>${dir}` +
+                       (it.chev ? '<span class="popup-chev">▸</span>' : '');
+        li.dataset.idx = i;
+        subEl.appendChild(li);
+      });
     }
   }
 
-  function render() {
-    const { onPage } = applySort();
-    updateHeader();
-    updateRail();
-    updateBookSelection(onPage);
-    updatePopup();
-    updateFooter();
+  // ===== GROUP LIST (By Series / By Author / By Genre) =====================
+  const GROUP_FIELD = { series: 'series', author: 'author', genre: 'genre' };
+  const GROUP_TITLE = { series: 'By Series', author: 'By Author', genre: 'By Genre' };
+  const GROUP_NOTE = {
+    series: 'Auto-grouped from series metadata.',
+    author: 'Auto-grouped by author.',
+    genre: 'Auto-grouped by genre.',
+  };
+  function gotoGroupList(mode) {
+    state.popupOpen = false;
+    state.gl.mode = mode;
+    state.gl.sel = 0; state.gl.top = 0;
+    const field = GROUP_FIELD[mode];
+    const map = new Map();
+    books.forEach((b) => {
+      const key = b[field];
+      if (!key) return;                                   // skip books missing this field
+      map.set(key, (map.get(key) || 0) + 1);
+    });
+    state.gl.items = Array.from(map.entries())
+      .map(([name, count]) => ({ name, count }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+    goScreen('grouplist');
   }
+  Screens.grouplist = {
+    render() {
+      $('#gl-title').textContent = GROUP_TITLE[state.gl.mode];
+      $('#gl-subtitle').textContent = `${state.gl.items.length} groups`;
+      $('#gl-note').textContent = GROUP_NOTE[state.gl.mode];
+      const wrap = $('#gl-rows');
+      wrap.innerHTML = '';
+      state.gl.items.forEach((g, i) => {
+        const row = document.createElement('div');
+        row.className = 'row' + (i === state.gl.sel ? ' selected' : '');
+        row.innerHTML = `<span class="row-label">${g.name}</span>` +
+                        `<span class="row-meta">${g.count} book${g.count === 1 ? '' : 's'}</span>`;
+        row.dataset.idx = i;
+        wrap.appendChild(row);
+      });
+    },
+    hints(f) { setHints(f, '« Back', 'Select', '', ''); },
+    up()   { state.gl.sel = clamp(state.gl.sel - 1, 0, state.gl.items.length - 1); render(); },
+    down() { state.gl.sel = clamp(state.gl.sel + 1, 0, state.gl.items.length - 1); render(); },
+    left() {}, right() {},
+    confirm() {
+      const g = state.gl.items[state.gl.sel];
+      if (!g) return;
+      state.view = { kind: state.gl.mode, name: g.name };   // 'series' | 'author' | 'genre'
+      resetLibraryView();
+      goScreen('library');
+    },
+    back() { goScreen('collections'); },     // group lists are reached from Collections
+  };
 
-  // ----- Helpers ---------------------------------------------------------
-  function currentTopKey() {
-    return SORT_ORDER /* unused */ && (() => {
-      const items = $$('.popup-list[data-level="top"] .popup-item');
-      return items[state.popupSel.top]?.dataset.key || null;
-    })();
+  // ===== COLLECTIONS screen ================================================
+  // Dedicated full-screen list (instead of a popup submenu). Two sections:
+  //   1. auto groups — By Series / By Author / By Genre
+  //   2. "Your collections" — New Collection… then the user's custom collections
+  // New Collection lives in section 2 because it creates an entry there. No
+  // "All Books" row — that's the default view, reachable via the shelf's back
+  // tile. Scrolls gracefully when there are many collections.
+  function collectionRows() {
+    const groups = [
+      { kind: 'group', key: 'series', label: 'By Series', meta: '▸' },
+      { kind: 'group', key: 'author', label: 'By Author', meta: '▸' },
+      { kind: 'group', key: 'genre',  label: 'By Genre',  meta: '▸' },
+    ];
+    const customs = [
+      { kind: 'new', key: 'new', label: 'New Collection…' },
+      ...collections.map((c) => ({
+        kind: 'collection', key: c.id, id: c.id, label: c.name,
+        meta: c.members.size + (c.members.size === 1 ? ' book' : ' books'),
+        active: state.view.kind === 'collection' && state.view.id === c.id,
+      })),
+    ];
+    return { groups, customs, all: groups.concat(customs) };
   }
+  Screens.collections = {
+    render() {
+      const { groups, all } = collectionRows();
+      $('#col-subtitle').textContent =
+        collections.length + (collections.length === 1 ? ' collection' : ' collections');
+      const wrap = $('#col-rows');
+      wrap.innerHTML = '';
+      all.forEach((r, i) => {
+        // Gap + label before the "Your collections" section.
+        if (i === groups.length) {
+          const lbl = document.createElement('div');
+          lbl.className = 'listnote section-gap';
+          lbl.textContent = 'Your collections';
+          wrap.appendChild(lbl);
+        }
+        const row = document.createElement('div');
+        row.className = 'row' + (i === state.col.sel ? ' selected' : '') +
+                        (r.kind === 'new' ? ' action' : '');
+        const check = r.active ? '<span class="row-check">✓</span>' : '';
+        row.innerHTML = check + `<span class="row-label">${r.label}</span>` +
+                        (r.meta ? `<span class="row-meta">${r.meta}</span>` : '');
+        row.dataset.idx = i;
+        wrap.appendChild(row);
+      });
+    },
+    hints(f) { setHints(f, '« Back', 'Select', '', ''); },
+    up()   { state.col.sel = clamp(state.col.sel - 1, 0, collectionRows().all.length - 1); render(); },
+    down() { state.col.sel = clamp(state.col.sel + 1, 0, collectionRows().all.length - 1); render(); },
+    left() {}, right() {},
+    confirm() {
+      const r = collectionRows().all[state.col.sel];
+      if (!r) return;
+      if (r.kind === 'group') gotoGroupList(r.key);
+      else if (r.kind === 'new') startNewCollection('collections');
+      else {
+        state.view = { kind: 'collection', id: r.id };
+        resetLibraryView();
+        goScreen('library');
+      }
+    },
+    back() { goScreen('library'); },
+  };
 
-  function currentPanelItems() {
-    return $$(`.popup-list[data-level="${state.popupLevel}"] .popup-item`);
+  // ===== BOOK DETAILS (feature 3) ==========================================
+  function gotoDetails(bookId) {
+    state.popupOpen = false;
+    state.det.bookId = bookId;
+    state.det.sel = 0;
+    goScreen('details');
   }
-
-  // Sort field's index inside the sort submenu (used to seat the cursor on
-  // the currently active field when the user enters that panel).
-  function sortFieldIndex(field) {
-    return Math.max(0, SORT_ORDER.indexOf(field));
-  }
-
-  // ----- Actions ---------------------------------------------------------
-  function moveUp() {
-    if (state.popupOpen) {
-      state.popupSel[state.popupLevel] = Math.max(0, state.popupSel[state.popupLevel] - 1);
-      return render();
+  function detailActions() {
+    const acts = [{ key: 'read', label: 'Read' },
+                  { key: 'edit', label: 'Edit Metadata' },
+                  { key: 'add', label: 'Add to Collection' }];
+    // Offer removal when browsing inside a manual collection.
+    if (state.view.kind === 'collection') {
+      const col = collections.find((c) => c.id === state.view.id);
+      if (col && col.members.has(state.det.bookId)) {
+        acts.push({ key: 'remove', label: 'Remove from “' + col.name + '”' });
+      }
     }
-    // Library — same row/column page-back behaviour as before.
-    const idx = state.librarySelected;
-    const row = Math.floor(idx / COLS);
-    const col = idx % COLS;
-    if (row > 0) {
-      state.librarySelected = (row - 1) * COLS + col;
-    } else if (state.libraryPage > 1) {
-      state.libraryPage -= 1;
-      state.librarySelected = (ROWS - 1) * COLS + col;
-    }
-    render();
+    return acts;
   }
+  Screens.details = {
+    render() {
+      const b = bookById(state.det.bookId);
+      if (!b) return;
+      $('#det-cover').innerHTML = coverMarkup(b);
+      // The inner .cover is sized for tiles; let it fill the larger frame.
+      const c = $('#det-cover .cover');
+      if (c) { c.style.height = '100%'; c.style.aspectRatio = 'auto'; c.style.width = '100%';
+               c.style.boxShadow = 'none'; c.style.border = 'none'; }
+      $('#det-title').textContent = b.title;
+      $('#det-author').textContent = b.author ? 'by ' + b.author : '—';
+      $('#det-series').innerHTML = b.series
+        ? `<span class="k">Series</span>${b.series} #${b.seriesIndex}` : '';
+      $('#det-series').style.display = b.series ? '' : 'none';
 
-  function moveDown() {
-    if (state.popupOpen) {
-      const max = currentPanelItems().length - 1;
-      state.popupSel[state.popupLevel] = Math.min(max, state.popupSel[state.popupLevel] + 1);
-      return render();
-    }
-    const idx = state.librarySelected;
-    const row = Math.floor(idx / COLS);
-    const col = idx % COLS;
-    if (row < ROWS - 1) {
-      state.librarySelected = (row + 1) * COLS + col;
-    } else if (state.libraryPage < state.totalPages) {
-      state.libraryPage += 1;
-      state.librarySelected = col;
-    }
-    render();
-  }
+      const lbl = $('#det-progress-label'), pct = $('#det-progress-pct'), bar = $('#det-progress');
+      if (b.progress < 0) { lbl.textContent = 'Status'; pct.textContent = 'Unread'; bar.hidden = true; }
+      else if (b.progress >= 100) { lbl.textContent = 'Status'; pct.textContent = 'Finished'; bar.hidden = true; }
+      else {
+        lbl.textContent = 'Progress'; pct.textContent = b.progress + '%';
+        bar.hidden = false; $('i', bar).style.width = b.progress + '%';
+      }
 
-  function moveLeft() {
-    if (state.popupOpen) {
-      // Back out one level. From the top, Left is a no-op (use Menu/Close to dismiss).
-      if (state.popupLevel !== 'top') {
-        state.popupLevel = 'top';
+      const member = collections.filter((c) => c.members.has(b.id)).map((c) => c.name);
+      const colEl = $('#det-collections');
+      colEl.innerHTML = member.length ? `<span class="k">In</span>${member.join(', ')}` : '';
+      colEl.style.display = member.length ? '' : 'none';
+
+      $('#det-file').textContent = b.file;
+
+      const desc = $('#det-desc');
+      if (b.desc) {
+        desc.style.display = '';
+        const txt = $('#det-desc-text');
+        txt.textContent = b.desc;
+        // Clamp to the lines that fit, with a hard "…" on the last line. Defer
+        // to the next frame — the view may still be hidden this tick, so the box
+        // height isn't known yet.
+        txt.style.webkitLineClamp = '';
+        requestAnimationFrame(() => {
+          const lh = parseFloat(getComputedStyle(txt).lineHeight) || 19;
+          txt.style.webkitLineClamp = String(Math.max(1, Math.floor(txt.clientHeight / lh)));
+        });
+      } else {
+        desc.style.display = 'none';
+      }
+
+      const acts = detailActions();
+      const wrap = $('#det-actions');
+      wrap.innerHTML = '';
+      acts.forEach((a, i) => {
+        const row = document.createElement('div');
+        row.className = 'row action' + (i === state.det.sel ? ' selected' : '');
+        row.innerHTML = `<span class="row-label">${a.label}</span><span class="row-meta">▸</span>`;
+        row.dataset.idx = i;
+        wrap.appendChild(row);
+      });
+    },
+    hints(f) { setHints(f, '« Back', 'Select', '', ''); },
+    up()   { state.det.sel = clamp(state.det.sel - 1, 0, detailActions().length - 1); render(); },
+    down() { state.det.sel = clamp(state.det.sel + 1, 0, detailActions().length - 1); render(); },
+    left() {}, right() {},
+    confirm() {
+      const a = detailActions()[state.det.sel];
+      const b = bookById(state.det.bookId);
+      if (!a || !b) return;
+      if (a.key === 'read') openReader(b);
+      else if (a.key === 'edit') gotoMetadata(b.id);
+      else if (a.key === 'add') gotoPicker(b.id);
+      else if (a.key === 'remove') {
+        const col = collections.find((c) => c.id === state.view.id);
+        if (col) col.members.delete(b.id);
+        state.det.sel = 0;
         render();
       }
-      return;
-    }
-    const col = state.librarySelected % COLS;
-    if (col > 0) {
-      state.librarySelected -= 1;
-      render();
-    }
-  }
+    },
+    back() { goScreen('library'); },
+  };
 
-  function moveRight() {
-    if (state.popupOpen) {
-      // Enter the submenu for the highlighted top-level item.
-      if (state.popupLevel === 'top') {
-        const key = currentTopKey();
-        if (key === 'sort') {
-          state.popupLevel       = 'sort';
-          state.popupSel.sort    = sortFieldIndex(state.sortField);
-          render();
-        } else if (key === 'files') {
-          state.popupLevel       = 'files';
-          state.popupSel.files   = 0;
-          render();
+  // ===== EDIT METADATA (feature 2) =========================================
+  function gotoMetadata(bookId) {
+    const b = bookById(bookId);
+    state.meta.bookId = bookId;
+    state.meta.sel = 0;
+    state.meta.draft = { title: b.title, author: b.author, series: b.series,
+                         seriesIndex: b.seriesIndex };
+    goScreen('metadata');
+  }
+  function metaRows() {
+    const d = state.meta.draft;
+    return [
+      { key: 'title',  label: 'Title',     value: d.title,  kind: 'text' },
+      { key: 'author', label: 'Author',    value: d.author, kind: 'text' },
+      { key: 'series', label: 'Series',    value: d.series || '(none)', kind: 'text' },
+      { key: 'seriesIndex', label: 'Series #', value: String(d.seriesIndex || 0), kind: 'num' },
+      { key: 'save',   label: 'Save changes', kind: 'commit' },
+      { key: 'cancel', label: 'Cancel',       kind: 'commit' },
+    ];
+  }
+  Screens.metadata = {
+    render() {
+      const b = bookById(state.meta.bookId);
+      $('#meta-subtitle').textContent = b ? b.title : '';
+      const wrap = $('#meta-rows');
+      wrap.innerHTML = '';
+      metaRows().forEach((r, i) => {
+        const row = document.createElement('div');
+        row.className = 'row' + (i === state.meta.sel ? ' selected' : '') +
+                        (r.kind === 'commit' ? ' action' : '');
+        if (r.kind === 'commit') {
+          row.innerHTML = `<span class="row-label">${r.label}</span>`;
+        } else {
+          row.innerHTML = `<span class="row-label">${r.label}</span>` +
+                          `<span class="row-meta">${r.value}</span>`;
         }
+        row.dataset.idx = i;
+        wrap.appendChild(row);
+      });
+    },
+    hints(f) { setHints(f, '« Cancel', 'Edit', '', ''); },
+    up()   { state.meta.sel = clamp(state.meta.sel - 1, 0, metaRows().length - 1); render(); },
+    down() { state.meta.sel = clamp(state.meta.sel + 1, 0, metaRows().length - 1); render(); },
+    left() {}, right() {},
+    confirm() {
+      const r = metaRows()[state.meta.sel];
+      const d = state.meta.draft;
+      if (r.kind === 'commit') {
+        if (r.key === 'save') {
+          const b = bookById(state.meta.bookId);
+          b.title = d.title; b.author = d.author;
+          b.series = d.series === '(none)' ? '' : d.series;
+          b.seriesIndex = parseInt(d.seriesIndex, 10) || 0;
+        }
+        gotoDetails(state.meta.bookId);
+        return;
       }
-      return;
-    }
-    const col = state.librarySelected % COLS;
-    if (col < COLS - 1) {
-      state.librarySelected += 1;
+      if (r.kind === 'num') {
+        // Simple numeric stepper via keyboard (digits only).
+        openKeyboard({
+          title: 'Series Number', prompt: 'Edit “' + r.label + '”',
+          value: String(d.seriesIndex || ''), numeric: true, back: 'metadata',
+          onDone: (v) => { d.seriesIndex = parseInt(v, 10) || 0; },
+        });
+        return;
+      }
+      openKeyboard({
+        title: 'Edit ' + r.label, prompt: 'Edit “' + r.label + '”',
+        value: r.value === '(none)' ? '' : r.value, back: 'metadata',
+        onDone: (v) => { d[r.key] = v; },
+      });
+    },
+    back() { gotoDetails(state.meta.bookId); },
+  };
+
+  // ===== ADD TO COLLECTION (picker) ========================================
+  function gotoPicker(bookId) {
+    state.pick.bookId = bookId;
+    state.pick.sel = 0;
+    goScreen('picker');
+  }
+  function pickRows() {
+    return [
+      ...collections.map((c) => ({ key: c.id, label: c.name,
+        member: c.members.has(state.pick.bookId) })),
+      { key: '__new', label: 'New Collection…', isNew: true },
+    ];
+  }
+  Screens.picker = {
+    render() {
+      const b = bookById(state.pick.bookId);
+      $('#pick-subtitle').textContent = b ? b.title : '';
+      const wrap = $('#pick-rows');
+      wrap.innerHTML = '';
+      pickRows().forEach((r, i) => {
+        const row = document.createElement('div');
+        row.className = 'row' + (i === state.pick.sel ? ' selected' : '') + (r.isNew ? ' action' : '');
+        const check = r.isNew ? '' : `<span class="row-check">${r.member ? '✓' : ''}</span>`;
+        row.innerHTML = `${check}<span class="row-label">${r.label}</span>`;
+        row.dataset.idx = i;
+        wrap.appendChild(row);
+      });
+    },
+    hints(f) { setHints(f, '« Back', 'Toggle', '', ''); },
+    up()   { state.pick.sel = clamp(state.pick.sel - 1, 0, pickRows().length - 1); render(); },
+    down() { state.pick.sel = clamp(state.pick.sel + 1, 0, pickRows().length - 1); render(); },
+    left() {}, right() {},
+    confirm() {
+      const r = pickRows()[state.pick.sel];
+      if (!r) return;
+      if (r.isNew) { startNewCollection('picker'); return; }
+      const col = collections.find((c) => c.id === r.key);
+      if (col) {
+        if (col.members.has(state.pick.bookId)) col.members.delete(state.pick.bookId);
+        else col.members.add(state.pick.bookId);
+      }
       render();
-    }
+    },
+    back() { gotoDetails(state.pick.bookId); },
+  };
+
+  // Create a manual collection (keyboard-named). Origin controls post-create.
+  // origin is the screen to return to: 'picker' (adds the current book to the
+  // new collection) or 'collections' (just adds it to the list).
+  function startNewCollection(origin) {
+    openKeyboard({
+      title: 'New Collection', prompt: 'Name this collection', value: '', back: origin,
+      onDone: (name) => {
+        const trimmed = name.trim();
+        if (!trimmed) return;
+        const col = { id: 'c' + (collectionSeq++), name: trimmed, members: new Set() };
+        collections.push(col);
+        if (origin === 'picker' && state.pick.bookId != null) col.members.add(state.pick.bookId);
+      },
+    });
   }
 
-  function doSelect() {
-    if (!state.popupOpen) {
-      // Selecting a book is a no-op in this prototype.
+  // ===== KEYBOARD ==========================================================
+  const KB_ROWS_ALPHA = [
+    ['q','w','e','r','t','y','u','i','o','p'],
+    ['a','s','d','f','g','h','j','k','l'],
+    ['⇧','z','x','c','v','b','n','m','⌫'],
+    ['123',' ','Done'],
+  ];
+  const KB_ROWS_NUM = [
+    ['1','2','3','4','5','6','7','8','9','0'],
+    ['ABC','⌫','Done'],
+  ];
+  function kbRows() { return state.kb.numeric ? KB_ROWS_NUM : KB_ROWS_ALPHA; }
+
+  function openKeyboard(opts) {
+    state.kb = {
+      title: opts.title || 'Enter Text',
+      prompt: opts.prompt || '',
+      value: opts.value || '',
+      numeric: !!opts.numeric,
+      shift: !opts.value,                 // start capitalized for empty fields
+      r: 0, c: 0,
+      onDone: opts.onDone || null,
+      back: opts.back || 'library',
+    };
+    goScreen('keyboard');
+  }
+  function kbKeyAt(r, c) {
+    const rows = kbRows();
+    const row = rows[clamp(r, 0, rows.length - 1)];
+    return row[clamp(c, 0, row.length - 1)];
+  }
+  Screens.keyboard = {
+    render() {
+      $('#kb-title').textContent = state.kb.title;
+      $('#kb-prompt').textContent = state.kb.prompt;
+      $('#kb-text').textContent = state.kb.value;
+      const wrap = $('#kb-keys');
+      wrap.innerHTML = '';
+      kbRows().forEach((row, r) => {
+        const rowEl = document.createElement('div');
+        rowEl.className = 'kb-row';
+        row.forEach((k, c) => {
+          const key = document.createElement('div');
+          const wide = (k === ' ' || k === 'Done');
+          key.className = 'key' + (wide ? ' wide' : '') +
+            (r === state.kb.r && c === state.kb.c ? ' selected' : '');
+          let label = k;
+          if (k === ' ') label = 'space';
+          else if (k.length === 1 && /[a-z]/.test(k)) label = state.kb.shift ? k.toUpperCase() : k;
+          key.textContent = label;
+          key.dataset.r = r; key.dataset.c = c;
+          rowEl.appendChild(key);
+        });
+        wrap.appendChild(rowEl);
+      });
+    },
+    hints(f) { setHints(f, '« Cancel', 'Type', '', ''); },
+    up()    { state.kb.r = clamp(state.kb.r - 1, 0, kbRows().length - 1);
+              state.kb.c = clamp(state.kb.c, 0, kbRows()[state.kb.r].length - 1); render(); },
+    down()  { state.kb.r = clamp(state.kb.r + 1, 0, kbRows().length - 1);
+              state.kb.c = clamp(state.kb.c, 0, kbRows()[state.kb.r].length - 1); render(); },
+    left()  { state.kb.c = clamp(state.kb.c - 1, 0, kbRows()[state.kb.r].length - 1); render(); },
+    right() { state.kb.c = clamp(state.kb.c + 1, 0, kbRows()[state.kb.r].length - 1); render(); },
+    confirm() { kbType(kbKeyAt(state.kb.r, state.kb.c)); },
+    back() { goScreen(state.kb.back); },        // cancel — discard input
+  };
+  function kbType(k) {
+    if (k === 'Done') {
+      if (state.kb.onDone) state.kb.onDone(state.kb.value);
+      goScreen(state.kb.back);
       return;
     }
-    if (state.popupLevel === 'top') {
-      const key = currentTopKey();
-      if (key === 'sort') {
-        state.popupLevel    = 'sort';
-        state.popupSel.sort = sortFieldIndex(state.sortField);
-      } else if (key === 'files') {
-        state.popupLevel     = 'files';
-        state.popupSel.files = 0;
-      } else if (key === 'settings') {
-        // Leaf action — placeholder.
-        state.popupOpen = false;
-      }
-      return render();
-    }
-    if (state.popupLevel === 'sort') {
-      const items = $$('.popup-list[data-level="sort"] .popup-item');
-      const sel   = items[state.popupSel.sort];
-      const field = sel?.dataset.sort;
-      if (!field) return;
-      if (state.sortField === field) {
-        // Already active — toggle direction.
-        state.sortDir[field] = state.sortDir[field] === 'asc' ? 'desc' : 'asc';
-      } else {
-        // Promote — keep the field's last-used direction (defaults from state.sortDir).
-        state.sortField = field;
-      }
-      state.libraryPage = 1;
-      return render();
-    }
-    if (state.popupLevel === 'files') {
-      // Leaf action — close popup. (Browse / Transfer are placeholders.)
-      state.popupOpen = false;
-      return render();
-    }
-  }
-
-  // Menu button: open/close popup.
-  function toggleMenu() {
-    state.popupOpen = !state.popupOpen;
-    if (state.popupOpen) {
-      state.popupLevel = 'top';
-      state.popupSel   = { top: 0, sort: 0, files: 0 };
-    }
+    if (k === '⌫') { state.kb.value = state.kb.value.slice(0, -1); render(); return; }
+    if (k === '⇧') { state.kb.shift = !state.kb.shift; render(); return; }
+    if (k === '123') { state.kb.numeric = true; state.kb.r = 0; state.kb.c = 0; render(); return; }
+    if (k === 'ABC') { state.kb.numeric = false; state.kb.r = 0; state.kb.c = 0; render(); return; }
+    let ch = k;
+    if (k === ' ') ch = ' ';
+    else if (k.length === 1 && /[a-z]/.test(k) && state.kb.shift) ch = k.toUpperCase();
+    state.kb.value += ch;
+    if (state.kb.shift && k !== ' ') state.kb.shift = false;   // one-shot shift
     render();
   }
 
-  // ----- Input wiring ----------------------------------------------------
+  // ===== Router ============================================================
+  function goScreen(name) { state.screen = name; render(); }
+  function currentController() { return Screens[state.screen]; }
+
+  function render() {
+    // Toggle view visibility.
+    $$('.view').forEach((v) => { v.hidden = ('view-' + state.screen) !== v.id; });
+    const ctrl = currentController();
+    ctrl.render();
+    const footer = $(`#view-${state.screen} .footer`);
+    if (footer) ctrl.hints(footer);
+  }
+
+  // ===== Input wiring ======================================================
   document.addEventListener('keydown', (e) => {
+    const ctrl = currentController();
     let handled = true;
     switch (e.key) {
-      case 'ArrowUp':    moveUp();    break;
-      case 'ArrowDown':  moveDown();  break;
-      case 'ArrowLeft':  moveLeft();  break;
-      case 'ArrowRight': moveRight(); break;
+      case 'ArrowUp':    ctrl.up();    break;
+      case 'ArrowDown':  ctrl.down();  break;
+      case 'ArrowLeft':  ctrl.left();  break;
+      case 'ArrowRight': ctrl.right(); break;
       case 'Enter':
-      case ' ':          doSelect();  break;
+      case ' ':          ctrl.confirm(); break;
       case 'Escape':
-        if (state.popupOpen) toggleMenu();
-        else handled = false;
-        break;
+      case 'Backspace':  ctrl.back();  break;
       default: handled = false;
     }
     if (handled) e.preventDefault();
   });
 
-  // Footer buttons mirror the physical inputs.
-  $('#btn-menu').addEventListener('click',   toggleMenu);
-  $('#btn-select').addEventListener('click', doSelect);
-  $('#btn-left').addEventListener('click',   moveLeft);
-  $('#btn-right').addEventListener('click',  moveRight);
+  // Footer buttons mirror the front physical inputs. Slots: 0..3.
+  // Library closed: Menu/Select/Left/Right. Other screens: Back/Select/(unused).
+  $('#screen').addEventListener('click', (e) => {
+    const btn = e.target.closest('.btn');
+    if (!btn || btn.classList.contains('hidden')) return;
+    const slot = Number(btn.dataset.slot);
+    const ctrl = currentController();
+    if (state.screen === 'library' && !state.popupOpen) {
+      // Menu / Select / Left / Right
+      [() => ctrl.back(), () => ctrl.confirm(), () => ctrl.left(), () => ctrl.right()][slot]();
+    } else {
+      // Slot 0 = Back, slot 1 = Select/confirm.
+      if (slot === 0) ctrl.back();
+      else if (slot === 1) ctrl.confirm();
+    }
+    btn.blur();
+  });
 
-  // Clicking a footer button steals focus from the page; restore it so
-  // arrow keys keep working without the user having to click elsewhere.
-  $$('.btn').forEach((btn) => btn.addEventListener('mouseup', () => btn.blur()));
+  // Clicking a popup/list/key row selects + activates it (mouse affordance).
+  $('#popup-top').addEventListener('click', (e) => {
+    const li = e.target.closest('.popup-item'); if (!li) return;
+    state.popupLevel = 'top'; state.popupSubKey = null;
+    state.popupTopSel = Number(li.dataset.idx); popupActivate();
+  });
+  $('#popup-sub').addEventListener('click', (e) => {
+    const li = e.target.closest('.popup-item'); if (!li) return;
+    state.popupSubSel = Number(li.dataset.idx); popupActivate();
+  });
+  $('#gl-rows').addEventListener('click', rowClick((i) => { state.gl.sel = i; Screens.grouplist.confirm(); }));
+  $('#col-rows').addEventListener('click', rowClick((i) => { state.col.sel = i; Screens.collections.confirm(); }));
+  $('#det-actions').addEventListener('click', rowClick((i) => { state.det.sel = i; Screens.details.confirm(); }));
+  $('#meta-rows').addEventListener('click', rowClick((i) => { state.meta.sel = i; Screens.metadata.confirm(); }));
+  $('#pick-rows').addEventListener('click', rowClick((i) => { state.pick.sel = i; Screens.picker.confirm(); }));
+  $('#kb-keys').addEventListener('click', (e) => {
+    const key = e.target.closest('.key'); if (!key) return;
+    state.kb.r = Number(key.dataset.r); state.kb.c = Number(key.dataset.c);
+    Screens.keyboard.confirm();
+  });
+  // Clicking a book tile selects it; second click opens (per Open setting).
+  $('#shelf').addEventListener('click', (e) => {
+    if (state.popupOpen) return;
+    const cells = $$('#shelf .cell');
+    const cell = e.target.closest('.cell'); if (!cell) return;
+    const idx = cells.indexOf(cell);
+    if (!hasSlot(idx)) return;
+    if (state.sel === idx) Screens.library.confirm();
+    else { state.sel = idx; render(); }
+  });
+  function rowClick(fn) {
+    return (e) => { const row = e.target.closest('.row'); if (!row) return; fn(Number(row.dataset.idx)); };
+  }
 
   render();
 })();
