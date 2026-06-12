@@ -77,13 +77,26 @@ class FontDecompressor {
   PageSlot pageSlots[MAX_PAGE_SLOTS] = {};
   uint8_t pageSlotCount = 0;
 
-  // Hot group: last decompressed group (byte-aligned) for non-prewarmed fallback path.
-  // Kept in byte-aligned format; individual glyphs are compacted on demand into hotGlyphBuf.
-  const EpdFontData* hotGroupFont = nullptr;
-  uint16_t hotGroupIndex = UINT16_MAX;
-  std::vector<uint8_t> hotGroup;
+  // Decompressed-group LRU (replaces the former single "hot group" slot).
+  // Each entry holds one byte-aligned decompressed group; individual glyphs are
+  // compacted on demand into hotGlyphBuf. Keyed by (font, groupIndex), bounded
+  // by GROUP_CACHE_BUDGET_BYTES and MAX_GROUP_SLOTS, LRU-evicted via lruClock_.
+  // A UI screen only touches the group-0 of each active (size, style); keeping
+  // them all resident eliminates the re-inflate thrash that occurred when
+  // consecutive drawText calls alternated fonts against the old single slot.
+  static constexpr uint32_t GROUP_CACHE_BUDGET_BYTES = 48 * 1024;
+  static constexpr uint8_t MAX_GROUP_SLOTS = 16;
+  struct GroupCacheEntry {
+    const EpdFontData* font = nullptr;
+    uint16_t groupIndex = UINT16_MAX;
+    std::vector<uint8_t> data;
+    uint32_t lastUsed = 0;
+  };
+  std::vector<GroupCacheEntry> groupCache_;
+  uint32_t groupCacheBytes_ = 0;
+  uint32_t lruClock_ = 0;
 
-  // Scratch buffer for compacting a single glyph from the hot group.
+  // Scratch buffer for compacting a single glyph out of a resident group.
   // Valid until the next getBitmap() call.
   std::vector<uint8_t> hotGlyphBuf;
 
@@ -95,7 +108,13 @@ class FontDecompressor {
                     uint32_t newTextHash);
 
   void freePageBuffer();
-  void freeHotGroup();
+  void freeGroupCache();
+  // Look up (font, groupIndex) in the LRU; decompress and insert on miss.
+  // Returns the resident byte-aligned group, or nullptr on allocation failure.
+  const std::vector<uint8_t>* getDecompressedGroup(const EpdFontData* fontData, uint16_t groupIndex);
+  // Evict least-recently-used groups until a new group of neededBytes fits
+  // within the byte budget and slot cap.
+  void evictGroupsToFit(uint32_t neededBytes);
   uint16_t getGroupIndex(const EpdFontData* fontData, uint32_t glyphIndex);
   uint32_t getAlignedOffset(const EpdFontData* fontData, uint16_t groupIndex, uint32_t glyphIndex);
   bool decompressGroup(const EpdFontData* fontData, uint16_t groupIndex, uint8_t* outBuf, uint32_t outSize);
