@@ -859,6 +859,16 @@ void LibraryActivity::rebuildView() {
   // Auto-group: series / author / genre by exact name match.
   const std::string name = SETTINGS.libraryViewName;
   for (const auto& b : books) {
+    // Genre holds multiple newline-joined subjects: a book belongs to the group
+    // if any of its subjects matches the selected genre name.
+    if (kind == CrossPointSettings::LIB_VIEW_GENRE) {
+      bool match = false;
+      forEachGenre(b.genre, [&](std::string_view g) {
+        if (g == name) match = true;
+      });
+      if (match) view_.push_back(&b);
+      continue;
+    }
     const std::string* field = nullptr;
     switch (kind) {
       case CrossPointSettings::LIB_VIEW_SERIES:
@@ -866,9 +876,6 @@ void LibraryActivity::rebuildView() {
         break;
       case CrossPointSettings::LIB_VIEW_AUTHOR:
         field = &b.author;
-        break;
-      case CrossPointSettings::LIB_VIEW_GENRE:
-        field = &b.genre;
         break;
     }
     if (field != nullptr && *field == name) view_.push_back(&b);

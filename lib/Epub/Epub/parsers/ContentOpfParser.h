@@ -18,7 +18,7 @@ class ContentOpfParser final : public Print {
     IN_BOOK_TITLE,
     IN_BOOK_AUTHOR,
     IN_BOOK_LANGUAGE,
-    IN_BOOK_SUBJECT,     // dc:subject text (primary genre)
+    IN_BOOK_SUBJECT,     // dc:subject text (genres, newline-joined)
     IN_META_COLLECTION,  // EPUB3 <meta property="belongs-to-collection"> text (series)
     IN_META_GROUPPOS,    // EPUB3 <meta property="group-position"> text (series index)
     IN_MANIFEST,
@@ -43,6 +43,10 @@ class ContentOpfParser final : public Print {
   };
   std::deque<ItemIndexEntry> itemIndex;
   bool useItemIndex = false;
+
+  // True between dc:subject start and its first character chunk when `genre`
+  // already holds an earlier subject — triggers a '\n' separator on first write.
+  bool pendingSubjectSep = false;
 
   // FNV-1a hash function
   static uint32_t fnvHash(const std::string& s) {

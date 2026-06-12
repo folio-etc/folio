@@ -2,9 +2,24 @@
 
 #include <cstdint>
 #include <string>
+#include <string_view>
 #include <vector>
 
 class GfxRenderer;
+
+// A book's genre is stored as its EPUB <dc:subject> tags joined by '\n'.
+// Invokes fn(std::string_view) once per non-empty subject. Templated on the
+// callback to avoid std::function heap/binary overhead (see CLAUDE.md).
+template <typename Fn>
+inline void forEachGenre(const std::string& genre, Fn&& fn) {
+  size_t start = 0;
+  while (start < genre.size()) {
+    size_t nl = genre.find('\n', start);
+    if (nl == std::string::npos) nl = genre.size();
+    if (nl > start) fn(std::string_view(genre).substr(start, nl - start));
+    start = nl + 1;
+  }
+}
 
 // One indexed book in the library. Persisted to /.crosspoint/library.bin so we
 // don't re-parse every EPUB on every entry into LibraryActivity.

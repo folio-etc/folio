@@ -105,9 +105,14 @@ void XMLCALL ContentOpfParser::startElement(void* userData, const XML_Char* name
   }
 
   if (self->state == IN_METADATA && strcmp(name, "dc:subject") == 0) {
-    // Only capture the first subject as the primary genre.
-    if (self->genre.empty()) {
+    // Keep at most the first two subjects as genres (more was just bloat).
+    // They're newline-joined into `genre`; the separator is emitted lazily on
+    // the first character of each subject (see characterData) so empty
+    // <dc:subject/> tags don't leave dangling segments or count toward the cap.
+    const size_t captured = self->genre.empty() ? 0 : std::count(self->genre.begin(), self->genre.end(), '\n') + 1;
+    if (captured < 2) {
       self->state = IN_BOOK_SUBJECT;
+      self->pendingSubjectSep = !self->genre.empty();
     }
     return;
   }
@@ -347,6 +352,10 @@ void XMLCALL ContentOpfParser::characterData(void* userData, const XML_Char* s, 
   }
 
   if (self->state == IN_BOOK_SUBJECT) {
+    if (self->pendingSubjectSep) {
+      self->genre.push_back('\n');
+      self->pendingSubjectSep = false;
+    }
     self->genre.append(s, len);
     return;
   }

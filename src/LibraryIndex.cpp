@@ -30,7 +30,7 @@ constexpr uint32_t LIBRARY_FILE_MAGIC = 0x424C5058u;
 // triggers a full disk rescan, so old caches regenerate transparently with
 // openSequence = 0 on every book.
 // v3 adds series/genre/seriesIndex (auto-group collections).
-constexpr uint8_t LIBRARY_FILE_VERSION = 3;
+constexpr uint8_t LIBRARY_FILE_VERSION = 5;
 
 // Bound directory recursion. /Books/Author/Series/Title.epub is plenty;
 // deeper hierarchies are uncommon in book libraries and recursing further
