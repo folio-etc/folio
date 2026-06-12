@@ -387,13 +387,9 @@ void TxtReaderActivity::renderPage() {
     }
   };
 
-  // Font prewarm: scan pass accumulates text, then prewarm, then real render
-  auto* fcm = renderer.getFontCacheManager();
-  auto scope = fcm->createPrewarmScope();
-  renderLines();  // scan pass — text accumulated, no drawing
-  scope.endScanAndPrewarm();
-
-  // BW rendering
+  // Self-warming: no prewarm scan pass — the real render warms the SdCardFont
+  // overflow + kern-row caches on demand (flash fonts self-warm via the
+  // FontDecompressor group-LRU). Experiment: measure page-turn latency.
   renderLines();
   renderStatusBar();
 

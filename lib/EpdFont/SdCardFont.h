@@ -1,11 +1,17 @@
 #pragma once
 
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <vector>
 
 #include "EpdFont.h"
 #include "EpdFontData.h"
+
+// Thread-safe SD file wrapper (aliased as FsFile downstream via HalStorage.h).
+// Forward-declared here so the header doesn't pull in the HAL; the persistent
+// handle member is a unique_ptr, completed in SdCardFont.cpp.
+class HalFile;
 
 // On-disk binary format version for .cpfont files. Defined as a preprocessor
 // macro (rather than a constexpr) so it can be stringified into the SD-fonts
@@ -236,32 +242,50 @@ class SdCardFont {
   };
   OverflowContext overflowCtx_[MAX_STYLES] = {};
 
-  // On-demand glyph cache. Holds glyphs that aren't in the prewarmed mini
-  // data — populated by glyphMissHandler on the first drawText that touches
-  // a not-yet-cached codepoint. With LRU eviction sized for a UI screen's
-  // working set (~50-100 unique glyphs), it persistently caches everything
-  // a normal screen renders, eliminating the per-paint refault pathology
-  // the old 8-slot ring caused for activities whose visible glyph set
-  // exceeded the prewarmed mini alphabet.
+  // Self-warming on-demand glyph cache. Holds glyphs not in the prewarmed mini
+  // data — populated by glyphMissHandler on the first drawText that touches a
+  // not-yet-cached codepoint, and persisted across paints. Byte-budgeted so a
+  // whole screen's (or reader page's) working set stays resident; this is what
+  // lets activities render correctly WITHOUT a prewarm pass. LRU-evicted by
+  // lastUsedTick when either the slot cap or the byte budget is exceeded.
   //
-  // Memory cost: 64 entries × (sizeof(OverflowEntry) ~32 B + avg bitmap
-  // ~50 B) ≈ 5 KB per font instance. Folio's three role fonts thus add
-  // ~15 KB of resident state — comfortably within budget on the ~280 KB
-  // free-heap floor we usually maintain.
-  static constexpr uint32_t OVERFLOW_CAPACITY = 64;
+  // Memory cost: up to OVERFLOW_BUDGET_BYTES of bitmap data plus the entry
+  // vector (~32 B/entry). Reads go through the persistent overflowFile_ handle
+  // so a miss costs a seek+read, not a directory-walking file open.
+  static constexpr uint32_t OVERFLOW_MAX_SLOTS = 512;
+  static constexpr uint32_t OVERFLOW_BUDGET_BYTES = 32 * 1024;
   struct OverflowEntry {
     EpdGlyph glyph;
     uint8_t* bitmap = nullptr;
     uint32_t codepoint = 0;
     uint8_t styleIdx = 0;
-    // Logical timestamp for LRU eviction. 0 = entry empty / never used.
-    // Touched on lookup hit AND on insertion. Eviction picks the entry
-    // with the lowest non-zero tick.
-    uint32_t lastUsedTick = 0;
+    uint32_t lastUsedTick = 0;  // LRU timestamp; bumped on hit and insertion.
   };
-  OverflowEntry overflow_[OVERFLOW_CAPACITY] = {};
-  uint32_t overflowCount_ = 0;
+  std::vector<OverflowEntry> overflow_;
+  uint32_t overflowBytes_ = 0;
   uint32_t nextLruTick_ = 1;  // Monotonic counter (0 reserved for "unused" sentinel).
+
+  // Self-warming kern-row cache. The full kern matrix is too big to keep
+  // resident; instead getKerning() fetches one matrix row (per left class) on
+  // demand via onKernRow, which reads it through overflowFile_ and caches it
+  // here. A screen touches only ~30-50 distinct left classes, so the cache
+  // stays small and warms in a single render pass. Byte-budgeted + LRU.
+  static constexpr uint32_t KERN_ROW_MAX_SLOTS = 96;
+  static constexpr uint32_t KERN_ROW_BUDGET_BYTES = 12 * 1024;
+  struct KernRowEntry {
+    uint8_t styleIdx = 0;
+    uint8_t leftClass = 0;
+    uint32_t lastUsed = 0;
+    std::vector<int8_t> row;  // kernRightClassCount values for this left class
+  };
+  std::vector<KernRowEntry> kernRows_;
+  uint32_t kernRowBytes_ = 0;
+  uint32_t nextKernTick_ = 1;
+
+  // Persistent read handle for on-demand glyph + kern-row reads. Opened lazily
+  // on first miss and reused across paints (closed by clearOverflow/freeAll).
+  // Deep-sleep wake is a full chip reset, so no stale handle survives sleep.
+  std::unique_ptr<HalFile> overflowFile_;
 
   // Compact advance-only table for layout measurement (per-style).
   // Built by buildAdvanceTable(), queried by getAdvance().
@@ -314,6 +338,16 @@ class SdCardFont {
   void clearOverflow();
   static void computeStyleFileOffsets(PerStyle& s, uint32_t baseOffset);
 
+  // Persistent read handle for the on-demand caches.
+  HalFile* ensureOverflowFileOpen();
+  void closeOverflowFile();
+  // Evict LRU entries until a new item fits the slot cap + byte budget.
+  void evictOverflowToFit(uint32_t neededBytes);
+  void evictKernRowsToFit(uint32_t neededBytes);
+
   // Static callback for EpdFontData::glyphMissHandler (per-style via OverflowContext)
   static const EpdGlyph* onGlyphMiss(void* ctx, uint32_t codepoint);
+  // Static callback for EpdFontData::kernRowHandler — returns the kern matrix
+  // row for a 1-based left class, reading + caching it on demand.
+  static const int8_t* onKernRow(void* ctx, uint8_t leftClass);
 };

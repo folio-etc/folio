@@ -141,4 +141,14 @@ typedef struct {
   /// Context pointer for glyphMissHandler (typically SdCardFont*).  Also used by
   /// GfxRenderer::getGlyphBitmap() to retrieve overflow bitmaps via SdCardFont.
   void* glyphMissCtx;
+
+  /// On-demand kern-row provider for fonts whose full kern matrix is not kept
+  /// resident (SD card fonts rendered without a prewarm pass). getKerning()
+  /// calls this when kernMatrix is null: given a 1-based left class, it returns
+  /// a pointer to that matrix row (kernRightClassCount int8 values), or nullptr.
+  /// The returned pointer is valid until the next kernRowHandler call.
+  const int8_t* (*kernRowHandler)(void* ctx, uint8_t leftClass);
+
+  /// Context pointer for kernRowHandler (typically an SdCardFont per-style ctx).
+  void* kernRowCtx;
 } EpdFontData;

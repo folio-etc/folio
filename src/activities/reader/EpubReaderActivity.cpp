@@ -872,11 +872,10 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
                                         const int orientedMarginLeft) {
   const auto t0 = millis();
 
-  // Font prewarm: scan pass accumulates text, then prewarm, then real render
-  auto* fcm = renderer.getFontCacheManager();
-  auto scope = fcm->createPrewarmScope();
-  page->render(renderer, SETTINGS.getReaderFontId(), orientedMarginLeft, orientedMarginTop);  // scan pass
-  scope.endScanAndPrewarm();
+  // Self-warming: no prewarm scan pass — the real render below warms the
+  // SdCardFont overflow + kern-row caches on demand (flash fonts self-warm via
+  // the FontDecompressor group-LRU). Experiment: measure page-turn latency
+  // against the old prewarm path; tPrewarm stays as a (now ~0) marker.
   const auto tPrewarm = millis();
 
   // Force special handling for pages with images when anti-aliasing is on

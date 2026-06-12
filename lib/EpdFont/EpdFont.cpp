@@ -101,14 +101,21 @@ static uint8_t lookupKernClass(const EpdKernClassEntry* entries, const uint16_t 
 }
 
 int8_t EpdFont::getKerning(const uint32_t leftCp, const uint32_t rightCp) const {
-  if (!data->kernMatrix) {
-    return 0;
-  }
+  // Resolving a kern value needs the class tables (resident in both the
+  // matrix-resident and on-demand-row cases) plus a source for the cell:
+  // either a resident kernMatrix or an on-demand kernRowHandler.
+  if (!data->kernLeftClasses || !data->kernRightClasses) return 0;
+  if (!data->kernMatrix && !data->kernRowHandler) return 0;
   const uint8_t lc = lookupKernClass(data->kernLeftClasses, data->kernLeftEntryCount, leftCp);
   if (lc == 0) return 0;
   const uint8_t rc = lookupKernClass(data->kernRightClasses, data->kernRightEntryCount, rightCp);
   if (rc == 0) return 0;
-  return data->kernMatrix[(lc - 1) * data->kernRightClassCount + (rc - 1)];
+  if (data->kernMatrix) {
+    return data->kernMatrix[(lc - 1) * data->kernRightClassCount + (rc - 1)];
+  }
+  // On-demand: fetch the row for this left class; the handler caches it.
+  const int8_t* row = data->kernRowHandler(data->kernRowCtx, lc);
+  return row ? row[rc - 1] : 0;
 }
 
 uint32_t EpdFont::getLigature(const uint32_t leftCp, const uint32_t rightCp) const {
