@@ -50,11 +50,42 @@ uint32_t CollectionStore::createCollection(const std::string& name) {
 
 void CollectionStore::removeCollection(uint32_t id) {
   auto& collections = data_.collections;
-  const auto it =
-      std::remove_if(collections.begin(), collections.end(), [id](const Collection& c) { return c.id == id; });
-  if (it == collections.end()) {
-    return;  // unknown id, nothing removed
+
+  int removed = std::erase_if(collections, [id](const Collection& c) { return c.id == id; });
+
+  if (removed != 0) {
+    saveToFile();
   }
-  collections.erase(it, collections.end());
+}
+
+void CollectionStore::addBookToCollection(uint32_t bookHash, uint32_t collectionId) {
+  auto collectionIt = std::find_if(data_.collections.begin(), data_.collections.end(), [collectionId](const Collection& c) { return c.id == collectionId; });
+  if (collectionIt == data_.collections.end()) {
+    // collection not found
+    return;
+  }
+  auto& collection = *collectionIt;
+
+  auto bookIt = std::find(collection.members.begin(), collection.members.end(), bookHash);
+  if (bookIt != collection.members.end()) {
+    // book is already in collection; nothing to do
+    return;
+  }
+
+  collection.members.push_back(bookHash);
   saveToFile();
+}
+
+void CollectionStore::removeBookFromCollection(uint32_t bookHash, uint32_t collectionId) {
+  auto collectionIt = std::find_if(data_.collections.begin(), data_.collections.end(), [collectionId](const Collection& c) { return c.id == collectionId; });
+  if (collectionIt == data_.collections.end()) {
+    // collection not found
+    return;
+  }
+  auto& collection = *collectionIt;
+
+  const auto removed = std::erase(collection.members, bookHash);
+  if (removed != 0) {
+    saveToFile();
+  }
 }

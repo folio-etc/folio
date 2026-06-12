@@ -50,6 +50,9 @@ class CollectionStore : public JsonStore<CollectionsFile> {
 
   // Remove a collection by id and persist. No-op if the id is unknown.
   void removeCollection(uint32_t id);
+
+  void addBookToCollection(uint32_t bookHash, uint32_t collectionId);
+  void removeBookFromCollection(uint32_t bookHash, uint32_t collectionId);
 };
 
 #define COLLECTION_STORE CollectionStore::getInstance()
