@@ -603,21 +603,22 @@ void GfxRenderer::drawPixelDither<Color::DarkGray>(const int x, const int y) con
   drawPixel(x, y, (x + y) % 2 == 0);  // TODO: maybe find a better pattern?
 }
 
+template <bool transparent>
 void GfxRenderer::fillRectDither(const int x, const int y, const int width, const int height, Color color) const {
   switch (color) {
     case Color::Clear:
       break;
     case Color::Black:
-      fillRectImpl<Color::Black>(x, y, width, height);
+      fillRectImpl<Color::Black, transparent>(x, y, width, height);
       break;
     case Color::White:
-      fillRectImpl<Color::White>(x, y, width, height);
+      fillRectImpl<Color::White, transparent>(x, y, width, height);
       break;
     case Color::LightGray:
-      fillRectImpl<Color::LightGray>(x, y, width, height);
+      fillRectImpl<Color::LightGray, transparent>(x, y, width, height);
       break;
     case Color::DarkGray:
-      fillRectImpl<Color::DarkGray>(x, y, width, height);
+      fillRectImpl<Color::DarkGray, transparent>(x, y, width, height);
       break;
   }
 }
@@ -659,9 +660,13 @@ void GfxRenderer::drawDitheredLine(const int x, const int y, const int length) c
   }
 }
 
-template <Color C>
+template <Color C, bool transparent>
 void GfxRenderer::fillRectImpl(const int x, const int y, const int width, const int height) const {
   if constexpr (C == Color::Clear) return;
+  // Transparent paints only the dither's black dots, so a solid white fill has
+  // nothing to draw — skip it entirely.
+  if constexpr (transparent && C == Color::White) return;
+
   if (width <= 0 || height <= 0) return;
   if (prewarmTextCollector_) return;
   if (fontCacheManager_ && fontCacheManager_->isScanning()) return;
@@ -787,14 +792,29 @@ void GfxRenderer::fillRectImpl(const int x, const int y, const int width, const 
         }
         if (isBlack) blackMask |= static_cast<uint8_t>(1u << (7 - b));
       }
-      const uint8_t whiteMask = static_cast<uint8_t>(~blackMask);
+      [[maybe_unused]] const uint8_t whiteMask = static_cast<uint8_t>(~blackMask);
 
       // Dither writes BOTH inks (the slow path called drawPixel for every
       // pixel — setting or clearing — so we must do the same). Inside the
       // rect mask: write whiteMask (1s where white, 0s where black). Outside
       // the rect mask: leave the framebuffer untouched.
       uint8_t* row = frameBuffer + static_cast<int32_t>(py) * panelStride;
-      if (byteStart == byteEnd) {
+      if constexpr (transparent) {
+        // Transparent: paint only the pattern's black dots (clear bits to
+        // 0 = black ink) within the rect; white-pattern pixels leave the
+        // background untouched.
+        if (byteStart == byteEnd) {
+          const uint8_t rectMask = headMask & tailMask;
+          row[byteStart] &= static_cast<uint8_t>(~(rectMask & blackMask));
+        } else {
+          row[byteStart] &= static_cast<uint8_t>(~(headMask & blackMask));
+          // Period 2, so blackMask is the same for every full byte in this row.
+          for (int i = byteStart + 1; i < byteEnd; ++i) {
+            row[i] &= static_cast<uint8_t>(~blackMask);
+          }
+          row[byteEnd] &= static_cast<uint8_t>(~(tailMask & blackMask));
+        }
+      } else if (byteStart == byteEnd) {
         const uint8_t rectMask = headMask & tailMask;
         row[byteStart] = static_cast<uint8_t>((row[byteStart] & ~rectMask) | (rectMask & whiteMask));
       } else {
@@ -809,10 +829,11 @@ void GfxRenderer::fillRectImpl(const int x, const int y, const int width, const 
   }
 }
 
-template void GfxRenderer::fillRectImpl<Color::Black>(int, int, int, int) const;
-template void GfxRenderer::fillRectImpl<Color::White>(int, int, int, int) const;
-template void GfxRenderer::fillRectImpl<Color::LightGray>(int, int, int, int) const;
-template void GfxRenderer::fillRectImpl<Color::DarkGray>(int, int, int, int) const;
+// fillRectImpl is private and only invoked from fillRect / fillRectDither in
+// this translation unit, so it is instantiated implicitly. fillRectDither is
+// called from other TUs, so its two specializations are instantiated here.
+template void GfxRenderer::fillRectDither<false>(int, int, int, int, Color) const;
+template void GfxRenderer::fillRectDither<true>(int, int, int, int, Color) const;
 
 void GfxRenderer::drawCircle(const int cx, const int cy, const int radius, const Color color) const {
   if (radius <= 0 || color == Color::Clear) return;
