@@ -130,7 +130,7 @@ popupMenu:
   selectionCornerRadius: 16
   selectionTextInverted: true
   subPanelMutedFill: true
-  fontRole: caption
+  fontRole: body-compact
   annotationFontRole: body
 
 textField:

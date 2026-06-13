@@ -279,8 +279,7 @@ struct:
       - { cpp: selectionCornerRadius, type: int,                       default: 0 }
       - { cpp: selectionTextInverted, type: bool,                      default: true }
       - { cpp: subPanelMutedFill,     type: bool,                      default: true }
-      - { cpp: fontRole,              type: FontRole,                  default: "FontRole::Body" }
-      - { cpp: annotationFontRole,    type: FontRole,                  default: "FontRole::Body" }
+      - { cpp: fontRole,              type: FontRole,                  default: "FontRole::BodyCompact" }
 
   - group: textField
     struct_name: TextField
