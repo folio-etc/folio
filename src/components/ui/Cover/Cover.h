@@ -39,6 +39,6 @@ class Cover {
   };
 
   static void render(GfxRenderer& renderer, const Rect& box, BitmapCacheManager& cache,
-                     const char* thumbPath, bool useReadOnlyLookup, bool inverted,
-                     int naturalWidth, int naturalHeight, const Fallback* fallback = nullptr);
+                     const char* thumbPath, bool inverted, int naturalWidth, int naturalHeight,
+                     const Fallback* fallback = nullptr);
 };

@@ -1,5 +1,6 @@
 #include "ActivityManager.h"
 
+#include <FontCacheManager.h>
 #include <GfxRenderer.h>
 #include <HalPowerManager.h>
 
@@ -122,6 +123,13 @@ void ActivityManager::loop() {
           stackActivities.back()->onExit();
           stackActivities.pop_back();
         }
+        // Full navigation: reset the global, self-warming font glyph/group
+        // caches so the memory the outgoing screen(s) warmed (tens of KB,
+        // otherwise scattered + persistent across activities) coalesces back
+        // before the next screen allocates. Held under the render lock, so no
+        // concurrent drawText. Push/Pop (startActivityForResult) deliberately
+        // skip this — they resume the same screen and reuse its warm glyphs.
+        if (auto* fcm = renderer.getFontCacheManager()) fcm->clearCache();
       } else if (pendingAction == PendingAction::Push) {
         // Move current activity to stack
         stackActivities.push_back(std::move(currentActivity));

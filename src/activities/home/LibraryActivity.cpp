@@ -11,15 +11,16 @@
 #include <algorithm>
 #include <cstdint>
 #include <cstring>
+#include <iterator>  // std::size
 #include <string>
 #include <unordered_set>
 #include <vector>
 
-#include "stores/collections/CollectionStore.h"
 #include "CrossPointSettings.h"
 #include "LibraryIndex.h"
 #include "MappedInputManager.h"
 #include "activities/ActivityManager.h"
+#include "activities/RenderLock.h"
 #include "activities/home/CollectionPickerActivity.h"
 #include "activities/home/CollectionsActivity.h"
 #include "components/UITheme.h"
@@ -29,8 +30,9 @@
 #include "components/ui/CascadingPopupMenu/CascadingPopupMenu.h"
 #include "components/ui/Cover/Cover.h"
 #include "components/ui/ProgressBar/ProgressBar.h"
-#include "components/ui/UIPage/UIPage.h"
 #include "components/ui/TextBlock/TextBlock.h"
+#include "components/ui/UIPage/UIPage.h"
+#include "stores/collections/CollectionStore.h"
 #include "util/Flex.h"
 #include "util/GridHelper.h"
 
@@ -52,6 +54,7 @@ constexpr int CELL_GAP = 14;
 constexpr int kTilePadTop = 4;
 constexpr int kTilePadBottom = 16;
 constexpr int kCoverPercent = 60;
+constexpr int kCoverBottomPadding = 8;
 constexpr int kTitleAuthorGap = 1;
 
 constexpr int kSelectionInsetX = 3;
@@ -86,7 +89,7 @@ void LibraryActivity::onEnter() {
   lockNextConfirmRelease = mappedInput.isPressed(MappedInputManager::Button::Confirm);
   lockNextBackRelease = mappedInput.isPressed(MappedInputManager::Button::Back);
 
-  initPopup();
+  popup_.configure([this] { return buildEntries(); }, [this] { requestUpdate(); });
 
   LIBRARY_INDEX.loadFromFile();
 
@@ -105,7 +108,7 @@ void LibraryActivity::onEnter() {
   // Safe to do before the prefetch worker exists (no lock needed yet).
   rebuildView();
 
-  switch(SETTINGS.libraryViewKind) {
+  switch (SETTINGS.libraryViewKind) {
     case CrossPointSettings::LIB_VIEW_ALL: {
       gridHelper = GridHelper(viewItemCount(), ROWS, COLS, 0);
       break;
@@ -118,11 +121,21 @@ void LibraryActivity::onEnter() {
     }
   }
 
-
   lastObservedPage_ = gridHelper.currentPage();
 
+  // Seed the cover draw envelope (the worker scales each cover to fit it) and
+  // the reused decode scratch BEFORE the worker starts. A null scratch is
+  // tolerated — decodeThumbInto fails gracefully and the cover shows a
+  // placeholder.
+  const Rect coverSlot = computeCoverSlot();
+  coverBoxW_ = coverSlot.width;
+  coverBoxH_ = coverSlot.height;
+  decodeScratch_ = makeUniqueNoThrow<uint8_t[]>(DECODE_SCRATCH_BYTES);
+  if (!decodeScratch_) LOG_ERR(LOG_TAG, "OOM: cover decode scratch (%u bytes)",
+                               static_cast<unsigned>(DECODE_SCRATCH_BYTES));
+
   // Spin up the prefetch worker before requesting the first paint so it's
-  // ready by the time we ask for neighbor-page fills.
+  // ready by the time we ask for page fills.
   cacheLock_ = xSemaphoreCreateBinary();
   prefetchSignal_ = xSemaphoreCreateBinary();
   prefetchExited_ = xSemaphoreCreateBinary();
@@ -142,18 +155,10 @@ void LibraryActivity::onEnter() {
               &prefetchTask_);
   assert(prefetchTask_ != nullptr);
 
-  // Prefetch both neighbor pages so the first page-turn (in either direction)
-  // paints from cache. The current page is loaded synchronously by the render path
-  // on the first paint below
-  const uint8_t cur = lastObservedPage_;
-  const uint8_t pages = std::max<uint8_t>(1, gridHelper.pageCount());
-  xSemaphoreTake(cacheLock_, portMAX_DELAY);
-  if (pages > 1) {
-    enqueuePrefetchLocked((cur + pages - 1) % pages);  // prev (wraps)
-    enqueuePrefetchLocked((cur + 1) % pages);          // next (wraps)
-  }
-  xSemaphoreGive(cacheLock_);
-
+  // Swap the cache to the current page and paint immediately: placeholders show
+  // first, then the worker's batch-done repaints with real covers (loop()). The
+  // render path never decodes — the worker owns all decode + scaling.
+  loadPage(lastObservedPage_);
   requestUpdate();
 }
 
@@ -192,12 +197,19 @@ void LibraryActivity::onExit() {
 
   pageCache_.clear();
 
+  // Worker has joined (vTaskDelete above), so the scratch has no remaining
+  // reader and can be freed.
+  decodeScratch_.reset();
+
   if (cacheLock_ != nullptr) {
     vSemaphoreDelete(cacheLock_);
     cacheLock_ = nullptr;
   }
 
   LIBRARY_INDEX.unload();
+  // Note: the global font glyph/group caches are reset centrally by
+  // ActivityManager on full navigation (Replace), not here — see
+  // ActivityManager::loop().
 }
 
 // ---- Prefetch worker --------------------------------------------------------
@@ -217,12 +229,12 @@ bool LibraryActivity::buildThumbPath(uint8_t page, uint8_t slot, char* out, std:
   return true;
 }
 
-void LibraryActivity::enqueuePrefetchLocked(uint8_t page) {
+bool LibraryActivity::enqueuePrefetchLocked(uint8_t page) {
   const uint8_t pages = gridHelper.pageCount();
-  if (pages == 0 || page >= pages) return;
+  if (pages == 0 || page >= pages) return false;
 
   for (uint8_t i = 0; i < prefetchQueueCount_; ++i) {
-    if (prefetchQueue_[i] == page) return;
+    if (prefetchQueue_[i] == page) return true;  // already queued
   }
 
   if (prefetchQueueCount_ >= PREFETCH_QUEUE_CAPACITY) {
@@ -236,6 +248,7 @@ void LibraryActivity::enqueuePrefetchLocked(uint8_t page) {
 
   prefetchQueue_[prefetchQueueCount_++] = page;
   xSemaphoreGive(prefetchSignal_);
+  return true;
 }
 
 void LibraryActivity::cancelAllPrefetch() {
@@ -249,89 +262,21 @@ void LibraryActivity::cancelAllPrefetch() {
   xSemaphoreGive(prefetchSignal_);
 }
 
-void LibraryActivity::evictPagesOutsideKeepSetLocked(uint8_t centerPage) {
-  const uint8_t pages = std::max<uint8_t>(1, gridHelper.pageCount());
-  const uint8_t prev = (centerPage + pages - 1) % pages;
-  const uint8_t next = (centerPage + 1) % pages;
+void LibraryActivity::loadPage(uint8_t page) {
+  if (cacheLock_ == nullptr) return;
 
-  // Materialize the keep-set thumb paths up front (at most 27), then
-  // evictIf does a linear scan of cached entries against this list.
-  // Stack cost is ~1.7 KB — main task has 8 KB so it's well within budget.
-  char keepPaths[PER_PAGE * 3][64];
-  std::size_t keepCount = 0;
-  auto addPagePaths = [&](uint8_t page) {
-    for (uint8_t slot = 0; slot < PER_PAGE; ++slot) {
-      if (buildThumbPath(page, slot, keepPaths[keepCount], sizeof(keepPaths[0]))) {
-        ++keepCount;
-      }
-    }
-  };
-
-  addPagePaths(prev);
-  addPagePaths(centerPage);
-
-  if (next != prev) addPagePaths(next);  // single-page library: prev==cur==next
-
-  pageCache_.evictIf([&](const std::string& path) {
-    for (std::size_t i = 0; i < keepCount; ++i) {
-      if (path == keepPaths[i]) return false;
-    }
-    return true;
-  });
-}
-
-void LibraryActivity::primeNeighborhoodLazy(uint8_t centerPage) {
-  cancelAllPrefetch();
-  const uint8_t pages = std::max<uint8_t>(1, gridHelper.pageCount());
-
-  xSemaphoreTake(cacheLock_, portMAX_DELAY);
-  evictPagesOutsideKeepSetLocked(centerPage);
-  enqueuePrefetchLocked(centerPage);
-  if (pages > 1) {
-    enqueuePrefetchLocked((centerPage + pages - 1) % pages);
-    enqueuePrefetchLocked((centerPage + 1) % pages);
-  }
-
-  xSemaphoreTake(prefetchBatchDone_, 0);
-  lazyLoadCurrentPage_ = true;
-  xSemaphoreGive(cacheLock_);
-}
-
-void LibraryActivity::onPageChanged(uint8_t oldPage, uint8_t newPage) {
-  if (oldPage == newPage || cacheLock_ == nullptr) return;
-
-  if (rapidJumping_) {
-    lastObservedPage_ = newPage;
-    return;
-  }
-
+  // Cancel any in-flight decode, swap the single-page working set to `page`, and
+  // arm the batch-done repaint. The caller paints immediately afterward — the
+  // cleared cache peek-misses into placeholders, then the worker's batch-done
+  // (loop()) repaints with the now-resident real covers.
   cancelAllPrefetch();
 
-  lazyLoadCurrentPage_ = false;
-
-  const uint8_t pages = std::max<uint8_t>(1, gridHelper.pageCount());
-
   xSemaphoreTake(cacheLock_, portMAX_DELAY);
-  evictPagesOutsideKeepSetLocked(newPage);
-
-  const uint8_t forwardNeighbor = (newPage + 1) % pages;
-  const uint8_t backwardNeighbor = (newPage + pages - 1) % pages;
-
-  const bool steppedForward = (newPage == (oldPage + 1) % pages);
-  const bool steppedBackward = (oldPage == (newPage + 1) % pages);
-
-  if (steppedForward && pages > 1) {
-    enqueuePrefetchLocked(forwardNeighbor);
-  } else if (steppedBackward && pages > 1) {
-    enqueuePrefetchLocked(backwardNeighbor);
-  } else if (pages > 1) {
-    enqueuePrefetchLocked(backwardNeighbor);
-    enqueuePrefetchLocked(forwardNeighbor);
-  }
-
+  pageCache_.clear();
+  pendingPageRender_ = enqueuePrefetchLocked(page);  // false → empty page, no batch-done to await
+  xSemaphoreTake(prefetchBatchDone_, 0);             // drop any stale completion signal
+  lastObservedPage_ = page;
   xSemaphoreGive(cacheLock_);
-
-  lastObservedPage_ = newPage;
 }
 
 void LibraryActivity::prefetchTaskTrampoline(void* ctx) {
@@ -368,10 +313,9 @@ void LibraryActivity::prefetchTaskLoop() {
       xSemaphoreGive(cacheLock_);
       if (targetPage == 0xFF) break;  // queue empty, go back to sleep
 
-      // Decode each of the 9 covers. Path build, cache check, and
-      // cache.set are lock-protected; the SD decode itself runs
-      // unlocked so the render thread can still touch the cache for
-      // hits while we're working.
+      // Decode each of the 9 covers. Path build, cache check, scaling, and
+      // cache.set are lock-protected; only the SD decode runs unlocked so the
+      // render thread can still touch the cache for hits while we're working.
       bool batchCompleted = true;  // false if we broke early (cancel/shutdown)
       for (uint8_t slot = 0; slot < PER_PAGE; ++slot) {
         if (prefetchCancel_ || prefetchShutdown_) {
@@ -389,27 +333,49 @@ void LibraryActivity::prefetchTaskLoop() {
         xSemaphoreGive(cacheLock_);
         if (!pathOk || alreadyCached) continue;
 
-        // Slow path — decode off-lock. HalStorage serializes its own
-        // SD access, so the render thread can still read the cache for
-        // hits while this runs.
-        auto entry = GfxRenderer::decodeBitmapEntry(path);
-        if (entry.path.empty()) continue;  // decode failed; nothing to insert
+        // Slow path — decode the 2bpp source into the reused scratch off-lock.
+        // HalStorage serializes its own SD access, so the render thread can
+        // still read the cache for hits while this runs. The scratch is
+        // single-producer (only this worker touches it).
+        int srcW = 0;
+        int srcH = 0;
+        bool topDown = false;
+        if (!GfxRenderer::decodeThumbInto(path, decodeScratch_.get(), DECODE_SCRATCH_BYTES, srcW, srcH, topDown)) {
+          continue;  // decode failed / no scratch — nothing to insert
+        }
+
+        int targetW = 0;
+        int targetH = 0;
+        GfxRenderer::computeThumbTarget(srcW, srcH, coverBoxW_, coverBoxH_, targetW, targetH);
+        if (targetW <= 0 || targetH <= 0) continue;
 
         if (prefetchCancel_ || prefetchShutdown_) {
           batchCompleted = false;
           break;
         }
 
+        // Scale into a fresh 1bpp arena raster and store, under the lock. The
+        // scaling reads the scratch (no other writer) and the arena mutates
+        // only here / in eviction — all serialized by cacheLock_.
         xSemaphoreTake(cacheLock_, portMAX_DELAY);
         if (!prefetchShutdown_) {
-          pageCache_.set(std::move(entry));
+          BitmapCacheManager::Entry entry;
+          entry.path = path;
+          entry.width = srcW;
+          entry.height = srcH;
+          entry.topDown = topDown;
+          if (renderer.buildScaledFromSource(entry, decodeScratch_.get(), srcW, srcH, topDown, targetW, targetH,
+                                             pageCache_.arena())) {
+            pageCache_.set(std::move(entry));
+          }
+          // else: arena full — skip; the cover paints a placeholder.
         }
         xSemaphoreGive(cacheLock_);
       }
       // Signal the activity loop that this page's covers are resident
-      // in the cache. Activity uses this to clear lazyLoadCurrentPage_
-      // and trigger a repaint when the awaited page lands. Suppressed
-      // on cancel — the partial state shouldn't drop the placeholder.
+      // in the cache. Activity uses this to clear pendingPageRender_
+      // and trigger the deferred repaint when the awaited page lands.
+      // Suppressed on cancel — the partial state shouldn't paint.
       if (batchCompleted && !prefetchShutdown_) {
         xSemaphoreGive(prefetchBatchDone_);
       }
@@ -417,108 +383,173 @@ void LibraryActivity::prefetchTaskLoop() {
   }
 }
 
-void LibraryActivity::initPopup() {
-  std::vector<CascadingPopupMenu::SubmenuConfig> subs;
-  subs.resize(POPUP_TOP_COUNT);
+std::vector<PopupMenuEntry> LibraryActivity::buildEntries() {
+  std::vector<PopupMenuEntry> entries;
+  entries.reserve(6);
 
-  // Sort submenu: 4 rows; pre-select the active sort field on entry; show a
-  // direction arrow on the active field row.
-  subs[POPUP_TOP_SORT].itemCount = POPUP_SORT_COUNT;
-  subs[POPUP_TOP_SORT].rowLabel = [](int i) -> const char* {
-    switch (i) {
-      case 0:
-        return tr(STR_SORT_RECENT);
-      case 1:
-        return tr(STR_SORT_TITLE);
-      case 2:
-        return tr(STR_SORT_AUTHOR);
-      case 3:
-        return tr(STR_SORT_PROGRESS);
-    }
-    return "";
-  };
-  subs[POPUP_TOP_SORT].rowGlyph = [](int i) -> PopupMenu::Glyph {
-    if (i != SETTINGS.librarySortField) return PopupMenu::Glyph::None;
-    return (SETTINGS.librarySortDirection == CrossPointSettings::LIB_SORT_ASC) ? PopupMenu::Glyph::ArrowUp
-                                                                               : PopupMenu::Glyph::ArrowDown;
-  };
-  subs[POPUP_TOP_SORT].initialSelection = []() { return static_cast<int>(SETTINGS.librarySortField); };
+  // ---- Collections (leaf) → suspend and open CollectionsActivity. ----
+  {
+    PopupMenuEntry collections;
+    collections.label = tr(STR_COLLECTIONS);
+    collections.onSelected = [this]() {
+      // Snapshot the active view so the return handler only rebuilds when the
+      // user actually switched views.
+      const uint8_t prevKind = SETTINGS.libraryViewKind;
+      const uint32_t prevId = SETTINGS.libraryViewCollectionId;
+      const std::string prevName = SETTINGS.libraryViewName;
+      startActivityForResult(std::make_unique<CollectionsActivity>(renderer, mappedInput),
+                             [this, prevKind, prevId, prevName](const ActivityResult&) {
+                               const bool changed = SETTINGS.libraryViewKind != prevKind ||
+                                                    SETTINGS.libraryViewCollectionId != prevId ||
+                                                    prevName != std::string(SETTINGS.libraryViewName);
+                               onReturnFromCollections(changed);
+                             });
+      return true;
+    };
+    entries.push_back(std::move(collections));
+  }
 
-  // Book submenu: 2 rows; collection membership for the selected book. Always
-  // opens at row 0. The actual collection choice lives on a full-screen picker
-  // (CascadingPopupMenu is two-level), launched from dispatchPopupActivation.
-  subs[POPUP_TOP_BOOK].itemCount = POPUP_BOOK_COUNT;
-  subs[POPUP_TOP_BOOK].rowLabel = [](int i) -> const char* {
-    switch (i) {
-      case POPUP_BOOK_ADD:
-        return tr(STR_ADD_TO_COLLECTION);
-      case POPUP_BOOK_REMOVE:
-        return tr(STR_REMOVE_FROM_COLLECTION);
-    }
-    return "";
-  };
+  // ---- Sort: pre-select the active field; arrow on the active field row. ----
+  {
+    PopupMenuEntry sort{.label = tr(STR_SORT), .initialSelectedChild = SETTINGS.librarySortField};
 
-  // Files submenu: 2 rows; always opens at row 0.
-  subs[POPUP_TOP_FILES].itemCount = POPUP_FILES_COUNT;
-  subs[POPUP_TOP_FILES].rowLabel = [](int i) -> const char* {
-    switch (i) {
-      case 0:
-        return tr(STR_BROWSE);
-      case 1:
-        return tr(STR_TRANSFER);
-    }
-    return "";
-  };
-
-  // Power Button submenu: 2 rows; opens with cursor on the active option so
-  // the user can see at-a-glance which behavior is current (no glyph
-  // needed — the pre-selection serves as the indicator).
-  subs[POPUP_TOP_POWER].itemCount = POPUP_POWER_COUNT;
-  subs[POPUP_TOP_POWER].rowLabel = [](int i) -> const char* {
-    switch (i) {
-      case 0:
-        return tr(STR_POWER_NEXT_IN_ROW);
-      case 1:
-        return tr(STR_POWER_NEXT_BOOK);
-    }
-    return "";
-  };
-  subs[POPUP_TOP_POWER].initialSelection = []() { return static_cast<int>(SETTINGS.libraryPowerButton); };
-
-  // Settings is a leaf — no submenu config needed (itemCount=0 default).
-  popup_.configure(
-      [](int i) -> const char* {
-        switch (i) {
-          case POPUP_TOP_SORT:
-            return tr(STR_SORT);
-          case POPUP_TOP_COLLECTIONS:
-            return tr(STR_COLLECTIONS);
-          case POPUP_TOP_BOOK:
-            return tr(STR_BOOK);
-          case POPUP_TOP_FILES:
-            return tr(STR_FILES);
-          case POPUP_TOP_POWER:
-            return tr(STR_POWER_BUTTON);
-          case POPUP_TOP_SETTINGS:
-            return tr(STR_SETTINGS_TITLE);
+    static constexpr StrId kSortLabels[] = {StrId::STR_SORT_RECENT, StrId::STR_SORT_TITLE, StrId::STR_SORT_AUTHOR,
+                                            StrId::STR_SORT_PROGRESS};
+    std::vector<PopupMenuEntry> fields;
+    fields.reserve(std::size(kSortLabels));
+    for (uint8_t f = 0; f < std::size(kSortLabels); ++f) {
+      PopupMenuEntry field;
+      field.label = I18N.get(kSortLabels[f]);
+      if (f == SETTINGS.librarySortField) {
+        field.glyph = (SETTINGS.librarySortDirection == CrossPointSettings::LIB_SORT_ASC) ? PopupMenu::Glyph::ArrowUp
+                                                                                          : PopupMenu::Glyph::ArrowDown;
+      }
+      field.onSelected = [this, f]() {
+        uint8_t direction = SETTINGS.librarySortDirection;
+        if (f == SETTINGS.librarySortField) {
+          // Re-selecting the active field toggles its direction.
+          direction = (SETTINGS.librarySortDirection == CrossPointSettings::LIB_SORT_ASC)
+                          ? CrossPointSettings::LIB_SORT_DESC
+                          : CrossPointSettings::LIB_SORT_ASC;
         }
-        return "";
-      },
-      std::move(subs));
+        setSort(f, direction);
+        return false;  // keep the menu open; rebuild refreshes the arrow
+      };
+      fields.push_back(std::move(field));
+    }
+    sort.children = std::move(fields);
+    entries.push_back(std::move(sort));
+  }
+
+  // ---- Book: collection membership for the selected book. ----
+  {
+    PopupMenuEntry book;
+    book.label = tr(STR_BOOK);
+    std::vector<PopupMenuEntry> membership;
+    membership.reserve(2);
+
+    PopupMenuEntry add;
+    add.label = tr(STR_ADD_TO_COLLECTION);
+    add.onSelected = [this]() { return openCollectionPicker(/*add=*/true); };
+    membership.push_back(std::move(add));
+
+    PopupMenuEntry remove;
+    remove.label = tr(STR_REMOVE_FROM_COLLECTION);
+    remove.onSelected = [this]() { return openCollectionPicker(/*add=*/false); };
+    membership.push_back(std::move(remove));
+
+    book.children = std::move(membership);
+    entries.push_back(std::move(book));
+  }
+
+  // ---- Files. ----
+  {
+    PopupMenuEntry files;
+    files.label = tr(STR_FILES);
+    std::vector<PopupMenuEntry> kids;
+    kids.reserve(2);
+
+    PopupMenuEntry browse;
+    browse.label = tr(STR_BROWSE);
+    browse.onSelected = [this]() {
+      activityManager.goToFileBrowser();
+      return true;
+    };
+    kids.push_back(std::move(browse));
+
+    PopupMenuEntry transfer;
+    transfer.label = tr(STR_TRANSFER);
+    transfer.onSelected = [this]() {
+      activityManager.goToFileTransfer();
+      return true;
+    };
+    kids.push_back(std::move(transfer));
+
+    files.children = std::move(kids);
+    entries.push_back(std::move(files));
+  }
+
+  // ---- Power button: pre-select the active behavior and mark it with a dot. ----
+  {
+    PopupMenuEntry power;
+    power.label = tr(STR_POWER_BUTTON);
+    power.initialSelectedChild = SETTINGS.libraryPowerButton;
+    std::vector<PopupMenuEntry> kids;
+    kids.reserve(2);
+
+    static constexpr StrId kPowerLabels[] = {StrId::STR_POWER_NEXT_IN_ROW, StrId::STR_POWER_NEXT_BOOK};
+    for (uint8_t b = 0; b < std::size(kPowerLabels); ++b) {
+      PopupMenuEntry option;
+      option.label = I18N.get(kPowerLabels[b]);
+      if (b == SETTINGS.libraryPowerButton) option.glyph = PopupMenu::Glyph::Circle;
+      option.onSelected = [this, b]() {
+        if (b != SETTINGS.libraryPowerButton) {
+          SETTINGS.libraryPowerButton = b;
+          SETTINGS.saveToFile();
+        }
+        return true;
+      };
+      kids.push_back(std::move(option));
+    }
+    power.children = std::move(kids);
+    entries.push_back(std::move(power));
+  }
+
+  // ---- Settings (leaf). ----
+  {
+    PopupMenuEntry settings;
+    settings.label = tr(STR_SETTINGS_TITLE);
+    settings.onSelected = [this]() {
+      activityManager.goToSettings();
+      return true;
+    };
+    entries.push_back(std::move(settings));
+  }
+
+  return entries;
+}
+
+bool LibraryActivity::openCollectionPicker(bool add) {
+  const LibraryBook* book = bookForGridIndex(gridHelper.currentIndex());
+  if (book == nullptr) return true;  // back tile / empty slot — nothing to edit
+
+  // Capture by value: view_ pointers may be rebuilt while the picker is up.
+  const uint32_t bookHash = book->pathHash;
+  const auto mode = add ? CollectionPickerActivity::Mode::Add : CollectionPickerActivity::Mode::Remove;
+  startActivityForResult(std::make_unique<CollectionPickerActivity>(renderer, mappedInput, bookHash, mode),
+                         [this](const ActivityResult&) { onCollectionMembershipChanged(); });
+  return false;  // picker launched; the return handler closes the popup
 }
 
 // ---- Input ------------------------------------------------------------------
 
 void LibraryActivity::loop() {
-  // Pick up the prefetch worker's batch-completion signal. The current
-  // page is enqueued first by applySort / endRapidJumpIfActive, so the
-  // first batch-done after entering lazy mode means current-page covers
-  // are now resident — clear the flag and repaint to swap placeholders
-  // for the real artwork. Subsequent batch-dones (prev / next neighbors)
-  // arrive with the flag already clear and are simply drained.
+  // Pick up the prefetch worker's batch-completion signal. After a page load
+  // (loadPage) the caller painted placeholders; once the page's covers are
+  // resident we clear the flag and repaint to swap them for real artwork.
   if (prefetchBatchDone_ != nullptr && xSemaphoreTake(prefetchBatchDone_, 0) == pdTRUE) {
-    if (lazyLoadCurrentPage_) {
-      lazyLoadCurrentPage_ = false;
+    if (pendingPageRender_) {
+      pendingPageRender_ = false;
       requestUpdate();
     }
   }
@@ -543,13 +574,15 @@ void LibraryActivity::loop() {
   }
 
   if (mappedInput.wasPressed(MappedInputManager::Button::Back)) {
+    // The menu owns its own redraws (see configure() in onEnter).
     if (popup_.isOpen()) {
-      popup_.moveLeft();
+      popup_.back();
     } else {
+      // open() (re)builds the entry tree, reallocating state the render task
+      // may be iterating — hold the render lock across the mutation.
+      RenderLock lock;
       popup_.open();
     }
-
-    requestUpdate();
     return;
   }
 
@@ -586,30 +619,30 @@ void LibraryActivity::loop() {
 
 void LibraryActivity::moveUp() {
   if (popup_.isOpen()) {
-    if (popup_.moveUp() != CascadingPopupMenu::Nav::Ignored) requestUpdate();
+    popup_.moveUp();
     return;
   }
 
   const uint8_t oldPage = gridHelper.currentPage();
   this->gridHelper.up();
   const uint8_t newPage = gridHelper.currentPage();
-  if (oldPage != newPage) onPageChanged(oldPage, newPage);
+  // On a page change, swap the cache to the new page; the requestUpdate below
+  // paints placeholders immediately and the worker's batch-done repaints with
+  // real covers. Within-page moves just repaint (covers already cached).
+  if (oldPage != newPage) loadPage(newPage);
   requestUpdate();
 }
 
 void LibraryActivity::moveDown() {
   if (popup_.isOpen()) {
-    if (popup_.moveDown() != CascadingPopupMenu::Nav::Ignored) {
-      requestUpdate();
-    }
-
+    popup_.moveDown();
     return;
   }
 
   const uint8_t oldPage = gridHelper.currentPage();
   this->gridHelper.down();
   const uint8_t newPage = gridHelper.currentPage();
-  if (oldPage != newPage) onPageChanged(oldPage, newPage);
+  if (oldPage != newPage) loadPage(newPage);
   requestUpdate();
 }
 
@@ -659,7 +692,7 @@ void LibraryActivity::moveLeft() {
   const uint8_t oldPage = gridHelper.currentPage();
   this->gridHelper.left();
   const uint8_t newPage = gridHelper.currentPage();
-  if (oldPage != newPage) onPageChanged(oldPage, newPage);
+  if (oldPage != newPage) loadPage(newPage);
   requestUpdate();
 }
 
@@ -671,7 +704,7 @@ void LibraryActivity::moveRight() {
   const uint8_t oldPage = gridHelper.currentPage();
   this->gridHelper.right();
   const uint8_t newPage = gridHelper.currentPage();
-  if (oldPage != newPage) onPageChanged(oldPage, newPage);
+  if (oldPage != newPage) loadPage(newPage);
   requestUpdate();
 }
 
@@ -683,7 +716,7 @@ void LibraryActivity::moveNext() {
   const uint8_t oldPage = gridHelper.currentPage();
   this->gridHelper.nextItem();
   const uint8_t newPage = gridHelper.currentPage();
-  if (oldPage != newPage) onPageChanged(oldPage, newPage);
+  if (oldPage != newPage) loadPage(newPage);
   requestUpdate();
 }
 
@@ -691,21 +724,20 @@ void LibraryActivity::endRapidJumpIfActive() {
   if (!rapidJumping_) return;
   rapidJumping_ = false;
 
-  const uint8_t cur = gridHelper.currentPage();
-  primeNeighborhoodLazy(cur);
-  lastObservedPage_ = cur;
-
-  requestUpdate();  // paint placeholders; real covers follow async
+  // Hold ended — swap the cache to the landed page and repaint. The flick's
+  // placeholders persist until the worker's batch-done fills in real covers.
+  loadPage(gridHelper.currentPage());
+  requestUpdate();
 }
 
 void LibraryActivity::doSelect() {
   if (popup_.isOpen()) {
-    const auto nav = popup_.activate();
-    if (nav == CascadingPopupMenu::Nav::EnteredSubmenu) {
-      requestUpdate();
-    } else if (nav == CascadingPopupMenu::Nav::LeafActivated || nav == CascadingPopupMenu::Nav::SubItemActivated) {
-      dispatchPopupActivation(nav);
-    }
+    // activate() descends into a submenu or fires the focused leaf's
+    // onSelected (built in buildEntries); the menu owns its own redraw.
+    // Both the descend (stack push) and a non-closing leaf (tree rebuild)
+    // reallocate state the render task may be iterating — hold the lock.
+    RenderLock lock;
+    popup_.activate();
     return;
   }
 
@@ -720,95 +752,9 @@ void LibraryActivity::doSelect() {
 
   LOG_DBG(LOG_TAG, "Opening book: %s", book->path.c_str());
 
-  auto* fcm = renderer.getFontCacheManager();
-  if (fcm) fcm->clearCache();
-
+  // The font caches are reset by ActivityManager on the Replace below, freeing
+  // heap before the reader's (memory-hungry) onEnter — no explicit clear here.
   activityManager.goToReader(book->path);
-}
-
-void LibraryActivity::dispatchPopupActivation(CascadingPopupMenu::Nav navResult) {
-  const int top = popup_.topSelectedIndex();
-  if (navResult == CascadingPopupMenu::Nav::LeafActivated) {
-    switch (top) {
-      case POPUP_TOP_COLLECTIONS: {
-        // Suspend (not destroy) this activity so returning preserves grid /
-        // prefetch state. Snapshot the active view so the return handler only
-        // rebuilds when the user actually switched views.
-        const uint8_t prevKind = SETTINGS.libraryViewKind;
-        const uint32_t prevId = SETTINGS.libraryViewCollectionId;
-        const std::string prevName = SETTINGS.libraryViewName;
-        startActivityForResult(std::make_unique<CollectionsActivity>(renderer, mappedInput),
-                               [this, prevKind, prevId, prevName](const ActivityResult&) {
-                                 const bool changed = SETTINGS.libraryViewKind != prevKind ||
-                                                      SETTINGS.libraryViewCollectionId != prevId ||
-                                                      prevName != std::string(SETTINGS.libraryViewName);
-                                 onReturnFromCollections(changed);
-                               });
-        break;
-      }
-      case POPUP_TOP_SETTINGS:
-        activityManager.goToSettings();
-        break;
-    }
-
-    return;
-  }
-
-  // SubItemActivated: dispatch by which submenu the user is in.
-  const int sub = popup_.subSelectedIndex();
-  switch (top) {
-    case POPUP_TOP_SORT: {
-      const uint8_t newField = static_cast<uint8_t>(sub);
-      uint8_t newDirection = SETTINGS.librarySortDirection;
-      if (newField == SETTINGS.librarySortField) {
-        newDirection = (SETTINGS.librarySortDirection == CrossPointSettings::LIB_SORT_ASC)
-                           ? CrossPointSettings::LIB_SORT_DESC
-                           : CrossPointSettings::LIB_SORT_ASC;
-      }
-      setSort(newField, newDirection);
-
-      break;
-    }
-    case POPUP_TOP_BOOK: {
-      const LibraryBook* book = bookForGridIndex(gridHelper.currentIndex());
-      if (book == nullptr) {
-        // Back tile or empty slot selected — nothing to edit.
-        popup_.close();
-        requestUpdate();
-        break;
-      }
-      // Capture by value: view_ pointers may be rebuilt while the picker is up.
-      const uint32_t bookHash = book->pathHash;
-      const auto mode =
-          (sub == POPUP_BOOK_ADD) ? CollectionPickerActivity::Mode::Add : CollectionPickerActivity::Mode::Remove;
-      startActivityForResult(std::make_unique<CollectionPickerActivity>(renderer, mappedInput, bookHash, mode),
-                             [this](const ActivityResult&) { onCollectionMembershipChanged(); });
-      break;
-    }
-    case POPUP_TOP_FILES: {
-      switch (sub) {
-        case POPUP_FILES_BROWSE:
-          activityManager.goToFileBrowser();
-          break;
-        case POPUP_FILES_TRANSFER:
-          activityManager.goToFileTransfer();
-          break;
-      }
-
-      break;
-    }
-    case POPUP_TOP_POWER: {
-      const uint8_t newBehavior = static_cast<uint8_t>(sub);
-      if (newBehavior != SETTINGS.libraryPowerButton) {
-        SETTINGS.libraryPowerButton = newBehavior;
-        SETTINGS.saveToFile();
-      }
-      popup_.close();
-      requestUpdate();
-
-      break;
-    }
-  }
 }
 
 // Swallow the trailing button release from a suspended sub-activity that
@@ -831,7 +777,7 @@ void LibraryActivity::reloadActiveView() {
   const int initialIndex = (SETTINGS.libraryViewKind == CrossPointSettings::LIB_VIEW_ALL) ? 0 : 1;
   gridHelper = GridHelper(viewItemCount(), ROWS, COLS, initialIndex);
   lastObservedPage_ = 0;
-  primeNeighborhoodLazy(0);
+  loadPage(0);  // caller repaints; placeholders show until the new view's covers load
 }
 
 void LibraryActivity::onCollectionMembershipChanged() {
@@ -839,13 +785,14 @@ void LibraryActivity::onCollectionMembershipChanged() {
   lockSubActivityReturnRelease();
 
   // Only a collection view's contents depend on membership. Rebuild it so an
-  // added/removed book appears/disappears; other views (All Books, auto-groups)
-  // are unaffected, so just repaint in place to preserve the grid position.
+  // added/removed book appears/disappears (reloadActiveView swaps the cache);
+  // other views (All Books, auto-groups) are unaffected. Repaint either way: a
+  // rebuilt view shows placeholders until covers load, an unchanged view paints
+  // its still-cached covers.
   if (SETTINGS.libraryViewKind == CrossPointSettings::LIB_VIEW_COLLECTION) {
     COLLECTION_STORE.loadFromFile();
     reloadActiveView();
   }
-
   requestUpdate();
 }
 
@@ -853,10 +800,10 @@ void LibraryActivity::onReturnFromCollections(bool viewChanged) {
   popup_.close();
   lockSubActivityReturnRelease();
 
-  // The picker may have switched the active view (or created collections). Only
-  // rebuild when the view actually changed; otherwise preserve grid position.
+  // The picker may have switched the active view (or created collections). When
+  // it changed, reloadActiveView swaps the cache (placeholders until covers
+  // load); otherwise preserve grid position. Repaint either way.
   if (viewChanged) reloadActiveView();
-
   requestUpdate();
 }
 
@@ -877,9 +824,8 @@ void LibraryActivity::applySort() {
 
   this->gridHelper = GridHelper(viewItemCount(), ROWS, COLS, 0);
   lastObservedPage_ = 0;
-  primeNeighborhoodLazy(0);
-
-  requestUpdate();
+  loadPage(0);
+  requestUpdate();  // placeholders now; real covers on batch-done
 }
 
 void LibraryActivity::setSort(uint8_t field, uint8_t direction) {
@@ -1000,8 +946,8 @@ void LibraryActivity::activateBack() {
 
   this->gridHelper = GridHelper(viewItemCount(), ROWS, COLS, 0);
   lastObservedPage_ = 0;
-  primeNeighborhoodLazy(0);
-  requestUpdate();
+  loadPage(0);
+  requestUpdate();  // placeholders now; real covers on batch-done
 }
 
 // ---- Render -----------------------------------------------------------------
@@ -1012,21 +958,56 @@ void LibraryActivity::render(RenderLock&&) {
   renderer.displayBuffer();
 }
 
+Rect LibraryActivity::computeCoverSlot() const {
+  // Replay the render path's layout (UIPage body → shelf Hstack → cell Grid →
+  // tile Vstack) without drawing, so the worker scales covers to exactly the
+  // dims the render path will request. Cells are uniform → cell[0] is
+  // representative. Mirrors UIPage::render + renderPasses + renderBookTile; keep
+  // in sync if those change.
+  const auto& td = *GUI.getData();
+  const Rect screen{0, 0, renderer.getScreenWidth(), renderer.getScreenHeight()};
+
+  flex::Vstack page(screen, {flex::fixed(td.layout.topPadding), flex::fixed(td.header.height), flex::grow(),
+                             flex::fixed(td.buttonHints.height)});
+  const Rect body = flex::inset(page[2], flex::xy(td.library.pagePaddingX, td.library.pagePaddingY));
+
+  flex::Hstack bodyInner(body, {flex::grow(), flex::fixed(RAIL_WIDTH)}, RAIL_GAP,
+                         flex::xy(CONTENT_PAD_X, CONTENT_PAD_Y));
+  flex::Grid cells(bodyInner[0], ROWS, COLS, CELL_GAP, CELL_GAP);
+
+  const flex::Padding tilePad{kTilePadTop, 0, kTilePadBottom, 0};
+  flex::Vstack tile(cells[0], {flex::percent(kCoverPercent), flex::fixed(kCoverBottomPadding), flex::grow()}, 0,
+                    tilePad);
+  return tile[0];
+}
+
 void LibraryActivity::renderPasses() {
   const auto& td = *GUI.getData();
 
-  const Rect screen{0, 0, renderer.getScreenWidth(), renderer.getScreenHeight()};
-  const auto btnLabels = popup_.isOpen()
-    ? popup_.getFooterLabels(mappedInput)
-    : mappedInput.mapLabels(tr(STR_MENU_LABEL), tr(STR_SELECT), tr(STR_DIR_LEFT), tr(STR_DIR_RIGHT));
+  // Theme/orientation can change the cover-slot size between paints. When it
+  // does, re-seed the draw envelope and reload the page at the new dims. This
+  // runs mid-paint, so this frame paints placeholders for the just-cleared
+  // covers; batch-done then repaints with correctly-sized rasters (rare path).
+  if (cacheLock_ != nullptr) {
+    const Rect cs = computeCoverSlot();
+    if (cs.width != coverBoxW_ || cs.height != coverBoxH_) {
+      coverBoxW_ = cs.width;
+      coverBoxH_ = cs.height;
+      // No requestUpdate here — we're on the render task mid-paint. This frame
+      // paints placeholders for the just-cleared covers; the worker's batch-done
+      // triggers the real repaint from loop() (main task).
+      loadPage(gridHelper.currentPage());
+    }
+  }
 
-  const auto body = UIPage::render(
-    renderer,
-    viewTitle_.empty() ? tr(STR_LIBRARY) : viewTitle_.c_str(),
-    getHeaderSubtitleText().c_str(),
-    btnLabels,
-    flex::xy(td.library.pagePaddingX, td.library.pagePaddingY)
-  );
+  const Rect screen{0, 0, renderer.getScreenWidth(), renderer.getScreenHeight()};
+  const auto btnLabels =
+      popup_.isOpen() ? popup_.getFooterLabels(mappedInput)
+                      : mappedInput.mapLabels(tr(STR_MENU_LABEL), tr(STR_SELECT), tr(STR_DIR_LEFT), tr(STR_DIR_RIGHT));
+
+  const auto body = UIPage::render(renderer, viewTitle_.empty() ? tr(STR_LIBRARY) : viewTitle_.c_str(),
+                                   getHeaderSubtitleText().c_str(), btnLabels,
+                                   flex::xy(td.library.pagePaddingX, td.library.pagePaddingY));
 
   // Zero grid items means an empty device library (the All view with no
   // books). A filtered-but-empty view still has its back tile, so it falls
@@ -1035,7 +1016,7 @@ void LibraryActivity::renderPasses() {
     renderEmptyState(body);
   } else {
     flex::Hstack bodyInner(body, {flex::grow(), flex::fixed(RAIL_WIDTH)}, RAIL_GAP,
-                      flex::xy(CONTENT_PAD_X, CONTENT_PAD_Y));
+                           flex::xy(CONTENT_PAD_X, CONTENT_PAD_Y));
     {
       renderLibraryShelf(bodyInner[0]);
       renderPageRail(bodyInner[1]);
@@ -1134,7 +1115,6 @@ void LibraryActivity::renderBookTile(const Rect& cell, const LibraryBook& book, 
   const int captionFont = libFont(FontRole::CaptionCompact);
   const int captionLineH = renderer.getLineHeight(captionFont);
 
-  constexpr int kCoverBottomPadding = 8;
   constexpr int kProgressGap = 8;
 
   // ---- Tile interior bands ----
@@ -1207,10 +1187,9 @@ void LibraryActivity::renderBookTile(const Rect& cell, const LibraryBook& book, 
 
     xSemaphoreTake(cacheLock_, portMAX_DELAY);
     {
-      const bool useReadOnly = rapidJumping_ || lazyLoadCurrentPage_;
       const Cover::Fallback coverFallback{book.title.c_str(), captionFont, EpdFontFamily::BOLD};
-      Cover::render(renderer, coverSlot, pageCache_, thumbPath, useReadOnly, invertText, coverSlot.height * 2 / 3,
-                    coverSlot.height, &coverFallback);
+      Cover::render(renderer, coverSlot, pageCache_, thumbPath, invertText, coverSlot.height * 2 / 3, coverSlot.height,
+                    &coverFallback);
     }
     xSemaphoreGive(cacheLock_);
 
@@ -1246,7 +1225,6 @@ void LibraryActivity::renderBackTile(const Rect& cell, bool selected) {
   const int captionFont = libFont(FontRole::CaptionCompact);
   const int captionLineH = renderer.getLineHeight(captionFont);
 
-  constexpr int kCoverBottomPadding = 8;
   const flex::Padding tilePad{kTilePadTop, 0, kTilePadBottom, 0};
 
   // Same geometry as a bar-less book tile so the back tile aligns with the grid.

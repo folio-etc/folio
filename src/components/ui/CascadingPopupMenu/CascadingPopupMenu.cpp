@@ -10,169 +10,229 @@
 #include "components/themes/BaseTheme.h"
 #include "components/ui/ButtonHints/ButtonHints.h"
 
-void CascadingPopupMenu::configure(std::function<const char*(int)> topRowLabel,
-                                   std::vector<SubmenuConfig> submenus) {
-  topLabel_ = std::move(topRowLabel);
-  subs_ = std::move(submenus);
-  top_.setItemCount(static_cast<int>(subs_.size()), 0);
-  subMenus_.clear();
-  subMenus_.resize(subs_.size());
-  for (size_t i = 0; i < subs_.size(); ++i) {
-    if (subs_[i].itemCount > 0) {
-      subMenus_[i].setItemCount(subs_[i].itemCount, 0);
-    }
-  }
+bool CascadingPopupMenu::isBranch(const PopupMenuEntry& e) { return e.children.has_value() && !e.children->empty(); }
+
+void CascadingPopupMenu::configure(std::function<std::vector<PopupMenuEntry>()> builder,
+                                   std::function<void()> requestUpdate) {
+  builder_ = std::move(builder);
+  requestUpdate_ = std::move(requestUpdate);
 }
 
-void CascadingPopupMenu::open() {
+void CascadingPopupMenu::notifyUpdate() {
+  if (requestUpdate_) requestUpdate_();
+}
+
+void CascadingPopupMenu::pushLevel(const std::vector<PopupMenuEntry>& entries, std::optional<uint8_t> selection) {
+  Level level;
+  level.entries = &entries;
+  level.menu.setItemCount(static_cast<int>(entries.size()), selection);
+  stack_.push_back(std::move(level));
+}
+
+void CascadingPopupMenu::open(std::optional<uint8_t> initialSelection) {
   open_ = true;
-  activeSub_ = -1;
-  top_.setSelectedIndex(0);
+  stack_.clear();
+  entries_ = builder_ ? builder_() : std::vector<PopupMenuEntry>{};
+  pushLevel(entries_, initialSelection);
+  notifyUpdate();
 }
 
 void CascadingPopupMenu::close() {
   open_ = false;
-  activeSub_ = -1;
+  stack_.clear();
 }
 
-int CascadingPopupMenu::subSelectedIndex() const {
-  if (!inSubmenu()) return -1;
-  return subMenus_[activeSub_].selectedIndex();
+const PopupMenuEntry* CascadingPopupMenu::focusedEntry() const {
+  if (!open_ || stack_.empty()) return nullptr;
+  const Level& level = stack_.back();
+  const std::optional<uint8_t> sel = level.menu.selectedIndex();
+  if (!sel.has_value() || *sel >= level.entries->size()) return nullptr;
+  return &(*level.entries)[*sel];
 }
 
-bool CascadingPopupMenu::topRowHasSubmenu(int i) const {
-  return i >= 0 && i < static_cast<int>(subs_.size()) && subs_[i].itemCount > 0;
-}
+void CascadingPopupMenu::rebuildPreservingPath() {
+  // Snapshot the descended path before the tree is replaced.
+  std::vector<std::optional<uint8_t>> path;
+  path.reserve(stack_.size());
+  for (const Level& level : stack_) path.push_back(level.menu.selectedIndex());
 
-CascadingPopupMenu::Nav CascadingPopupMenu::moveUp() {
-  if (!open_) return Nav::Ignored;
-  PopupMenu& m = (activeSub_ >= 0) ? subMenus_[activeSub_] : top_;
-  return m.moveUp() ? Nav::Moved : Nav::Ignored;
-}
-
-CascadingPopupMenu::Nav CascadingPopupMenu::moveDown() {
-  if (!open_) return Nav::Ignored;
-  PopupMenu& m = (activeSub_ >= 0) ? subMenus_[activeSub_] : top_;
-  return m.moveDown() ? Nav::Moved : Nav::Ignored;
-}
-
-CascadingPopupMenu::Nav CascadingPopupMenu::moveLeft() {
-  if (!open_) return Nav::Ignored;
-  if (activeSub_ >= 0) {
-    activeSub_ = -1;
-    return Nav::BackToTop;
+  entries_ = builder_ ? builder_() : std::vector<PopupMenuEntry>{};
+  stack_.clear();
+  if (path.empty()) {
+    pushLevel(entries_, std::nullopt);
+    return;
   }
-  open_ = false;
-  return Nav::ClosedPopup;
-}
 
-CascadingPopupMenu::Nav CascadingPopupMenu::moveRight() {
-  if (!open_ || activeSub_ >= 0) return Nav::Ignored;
-  const int i = top_.selectedIndex();
-  if (topRowHasSubmenu(i)) {
-    activeSub_ = i;
-    const int init = subs_[i].initialSelection ? subs_[i].initialSelection() : 0;
-    subMenus_[i].setSelectedIndex(init);
-    return Nav::EnteredSubmenu;
+  // Root, then re-descend while each saved row still names a branch.
+  pushLevel(entries_, path[0]);
+  for (size_t d = 1; d < path.size(); ++d) {
+    const PopupMenuEntry* entry = focusedEntry();
+    if (entry == nullptr || !isBranch(*entry)) break;
+    pushLevel(*entry->children, path[d]);
   }
-  return Nav::LeafActivated;
 }
 
-CascadingPopupMenu::Nav CascadingPopupMenu::activate() {
-  if (!open_) return Nav::Ignored;
-  if (activeSub_ >= 0) return Nav::SubItemActivated;
-  const int i = top_.selectedIndex();
-  if (topRowHasSubmenu(i)) {
-    activeSub_ = i;
-    const int init = subs_[i].initialSelection ? subs_[i].initialSelection() : 0;
-    subMenus_[i].setSelectedIndex(init);
-    return Nav::EnteredSubmenu;
+void CascadingPopupMenu::moveUp() {
+  if (!open_ || stack_.empty()) return;
+  if (stack_.back().menu.moveUp()) notifyUpdate();
+}
+
+void CascadingPopupMenu::moveDown() {
+  if (!open_ || stack_.empty()) return;
+  if (stack_.back().menu.moveDown()) notifyUpdate();
+}
+
+void CascadingPopupMenu::back() {
+  if (!open_) return;
+  if (stack_.size() > 1) {
+    stack_.pop_back();
+  } else {
+    close();
   }
-  return Nav::LeafActivated;
+  notifyUpdate();
 }
 
-int CascadingPopupMenu::panelHeight(int itemCount) const {
+void CascadingPopupMenu::activate() {
+  if (!open_ || stack_.empty()) return;
+
+  // Activating a panel that has no row selected lands on the first row instead
+  // of acting — mirrors how the first Up/Down press behaves from "no selection".
+  PopupMenu& focused = stack_.back().menu;
+  if (!focused.selectedIndex().has_value()) {
+    if (focused.moveDown()) notifyUpdate();
+    return;
+  }
+
+  const PopupMenuEntry* entry = focusedEntry();
+  if (entry == nullptr) return;
+
+  if (isBranch(*entry)) {
+    // Entering a submenu lands on its pre-selected row, or row 0 by default.
+    pushLevel(*entry->children, entry->initialSelectedChild.value_or(uint8_t{0}));
+    notifyUpdate();
+    return;
+  }
+
+  if (entry->onSelected.has_value()) {
+    const bool shouldClose = (*entry->onSelected)();
+    if (shouldClose) {
+      close();
+    } else {
+      // The leaf mutated state (e.g. the sort field); rebuild so the tree's
+      // glyphs reflect it, keeping the user on the same row.
+      rebuildPreservingPath();
+    }
+    notifyUpdate();
+  }
+}
+
+int CascadingPopupMenu::panelHeight(int itemCount) {
   const auto& pm = GUI.getData()->popupMenu;
   return itemCount * pm.rowHeight + 2 * pm.borderThickness;
 }
 
-int CascadingPopupMenu::panelWidth(GfxRenderer& renderer, int itemCount,
-                                   const std::function<const char*(int)>& rowLabel) const {
+int CascadingPopupMenu::panelWidth(GfxRenderer& renderer, const std::vector<PopupMenuEntry>& entries) {
   const auto& pm = GUI.getData()->popupMenu;
   const int font = GUI.getFontForRole(pm.fontRole);
   int maxLabelW = 0;
-  for (int i = 0; i < itemCount; ++i) {
-    const char* s = rowLabel ? rowLabel(i) : nullptr;
-    if (s == nullptr || s[0] == '\0') continue;
-    const int w = renderer.getTextWidth(font, s, EpdFontFamily::BOLD);
-    maxLabelW = std::max(maxLabelW, w);
+  bool anyGlyph = false;
+  for (const PopupMenuEntry& e : entries) {
+    // A row paints a glyph when it's a branch (chevron) or carries one.
+    if (isBranch(e) || e.glyph.has_value()) anyGlyph = true;
+    if (e.label == nullptr || e.label[0] == '\0') continue;
+    // Measure in the same weight PopupMenu renders the label (REGULAR);
+    // measuring BOLD over-reserves and leaves slack on the trailing edge.
+    maxLabelW = std::max(maxLabelW, renderer.getTextWidth(font, e.label));
   }
-  // Layout per row: borderThickness | paddingX | label … glyph | paddingX | borderThickness
-  // The glyph footprint matches PopupMenu's filled-triangle size (rowHeight/3,
-  // floor-clamped at 6). Reserve it on every panel so adding an arrow at runtime
-  // (e.g. the active sort field) doesn't visually reflow the panel.
-  const int glyphRoom = std::max(6, pm.rowHeight / 3);
-  return 2 * pm.borderThickness + 2 * pm.paddingX + maxLabelW + glyphRoom + pm.paddingX;
+  // Layout per row: borderThickness | paddingX | label [… glyph | paddingX] | borderThickness.
+  // Only reserve the glyph gutter when some row in this panel actually has one,
+  // so glyphless panels (e.g. Book / Files) don't carry dead trailing space.
+  // The tree is rebuilt on open, so whether a panel has glyphs is stable for its
+  // lifetime — no runtime reflow to guard against. Matches PopupMenu's sizing.
+  const int glyphReserve = anyGlyph ? (std::max(6, pm.rowHeight / 3) + pm.paddingX) : 0;
+  return 2 * pm.borderThickness + 2 * pm.paddingX + maxLabelW + glyphReserve;
 }
 
-void CascadingPopupMenu::render(GfxRenderer& renderer, int leftX, int bottomLimit,
-                                int rightLimit) const {
-  if (!open_) return;
+void CascadingPopupMenu::render(GfxRenderer& renderer, int leftX, int bottomLimit, int rightLimit) const {
+  if (!open_ || stack_.empty()) return;
   const auto& pm = GUI.getData()->popupMenu;
+  const int panelBottom = bottomLimit - pm.shadowOffsetY;
+  const int screenH = renderer.getScreenHeight();
+  const size_t focused = stack_.size() - 1;
 
-  // ---- Top panel layout ----------------------------------------------------
-  const int topCount = static_cast<int>(subs_.size());
-  const int topH = panelHeight(topCount);
-  const int topW = panelWidth(renderer, topCount, topLabel_);
-  const int topX = leftX;
-  // bottomLimit is the lowest pixel the cascade may touch (shadow included).
-  // PopupMenu paints its shadow at rect.y + shadowOffsetY, so the panel rect's
-  // bottom-edge has to sit at bottomLimit - shadowOffsetY.
-  const int topY = bottomLimit - pm.shadowOffsetY - topH;
-
-  // Top row glyphs are derived: chevron for rows that own a submenu, None
-  // for leaves. The activity doesn't supply this — it's a cascade concern.
-  auto topGlyph = [this](int i) -> PopupMenu::Glyph {
-    return topRowHasSubmenu(i) ? PopupMenu::Glyph::ChevronRight : PopupMenu::Glyph::None;
-  };
-
-  // When a submenu is open, dim-highlight its owning top row so the user
-  // can see which entry the submenu hangs off.
-  const int topMuted = (activeSub_ >= 0) ? activeSub_ : -1;
-
-  top_.render(renderer, Rect{topX, topY, topW, topH},
-              /*showSelection=*/activeSub_ < 0, topLabel_, topGlyph, topMuted);
-
-  if (activeSub_ < 0) return;
-
-  // ---- Submenu panel layout ------------------------------------------------
-  const SubmenuConfig& cfg = subs_[activeSub_];
-  const int subH = panelHeight(cfg.itemCount);
-  int subW = panelWidth(renderer, cfg.itemCount, cfg.rowLabel);
-  const int subX = topX + topW + pm.panelGap;
-  // Clamp width so the submenu's shadow doesn't escape rightLimit.
-  if (subX + subW + pm.shadowOffsetX > rightLimit) {
-    subW = rightLimit - pm.shadowOffsetX - subX;
+  // The focused branch's children render as a preview panel (no highlight) when
+  // we haven't entered them yet.
+  PopupMenu previewMenu;
+  const std::vector<PopupMenuEntry>* previewEntries = nullptr;
+  if (const PopupMenuEntry* entry = focusedEntry(); entry != nullptr && isBranch(*entry)) {
+    previewEntries = &(*entry->children);
+    previewMenu.setItemCount(static_cast<int>(previewEntries->size()), std::nullopt);
   }
-  // Baseline-align bottoms with the top panel (the prototype anchors both at
-  // the same Y so the user sees the cascade open "from" the active row).
-  const int subY = topY + topH - subH;
+  const int panelCount = static_cast<int>(stack_.size()) + (previewEntries != nullptr ? 1 : 0);
 
-  subMenus_[activeSub_].render(renderer, Rect{subX, subY, subW, subH},
-                               /*showSelection=*/true, cfg.rowLabel, cfg.rowGlyph);
+  // Walk the panel chain left-to-right. The root anchors just above the footer;
+  // every subsequent panel cascades from its parent's selected row.
+  int x = leftX;
+  int prevTop = 0;                 // top edge of the panel drawn last iteration
+  std::optional<uint8_t> prevSel;  // its selected row — the one a child hangs off
+  for (int p = 0; p < panelCount; ++p) {
+    const bool isPreview = (p == static_cast<int>(stack_.size()));
+    const std::vector<PopupMenuEntry>& entries = isPreview ? *previewEntries : *stack_[p].entries;
+    const PopupMenu& menu = isPreview ? previewMenu : stack_[p].menu;
+    const bool isFocused = (!isPreview && static_cast<size_t>(p) == focused);
+
+    const int count = static_cast<int>(entries.size());
+    if (count == 0) break;
+
+    int w = panelWidth(renderer, entries);
+    if (x + w + pm.shadowOffsetX > rightLimit) w = rightLimit - pm.shadowOffsetX - x;
+    if (w < 2 * pm.borderThickness + pm.paddingX) break;
+    const int h = panelHeight(count);
+
+    // Vertical placement: root anchors to the footer baseline; a child aligns
+    // its top with the parent's selected-row top when the whole panel still
+    // fits on-screen below that row, otherwise aligns its bottom with the row.
+    int y;
+    if (p == 0 || !prevSel.has_value()) {
+      y = panelBottom - h;
+    } else {
+      const int rowTop = prevTop + pm.borderThickness + static_cast<int>(*prevSel) * pm.rowHeight;
+      y = (rowTop + h + pm.shadowOffsetY <= screenH) ? rowTop : (rowTop + pm.rowHeight - h);
+      if (y < 0) y = 0;
+    }
+
+    // Ancestors get a muted parent-row wash and no highlight; the focused panel
+    // shows its selection; the preview shows none.
+    int mutedRow = -1;
+    if (!isFocused && !isPreview && menu.selectedIndex().has_value()) {
+      mutedRow = static_cast<int>(*menu.selectedIndex());
+    }
+
+    const std::function<const char*(int)> labelFn = [&entries](int i) -> const char* { return entries[i].label; };
+    const std::function<PopupMenu::Glyph(int)> glyphFn = [&entries](int i) -> PopupMenu::Glyph {
+      const PopupMenuEntry& e = entries[i];
+      if (isBranch(e)) return PopupMenu::Glyph::ChevronRight;
+      return e.glyph.value_or(PopupMenu::Glyph::None);
+    };
+    menu.render(renderer, Rect{x, y, w, h}, /*showSelection=*/isFocused, labelFn, glyphFn, mutedRow);
+
+    prevTop = y;
+    prevSel = menu.selectedIndex();
+    x += w + pm.panelGap;
+  }
 }
 
-void CascadingPopupMenu::renderFooterHints(GfxRenderer& renderer,
-                                           const MappedInputManager& mappedInput) const {
+void CascadingPopupMenu::renderFooterHints(GfxRenderer& renderer, const MappedInputManager& mappedInput) const {
   if (!open_) return;
   const auto labels = getFooterLabels(mappedInput);
   ButtonHints::render(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
 }
 
 MappedInputManager::Labels CascadingPopupMenu::getFooterLabels(const MappedInputManager& mappedInput) const {
-  const bool inSub = inSubmenu();
-  const bool confirmEnters = !inSub && topRowHasSubmenu(top_.selectedIndex());
-  const char* back = inSub ? tr(STR_BACK) : tr(STR_CLOSE);
+  const bool inSubmenu = stack_.size() > 1;
+  const PopupMenuEntry* entry = focusedEntry();
+  const bool confirmEnters = entry != nullptr && isBranch(*entry);
+  const char* back = inSubmenu ? tr(STR_BACK) : tr(STR_CLOSE);
   const char* confirm = confirmEnters ? tr(STR_ENTER) : tr(STR_SELECT);
   return mappedInput.mapLabels(back, confirm, "", "");
 }

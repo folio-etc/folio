@@ -7,6 +7,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -24,26 +25,18 @@ class LibraryActivity final : public Activity {
   static constexpr int ROWS = 3;
   static constexpr int PER_PAGE = COLS * ROWS;
 
-  // Top-panel row indices for the cascading popup. The activity dispatches
-  // leaf actions and sort logic against these indices.
-  static constexpr int POPUP_TOP_SORT = 0;
-  static constexpr int POPUP_TOP_COLLECTIONS = 1;  // leaf → CollectionsActivity
-  static constexpr int POPUP_TOP_BOOK = 2;         // submenu: Add / Remove from Collection
-  static constexpr int POPUP_TOP_FILES = 3;
-  static constexpr int POPUP_TOP_POWER = 4;
-  static constexpr int POPUP_TOP_SETTINGS = 5;
-  static constexpr int POPUP_TOP_COUNT = 6;
+  // Worst-case 2bpp source for one thumbnail (THUMB_MAX_WIDTH × THUMB_HEIGHT,
+  // stride = (w+3)/4). Reused decode scratch for the prefetch worker.
+  static constexpr std::size_t DECODE_SCRATCH_BYTES =
+      static_cast<std::size_t>((LibraryIndex::THUMB_MAX_WIDTH + 3) / 4) * LibraryIndex::THUMB_HEIGHT;
 
-  static constexpr int POPUP_BOOK_ADD = 0;
-  static constexpr int POPUP_BOOK_REMOVE = 1;
-  static constexpr int POPUP_BOOK_COUNT = 2;
-
-  static constexpr int POPUP_FILES_BROWSE = 0;
-  static constexpr int POPUP_FILES_TRANSFER = 1;
-  static constexpr int POPUP_FILES_COUNT = 2;
-
-  static constexpr int POPUP_SORT_COUNT = 4;   // Recent / Title / Author / Progress
-  static constexpr int POPUP_POWER_COUNT = 2;  // Next in Row / Next Book
+  // Dedicated raster region for the cover cache. Worst case is one page of 9
+  // covers × (1bpp 120×120 = (120+7)/8 × 120 = 1800 B) = 16.2 KB + ~0.1 KB block
+  // headers; 20 KB leaves margin for intra-arena fragmentation. The page is
+  // cleared and reloaded as a unit, so the free list coalesces cleanly and an
+  // over-budget raster simply renders a placeholder (no crash). All cover buffer
+  // churn lives here instead of fragmenting the general heap.
+  static constexpr std::size_t COVER_ARENA_BYTES = 20 * 1024;
 
   // ---- View state ---------------------------------------------------------
   // GridHelper
@@ -77,14 +70,24 @@ class LibraryActivity final : public Activity {
   bool lockNextConfirmRelease = false;
   bool lockNextBackRelease = false;
 
-  // Fixed-capacity cover cache sized to three pages worth of thumbs
-  // (previous / current / next). The current page is populated lazily on
-  // the render path; the two neighbor pages are populated by an async
-  // prefetch task so a page-turn paints from cached pixels with no SD
-  // I/O on the render thread. The 2bpp decoded source is freed inside
-  // buildScaledBitmap once the 1bpp raster is built, keeping the worst-
-  // case resident set around 55 KB even at 27 entries (~2 KB / cover).
-  BitmapCacheManager pageCache_{PER_PAGE * 3};
+  // Fixed-capacity cover cache sized to ONE page of thumbs, backed by its own
+  // arena (COVER_ARENA_BYTES). The async prefetch worker decodes + pre-scales
+  // each cover to its draw dimensions and stores only the 1bpp raster. On a page
+  // change we clear the cache and load the new page before rendering it (no
+  // placeholder flash); placeholders appear only while a rapid-jump (Up/Down
+  // hold) flicks through pages. Entries hold no 2bpp source; the worker reuses a
+  // single decode scratch (decodeScratch_).
+  BitmapCacheManager pageCache_{PER_PAGE, COVER_ARENA_BYTES};
+
+  // Reused 2bpp decode scratch for the prefetch worker (allocated in onEnter,
+  // freed in onExit). Single-producer: only the worker writes/reads it.
+  std::unique_ptr<uint8_t[]> decodeScratch_;
+
+  // Cover draw dimensions (the grid's cover-slot W/H), computed from the flex
+  // layout in onEnter and refreshed on theme/orientation change. The worker
+  // pre-scales each cover to fit this envelope via GfxRenderer::computeThumbTarget.
+  int coverBoxW_ = 0;
+  int coverBoxH_ = 0;
 
   // ---- Prefetch worker state ---------------------------------------------
   // FreeRTOS task that decodes neighbor-page covers off the render path.
@@ -95,8 +98,9 @@ class LibraryActivity final : public Activity {
   //     covers to abandon its current scan (set on page change / sort /
   //     rapid-jump / shutdown).
   //   - prefetchShutdown_ tells the worker to exit cleanly.
-  // Owner: activity thread enqueues page indices; worker dequeues and
-  // populates the cache via GfxRenderer::decodeBitmapEntry + cache.set.
+  // Owner: activity thread enqueues page indices; worker dequeues and, for each
+  // cover, decodes into decodeScratch_ off-lock, then (under cacheLock_) scales
+  // to the draw dims and stores the 1bpp raster via GfxRenderer + cache.set.
   TaskHandle_t prefetchTask_ = nullptr;
   SemaphoreHandle_t cacheLock_ = nullptr;
   SemaphoreHandle_t prefetchSignal_ = nullptr;
@@ -105,36 +109,30 @@ class LibraryActivity final : public Activity {
   // cacheLock_ or mid-SD-decode when it's deleted.
   SemaphoreHandle_t prefetchExited_ = nullptr;
   // Given by the worker after each fully-completed page batch (not on
-  // cancel). Activity loop polls it to clear lazyLoadCurrentPage_ and
-  // trigger a repaint once the awaited page lands in the cache.
+  // cancel). Activity loop polls it to clear pendingPageRender_ and
+  // trigger the deferred repaint once the awaited page lands in the cache.
   SemaphoreHandle_t prefetchBatchDone_ = nullptr;
-  // Capacity 4 is enough for the worst overlap: onEnter enqueues both
-  // neighbors (2), and a rapid-jump release enqueues both new neighbors
-  // before the worker has drained (2 more). Sentinel 0xFF = empty slot.
+  // Only ever one page is in flight (we clear + load a single page on each
+  // settle), but a release mid-decode can enqueue a second before the worker
+  // drains the first. Sentinel 0xFF = empty slot.
   static constexpr std::size_t PREFETCH_QUEUE_CAPACITY = 4;
   uint8_t prefetchQueue_[PREFETCH_QUEUE_CAPACITY] = {0xFF, 0xFF, 0xFF, 0xFF};
   uint8_t prefetchQueueCount_ = 0;
   volatile bool prefetchCancel_ = false;
   volatile bool prefetchShutdown_ = false;
 
-  // Tracks gridHelper.currentPage() at the start of loop() so page
-  // transitions trigger the page-aware eviction + direction-of-travel
-  // prefetch exactly once per transition.
+  // gridHelper.currentPage() as last loaded, for bookkeeping.
   uint8_t lastObservedPage_ = 0;
-  // True while a rapid-jump (continuous Up/Down) hold is in progress.
-  // Render path swaps to peekCachedBitmapDimensions while this is set so
-  // pages flicked past don't trigger SD reads; release restores normal
-  // loading and triggers a re-prefetch of the landed page's neighbors.
-  // Volatile because the render task reads it without taking cacheLock_
-  // (the read is single-byte and outside the lock-protected cache ops).
+  // True while a rapid-jump (continuous Up/Down) hold is in progress. We don't
+  // decode pages flicked past, so the render path peeks and shows placeholders
+  // for the uncached page; release (endRapidJumpIfActive) loads the landed page
+  // for real. Volatile because the render task reads it without cacheLock_.
   volatile bool rapidJumping_ = false;
-  // True after applySort or endRapidJumpIfActive — render path uses
-  // peekCachedBitmapDimensions for the current page so the activity
-  // paints placeholders immediately rather than blocking on a 1–2 s
-  // synchronous SD decode. Cleared by the activity loop when the
-  // prefetch worker signals batch-done (the current page lands first
-  // because applySort / endRapidJumpIfActive enqueue it first).
-  volatile bool lazyLoadCurrentPage_ = false;
+  // Set by loadPage: a page load is in flight. The caller repaints immediately
+  // (placeholders for the not-yet-decoded covers); when the worker signals
+  // batch-done the activity loop clears this and repaints again to swap the
+  // placeholders for the now-resident covers.
+  volatile bool pendingPageRender_ = false;
 
   // ---- Prefetch helpers --------------------------------------------------
   static void prefetchTaskTrampoline(void* ctx);
@@ -144,28 +142,28 @@ class LibraryActivity final : public Activity {
   // at least 64 bytes.
   bool buildThumbPath(uint8_t page, uint8_t slot, char* out, std::size_t outSize) const;
   // Enqueue a page for prefetch. Validates the page index, dedupes against
-  // the existing queue, signals the worker. Safe to call while holding
-  // cacheLock_ (uses no-op fast path) or without.
-  void enqueuePrefetchLocked(uint8_t page);
+  // the existing queue, signals the worker. Caller holds cacheLock_. Returns
+  // false only when the page is out of range (nothing to load).
+  bool enqueuePrefetchLocked(uint8_t page);
   // Cancel any in-flight or queued prefetch. Acquires cacheLock_.
   void cancelAllPrefetch();
-  // Drop cached entries whose path doesn't appear in the keep-set for
-  // pages {centerPage-1, centerPage, centerPage+1}. Caller holds cacheLock_.
-  void evictPagesOutsideKeepSetLocked(uint8_t centerPage);
-  // Handle a detected page transition: cancel pending prefetch, evict
-  // pages outside the new keep-set, request prefetch for the new
-  // direction-of-travel neighbor (or both neighbors on a multi-page jump
-  // where the prev page is no longer resident).
-  void onPageChanged(uint8_t oldPage, uint8_t newPage);
-  // Shared "we just landed on a cold page" reseed used by applySort and
-  // endRapidJumpIfActive: cancel any in-flight prefetch, evict entries
-  // outside the new {prev, cur, next} keep-set, enqueue current first
-  // then both neighbors, drain any stale batch-done signal, enter
-  // lazy-load mode so the render path uses peek (showing placeholders)
-  // until the worker's first batch lands.
-  void primeNeighborhoodLazy(uint8_t centerPage);
+  // Swap the (single-page) cache to `page`: cancel any in-flight prefetch, clear
+  // the cache, enqueue `page`, drain any stale batch-done, and set
+  // pendingPageRender_. Does NOT requestUpdate itself — main-loop callers paint
+  // placeholders immediately (peek misses the cleared cache) and the worker's
+  // batch-done repaints with real covers (loop()). Lazy load: the page turn is
+  // instant (placeholders) and covers fill in shortly after.
+  void loadPage(uint8_t page);
 
-  void initPopup();
+  // Build the cascading popup's entry tree from current settings. Installed as
+  // the menu's builder in onEnter, so it re-runs on every open (and after any
+  // non-closing leaf action), keeping state-dependent glyphs / pre-selections
+  // fresh without per-render callbacks.
+  std::vector<PopupMenuEntry> buildEntries();
+  // Launch the collection-membership picker for the book under the cursor.
+  // Returns true (close the popup) when there's no book to edit; false while
+  // the picker is launched (the return handler closes the popup on resume).
+  bool openCollectionPicker(bool add);
 
   void moveUp();
   void moveDown();
@@ -195,9 +193,6 @@ class LibraryActivity final : public Activity {
   void renderBackTile(const Rect& cell, bool selected);
 
   void doSelect();
-  // Dispatches the activity action for an active popup row (leaf or submenu
-  // item). Reads popup_.topSelectedIndex() / subSelectedIndex() to decide.
-  void dispatchPopupActivation(CascadingPopupMenu::Nav navResult);
   // Close the popup and refresh after the collection-membership picker returns.
   // Only a collection view's contents depend on membership, so the view is
   // rebuilt only then; otherwise the grid is just repainted in place.
@@ -217,6 +212,12 @@ class LibraryActivity final : public Activity {
   void setSort(uint8_t field, uint8_t direction);
 
   // ---- Rendering helpers --------------------------------------------------
+  // Compute the cover-slot rect for a grid cell by replaying the same flex
+  // layout the render path uses (no drawing). Cells are uniform, so this is the
+  // draw envelope for every cover. Used to seed coverBoxW_/H_ and to detect
+  // theme/orientation layout changes.
+  Rect computeCoverSlot() const;
+
   // Body of the render: header + library shelf or menu + footer hints.
   // Split out from render() so the prewarming and clear/display bookends
   // stay tidy.

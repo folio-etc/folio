@@ -11,20 +11,19 @@
 #include "components/themes/ThemeData.generated.h"
 
 void Cover::render(GfxRenderer& renderer, const Rect& box, BitmapCacheManager& cache,
-                   const char* thumbPath, bool useReadOnlyLookup, bool inverted,
-                   int naturalWidth, int naturalHeight, const Fallback* fallback) {
+                   const char* thumbPath, bool inverted, int naturalWidth, int naturalHeight,
+                   const Fallback* fallback) {
   const auto& lib = GUI.getData()->library;
 
-  // Probe cached dimensions to drive aspect-fit framing. Read-only peek
-  // avoids any SD I/O when the caller is in a rapid-jump or lazy-load
-  // state — a miss falls through to the natural-size fallback frame.
+  // Probe cached dimensions to drive aspect-fit framing. Always a read-only
+  // peek — covers are decoded + pre-scaled by the prefetch worker, so the
+  // render path never loads from SD; a miss falls through to the natural-size
+  // fallback frame while the cover is in flight.
   int bmpW = 0;
   int bmpH = 0;
   const bool haveThumb = thumbPath != nullptr && thumbPath[0] != '\0' &&
-                         (useReadOnlyLookup
-                              ? renderer.peekCachedBitmapDimensions(cache, thumbPath, &bmpW, &bmpH)
-                              : renderer.getCachedBitmapDimensions(cache, thumbPath, &bmpW, &bmpH)) &&
-                         bmpW > 0 && bmpH > 0;
+                         renderer.peekCachedBitmapDimensions(cache, thumbPath, &bmpW, &bmpH) && bmpW > 0 &&
+                         bmpH > 0;
 
   // Default frame: natural-size, horizontally centered, top-aligned.
   int frameX = box.x + (box.width - naturalWidth) / 2;

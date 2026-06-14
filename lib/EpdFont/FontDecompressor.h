@@ -44,7 +44,7 @@ class FontDecompressor {
   // active (size, style); keeping them all resident eliminates the re-inflate
   // thrash that occurred when consecutive drawText calls alternated fonts
   // against a single decompressed-group slot.
-  static constexpr uint32_t GROUP_CACHE_BUDGET_BYTES = 48 * 1024;
+  static constexpr uint32_t GROUP_CACHE_BUDGET_BYTES = 32 * 1024;
   static constexpr uint8_t MAX_GROUP_SLOTS = 16;
   struct GroupCacheEntry {
     const EpdFontData* font = nullptr;

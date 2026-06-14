@@ -22,11 +22,13 @@ class GridHelper {
 
     uint16_t rowForIndex(uint16_t index);
     uint8_t colForIndex(uint16_t index);
+    uint8_t pageForIndex(uint16_t index);
 
     uint8_t currentRow();
     uint8_t currentCol();
     uint8_t currentPage();
 
+    void prevItem();
     void nextItem();
 
     void up();

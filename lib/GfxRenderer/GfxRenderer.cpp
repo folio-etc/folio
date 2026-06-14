@@ -1221,84 +1221,66 @@ void GfxRenderer::drawBitmap1Bit(const Bitmap& bitmap, const int x, const int y,
 // BitmapCacheManager::clear() before re-populating — no LRU eviction, no
 // negative-result set, no global state that grows across paints.
 
-BitmapCacheManager::Entry GfxRenderer::decodeBitmapEntry(const char* path) {
-  // Read the BMP from SD and decode all rows into the 2-bit packed buffer
-  // format that readNextRow produces. Storing the decoded form (rather than
-  // the raw file bytes) lets drawCachedBitmap rasterize without re-running
-  // the file-parse pipeline on every paint. Returns an Entry with an empty
-  // `path` on any failure so callers can distinguish success from failure
-  // without exceptions.
-  BitmapCacheManager::Entry entry;
-  if (path == nullptr || path[0] == '\0') return entry;
+bool GfxRenderer::decodeThumbInto(const char* path, uint8_t* dst, std::size_t dstCap, int& outW, int& outH,
+                                  bool& outTopDown) {
+  // Decode all rows of the 1-bit BMP at `path` into the caller's 2bpp buffer
+  // (Bitmap::readNextRow format). No allocation: the prefetch worker hands us a
+  // single reused scratch, so steady-state scrolling never churns the heap.
+  outW = 0;
+  outH = 0;
+  outTopDown = false;
+  if (path == nullptr || path[0] == '\0' || dst == nullptr) return false;
 
   FsFile file;
-  if (!Storage.openFileForRead("GFX", path, file)) return entry;
+  if (!Storage.openFileForRead("GFX", path, file)) return false;
 
-  // Bitmap currently requires non-dithered for 1-bit; we keep things in
-  // BW mode for the UI cache (covers + thumbs are rendered at threshold).
+  // Bitmap currently requires non-dithered for 1-bit; covers + thumbs render at
+  // threshold so BW mode is correct.
   Bitmap bitmap(file, /*dithering=*/false);
-  if (bitmap.parseHeaders() != BmpReaderError::Ok) return entry;
-
-  if (!bitmap.is1Bit()) {
-    // Higher-bpp paths still go through the existing Bitmap → drawBitmap
-    // pipeline; the cache is 1-bit only for now (covers, thumbs, etc.).
-    return entry;
-  }
+  if (bitmap.parseHeaders() != BmpReaderError::Ok) return false;
+  if (!bitmap.is1Bit()) return false;
 
   const int width = bitmap.getWidth();
   const int height = bitmap.getHeight();
-  if (width <= 0 || height <= 0) return entry;
+  if (width <= 0 || height <= 0) return false;
 
   const int stride = (width + 3) / 4;
   const size_t bufBytes = static_cast<size_t>(stride) * static_cast<size_t>(height);
-  if (bufBytes == 0) return entry;
-
-  auto pixels = makeUniqueNoThrow<uint8_t[]>(bufBytes);
-  if (!pixels) {
-    LOG_ERR("GFX", "Image cache: OOM %u bytes for %s", static_cast<unsigned>(bufBytes), path);
-    return entry;
+  if (bufBytes == 0 || bufBytes > dstCap) {
+    if (bufBytes > dstCap)
+      LOG_ERR("GFX", "Thumb too large: %u > %u for %s", static_cast<unsigned>(bufBytes),
+              static_cast<unsigned>(dstCap), path);
+    return false;
   }
 
-  // Throwaway row buffer for the file's native row size (used internally
-  // by readNextRow to unpack 1-bit → 2-bit).
-  auto rowScratch = makeUniqueNoThrow<uint8_t[]>(bitmap.getRowBytes());
-  if (!rowScratch) {
-    LOG_ERR("GFX", "Image cache: OOM row scratch for %s", path);
-    return entry;
+  // Stack row scratch for the file's native row size. Library thumbs are
+  // ≤120 px wide (1-bit → 15 B, padded to 16); 64 B leaves comfortable margin.
+  const size_t rowBytes = bitmap.getRowBytes();
+  uint8_t rowScratch[64];
+  if (rowBytes > sizeof(rowScratch)) {
+    LOG_ERR("GFX", "Thumb row too wide: %u for %s", static_cast<unsigned>(rowBytes), path);
+    return false;
   }
 
   for (int row = 0; row < height; ++row) {
-    if (bitmap.readNextRow(pixels.get() + row * stride, rowScratch.get()) != BmpReaderError::Ok) {
-      LOG_ERR("GFX", "Image cache: row %d read failed for %s", row, path);
-      return entry;
+    if (bitmap.readNextRow(dst + row * stride, rowScratch) != BmpReaderError::Ok) {
+      LOG_ERR("GFX", "Thumb row %d read failed for %s", row, path);
+      return false;
     }
   }
 
-  entry.path = path;
-  entry.pixels = std::move(pixels);
-  entry.pixelsBytes = bufBytes;
-  entry.width = width;
-  entry.height = height;
-  entry.topDown = bitmap.isTopDown();
-  return entry;
-}
-
-BitmapCacheManager::Entry* GfxRenderer::lookupOrLoadCachedBitmap(BitmapCacheManager& cache, const char* path) const {
-  if (path == nullptr || path[0] == '\0') return nullptr;
-  if (auto* hit = cache.get(path)) return hit;
-
-  auto entry = decodeBitmapEntry(path);
-  if (entry.path.empty()) return nullptr;
-  return cache.set(std::move(entry));
-}
-
-bool GfxRenderer::getCachedBitmapDimensions(BitmapCacheManager& cache, const char* path, int* outWidth,
-                                            int* outHeight) const {
-  auto* entry = lookupOrLoadCachedBitmap(cache, path);
-  if (entry == nullptr) return false;
-  if (outWidth) *outWidth = entry->width;
-  if (outHeight) *outHeight = entry->height;
+  outW = width;
+  outH = height;
+  outTopDown = bitmap.isTopDown();
   return true;
+}
+
+void GfxRenderer::computeThumbTarget(int srcW, int srcH, int maxW, int maxH, int& outW, int& outH) {
+  float scale = 1.0f;
+  if (maxW > 0 && srcW > maxW) scale = static_cast<float>(maxW) / static_cast<float>(srcW);
+  if (maxH > 0 && srcH > maxH) scale = std::min(scale, static_cast<float>(maxH) / static_cast<float>(srcH));
+  outW = static_cast<int>(srcW * scale);
+  outH = static_cast<int>(srcH * scale);
 }
 
 bool GfxRenderer::peekCachedBitmapDimensions(BitmapCacheManager& cache, const char* path, int* outWidth,
@@ -1311,32 +1293,31 @@ bool GfxRenderer::peekCachedBitmapDimensions(BitmapCacheManager& cache, const ch
   return true;
 }
 
-void GfxRenderer::buildScaledBitmap(BitmapCacheManager::Entry* entry, int targetW, int targetH) const {
+bool GfxRenderer::buildScaledFromSource(BitmapCacheManager::Entry& entry, const uint8_t* src2bpp, int srcW, int srcH,
+                                        bool topDown, int targetW, int targetH, Arena& arena) const {
+  if (src2bpp == nullptr || srcW <= 0 || srcH <= 0 || targetW <= 0 || targetH <= 0) return false;
+
   const int scaledStride = (targetW + 7) / 8;
   const size_t scaledBytes = static_cast<size_t>(scaledStride) * static_cast<size_t>(targetH);
 
-  auto scaled = makeUniqueNoThrow<uint8_t[]>(scaledBytes);
-  if (!scaled) {
-    LOG_ERR("GFX", "Scaled cache OOM: %u bytes", static_cast<unsigned>(scaledBytes));
-    entry->scaledPixels.reset();
-    entry->scaledPixelsBytes = 0;
-    entry->scaledWidth = 0;
-    entry->scaledHeight = 0;
-    return;
+  auto* raw = static_cast<uint8_t*>(arena.allocate(scaledBytes));
+  if (raw == nullptr) {
+    LOG_ERR("GFX", "Cover arena full: %u bytes", static_cast<unsigned>(scaledBytes));
+    return false;
   }
 
-  memset(scaled.get(), 0xFF, scaledBytes);
+  memset(raw, 0xFF, scaledBytes);
 
-  const int srcStride = (entry->width + 3) / 4;
-  const float xRatio = static_cast<float>(entry->width) / static_cast<float>(targetW);
-  const float yRatio = static_cast<float>(entry->height) / static_cast<float>(targetH);
+  const int srcStride = (srcW + 3) / 4;
+  const float xRatio = static_cast<float>(srcW) / static_cast<float>(targetW);
+  const float yRatio = static_cast<float>(srcH) / static_cast<float>(targetH);
 
   for (int ty = 0; ty < targetH; ++ty) {
     const int srcRenderY = static_cast<int>(ty * yRatio);
-    const int srcRow = entry->topDown ? srcRenderY : (entry->height - 1 - srcRenderY);
-    const int clampedRow = std::clamp(srcRow, 0, entry->height - 1);
-    const uint8_t* srcRowPtr = entry->pixels.get() + clampedRow * srcStride;
-    uint8_t* dstRowPtr = scaled.get() + ty * scaledStride;
+    const int srcRow = topDown ? srcRenderY : (srcH - 1 - srcRenderY);
+    const int clampedRow = std::clamp(srcRow, 0, srcH - 1);
+    const uint8_t* srcRowPtr = src2bpp + clampedRow * srcStride;
+    uint8_t* dstRowPtr = raw + ty * scaledStride;
 
     for (int tx = 0; tx < targetW; ++tx) {
       const int srcX = static_cast<int>(tx * xRatio);
@@ -1347,18 +1328,11 @@ void GfxRenderer::buildScaledBitmap(BitmapCacheManager::Entry* entry, int target
     }
   }
 
-  entry->scaledPixels = std::move(scaled);
-  entry->scaledPixelsBytes = scaledBytes;
-  entry->scaledWidth = targetW;
-  entry->scaledHeight = targetH;
-
-  // 2bpp source is only needed to (re)build the 1bpp scaled raster. Once
-  // the scaled buffer is live, drop the source — frees ~3.6 KB per 120×120
-  // cover (~65% of the entry footprint). If a later paint requests a
-  // different target size, drawCachedBitmap evicts the slot and re-decodes
-  // from SD; that path is exercised on orientation change only.
-  entry->pixels.reset();
-  entry->pixelsBytes = 0;
+  entry.scaledPixels = BitmapCacheManager::ArenaBuf(raw, BitmapCacheManager::ArenaFree{&arena});
+  entry.scaledPixelsBytes = scaledBytes;
+  entry.scaledWidth = targetW;
+  entry.scaledHeight = targetH;
+  return true;
 }
 
 // Looks up `path` in `cache` (loading on miss), then blits it. `Opaque=false`
@@ -1369,33 +1343,23 @@ void GfxRenderer::buildScaledBitmap(BitmapCacheManager::Entry* entry, int target
 template <bool Opaque>
 bool GfxRenderer::drawCachedBitmap(BitmapCacheManager& cache, const char* path, const int x, const int y,
                                    const int maxWidth, const int maxHeight, const int cornerRadius) const {
-  auto* entry = lookupOrLoadCachedBitmap(cache, path);
+  auto* entry = cache.get(path);
   if (entry == nullptr) return false;
 
-  float scale = 1.0f;
-  if (maxWidth > 0 && entry->width > maxWidth) scale = static_cast<float>(maxWidth) / static_cast<float>(entry->width);
-  if (maxHeight > 0 && entry->height > maxHeight)
-    scale = std::min(scale, static_cast<float>(maxHeight) / static_cast<float>(entry->height));
-
-  const int targetW = static_cast<int>(entry->width * scale);
-  const int targetH = static_cast<int>(entry->height * scale);
+  int targetW = 0;
+  int targetH = 0;
+  computeThumbTarget(entry->width, entry->height, maxWidth, maxHeight, targetW, targetH);
   if (targetW <= 0 || targetH <= 0) return false;
 
+  // The prefetch worker pre-scales each cover to its draw dims using the same
+  // computeThumbTarget(), so a populated entry matches and we blit directly. A
+  // missing or differently-sized raster means the cover hasn't been
+  // (re)rasterized for the current dims yet (e.g. right after a theme /
+  // orientation change) — return false so the caller paints a placeholder until
+  // the worker refills.
   if (!entry->scaledPixels || entry->scaledWidth != targetW || entry->scaledHeight != targetH) {
-    // buildScaledBitmap consumes entry->pixels (the 2bpp source) and then
-    // drops it. If a subsequent paint requests different dimensions, the
-    // source is gone — evict the slot and re-decode from SD before
-    // rescaling. This path is rare (orientation change only in current
-    // Library usage; THUMB_HEIGHT == COVER_H means normal page paints
-    // always hit the matching-dims branch).
-    if (!entry->pixels) {
-      cache.evict(path);
-      entry = lookupOrLoadCachedBitmap(cache, path);
-      if (entry == nullptr) return false;
-    }
-    buildScaledBitmap(entry, targetW, targetH);
+    return false;
   }
-  if (!entry->scaledPixels) return false;
 
   // Corner-skip table. When r > 0, pixels in the four [0, r) × [0, r) corner
   // boxes that fall outside the rounded shape are left untouched — same

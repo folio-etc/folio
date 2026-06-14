@@ -200,45 +200,11 @@ class SdCardFont {
   };
   OverflowContext overflowCtx_[MAX_STYLES] = {};
 
-  // Self-warming on-demand glyph cache. Holds glyphs not in the prewarmed mini
-  // data — populated by glyphMissHandler on the first drawText that touches a
-  // not-yet-cached codepoint, and persisted across paints. Byte-budgeted so a
-  // whole screen's (or reader page's) working set stays resident; this is what
-  // lets activities render correctly WITHOUT a prewarm pass. LRU-evicted by
-  // lastUsedTick when either the slot cap or the byte budget is exceeded.
-  //
-  // Memory cost: up to OVERFLOW_BUDGET_BYTES of bitmap data plus the entry
-  // vector (~32 B/entry). Reads go through the persistent overflowFile_ handle
-  // so a miss costs a seek+read, not a directory-walking file open.
-  static constexpr uint32_t OVERFLOW_MAX_SLOTS = 512;
-  static constexpr uint32_t OVERFLOW_BUDGET_BYTES = 32 * 1024;
-  struct OverflowEntry {
-    EpdGlyph glyph;
-    uint8_t* bitmap = nullptr;
-    uint32_t codepoint = 0;
-    uint8_t styleIdx = 0;
-    uint32_t lastUsedTick = 0;  // LRU timestamp; bumped on hit and insertion.
-  };
-  std::vector<OverflowEntry> overflow_;
-  uint32_t overflowBytes_ = 0;
-  uint32_t nextLruTick_ = 1;  // Monotonic counter (0 reserved for "unused" sentinel).
-
-  // Self-warming kern-row cache. The full kern matrix is too big to keep
-  // resident; instead getKerning() fetches one matrix row (per left class) on
-  // demand via onKernRow, which reads it through overflowFile_ and caches it
-  // here. A screen touches only ~30-50 distinct left classes, so the cache
-  // stays small and warms in a single render pass. Byte-budgeted + LRU.
-  static constexpr uint32_t KERN_ROW_MAX_SLOTS = 96;
-  static constexpr uint32_t KERN_ROW_BUDGET_BYTES = 12 * 1024;
-  struct KernRowEntry {
-    uint8_t styleIdx = 0;
-    uint8_t leftClass = 0;
-    uint32_t lastUsed = 0;
-    std::vector<int8_t> row;  // kernRightClassCount values for this left class
-  };
-  std::vector<KernRowEntry> kernRows_;
-  uint32_t kernRowBytes_ = 0;
-  uint32_t nextKernTick_ = 1;
+  // The self-warming glyph-overflow and kern-row caches live in the global
+  // SdFontGlyphCache (a single shared budget across all fonts, so footprint is
+  // independent of how many fonts a theme loads). onGlyphMiss / onKernRow read
+  // a miss through overflowFile_ and insert it there, tagged by `this`;
+  // clearOverflow() / the dtor purge this font's entries via clearOwner(this).
 
   // Persistent read handle for on-demand glyph + kern-row reads. Opened lazily
   // on first miss and reused across paints (closed by clearOverflow/freeAll).
@@ -287,9 +253,6 @@ class SdCardFont {
   // Persistent read handle for the on-demand caches.
   HalFile* ensureOverflowFileOpen();
   void closeOverflowFile();
-  // Evict LRU entries until a new item fits the slot cap + byte budget.
-  void evictOverflowToFit(uint32_t neededBytes);
-  void evictKernRowsToFit(uint32_t neededBytes);
 
   // Static callback for EpdFontData::glyphMissHandler (per-style via OverflowContext)
   static const EpdGlyph* onGlyphMiss(void* ctx, uint32_t codepoint);

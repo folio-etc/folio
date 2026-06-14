@@ -10,6 +10,7 @@
 #include <memory>
 
 #include "EpdFontFamily.h"
+#include "SdFontGlyphCache.h"
 
 static_assert(sizeof(EpdGlyph) == 16, "EpdGlyph must be 16 bytes to match .cpfont file layout");
 static_assert(sizeof(EpdUnicodeInterval) == 12, "EpdUnicodeInterval must be 12 bytes to match .cpfont file layout");
@@ -105,21 +106,9 @@ void SdCardFont::freeAll() {
 }
 
 void SdCardFont::clearOverflow() {
-  for (auto& e : overflow_) {
-    delete[] e.bitmap;
-  }
-  overflow_.clear();
-  overflow_.shrink_to_fit();
-  overflowBytes_ = 0;
-  nextLruTick_ = 1;
-
-  // Kern rows share the on-demand cache lifecycle; drop them too.
-  kernRows_.clear();
-  kernRows_.shrink_to_fit();
-  kernRowBytes_ = 0;
-  nextKernTick_ = 1;
-
-  // The persistent read handle is tied to the on-demand cache lifetime.
+  // Drop this font's glyph + kern-row entries from the shared pool, then release
+  // the persistent read handle (tied to the on-demand cache lifetime).
+  SdFontGlyphCache::getInstance().clearOwner(this);
   closeOverflowFile();
 }
 
@@ -140,35 +129,6 @@ HalFile* SdCardFont::ensureOverflowFileOpen() {
 }
 
 void SdCardFont::closeOverflowFile() { overflowFile_.reset(); }
-
-void SdCardFont::evictOverflowToFit(uint32_t neededBytes) {
-  while (!overflow_.empty() &&
-         (overflow_.size() >= OVERFLOW_MAX_SLOTS || overflowBytes_ + neededBytes > OVERFLOW_BUDGET_BYTES)) {
-    size_t lru = 0;
-    for (size_t i = 1; i < overflow_.size(); i++) {
-      if (overflow_[i].lastUsedTick < overflow_[lru].lastUsedTick) lru = i;
-    }
-    overflowBytes_ -= overflow_[lru].glyph.dataLength;
-    delete[] overflow_[lru].bitmap;
-    // O(1) removal: move the tail entry into the hole (shallow pointer copy;
-    // no destructor runs, so bitmap ownership transfers cleanly), then drop it.
-    overflow_[lru] = overflow_.back();
-    overflow_.pop_back();
-  }
-}
-
-void SdCardFont::evictKernRowsToFit(uint32_t neededBytes) {
-  while (!kernRows_.empty() &&
-         (kernRows_.size() >= KERN_ROW_MAX_SLOTS || kernRowBytes_ + neededBytes > KERN_ROW_BUDGET_BYTES)) {
-    size_t lru = 0;
-    for (size_t i = 1; i < kernRows_.size(); i++) {
-      if (kernRows_[i].lastUsed < kernRows_[lru].lastUsed) lru = i;
-    }
-    kernRowBytes_ -= static_cast<uint32_t>(kernRows_[lru].row.size());
-    kernRows_[lru] = std::move(kernRows_.back());
-    kernRows_.pop_back();
-  }
-}
 
 // --- Per-style kern/ligature ---
 
@@ -829,13 +789,9 @@ const EpdGlyph* SdCardFont::onGlyphMiss(void* ctx, uint32_t codepoint) {
   if (!self->ensureStyleIntervalsLoaded(styleIdx)) return nullptr;
   const auto& s = self->styles_[styleIdx];
 
-  // Cache lookup — on hit, bump lastUsedTick so the entry survives eviction.
-  for (auto& e : self->overflow_) {
-    if (e.codepoint == codepoint && e.styleIdx == styleIdx) {
-      e.lastUsedTick = self->nextLruTick_++;
-      return &e.glyph;
-    }
-  }
+  // Shared-pool lookup — on hit, find() bumps the LRU timestamp.
+  auto& cache = SdFontGlyphCache::getInstance();
+  if (const EpdGlyph* hit = cache.findGlyph(self, styleIdx, codepoint)) return hit;
 
   // Miss — need to load from SD. Look up the global glyph index first; if
   // the codepoint isn't in this font's coverage, bail before touching SD.
@@ -875,20 +831,10 @@ const EpdGlyph* SdCardFont::onGlyphMiss(void* ctx, uint32_t codepoint) {
     }
   }
 
-  // All reads succeeded — make room and commit a fresh entry. push_back may
-  // reallocate, but the returned glyph pointer is consumed (measured/drawn)
-  // before the next miss per the EpdFontData::glyphMissHandler contract.
-  self->evictOverflowToFit(tempGlyph.dataLength);
-  self->overflow_.push_back(OverflowEntry{});
-  OverflowEntry& e = self->overflow_.back();
-  e.glyph = tempGlyph;
-  e.bitmap = tempBitmap.release();
-  e.codepoint = codepoint;
-  e.styleIdx = styleIdx;
-  e.lastUsedTick = self->nextLruTick_++;
-  self->overflowBytes_ += tempGlyph.dataLength;
-
-  return &e.glyph;
+  // All reads succeeded — commit into the shared pool. The returned glyph
+  // pointer is consumed (measured/drawn) before the next miss per the
+  // EpdFontData::glyphMissHandler contract, so a later insert's realloc is safe.
+  return cache.insertGlyph(self, styleIdx, codepoint, tempGlyph, std::move(tempBitmap));
 }
 
 const int8_t* SdCardFont::onKernRow(void* ctx, uint8_t leftClass) {
@@ -901,13 +847,9 @@ const int8_t* SdCardFont::onKernRow(void* ctx, uint8_t leftClass) {
   const uint16_t rowWidth = s.header.kernRightClassCount;
   if (leftClass == 0 || leftClass > s.header.kernLeftClassCount || rowWidth == 0) return nullptr;
 
-  // Cache lookup — on hit, bump LRU timestamp.
-  for (auto& e : self->kernRows_) {
-    if (e.styleIdx == styleIdx && e.leftClass == leftClass) {
-      e.lastUsed = self->nextKernTick_++;
-      return e.row.data();
-    }
-  }
+  // Shared-pool lookup — on hit, find() bumps the LRU timestamp.
+  auto& cache = SdFontGlyphCache::getInstance();
+  if (const int8_t* hit = cache.findKernRow(self, styleIdx, leftClass)) return hit;
 
   // Miss — read this left class's matrix row through the persistent handle.
   HalFile* file = self->ensureOverflowFileOpen();
@@ -927,31 +869,16 @@ const int8_t* SdCardFont::onKernRow(void* ctx, uint8_t leftClass) {
     return nullptr;
   }
 
-  // The row's heap buffer survives any kernRows_ reallocation (vector move
-  // transfers the buffer), and is consumed by getKerning before the next call.
-  self->evictKernRowsToFit(rowWidth);
-  self->kernRows_.push_back(KernRowEntry{});
-  KernRowEntry& e = self->kernRows_.back();
-  e.styleIdx = styleIdx;
-  e.leftClass = leftClass;
-  e.lastUsed = self->nextKernTick_++;
-  e.row.assign(tmp.get(), tmp.get() + rowWidth);
-  self->kernRowBytes_ += rowWidth;
-  return e.row.data();
+  // The cached row's buffer is consumed by getKerning before the next call.
+  return cache.insertKernRow(self, styleIdx, leftClass, tmp.get(), rowWidth);
 }
 
 bool SdCardFont::isOverflowGlyph(const EpdGlyph* glyph) const {
-  for (const auto& e : overflow_) {
-    if (&e.glyph == glyph) return true;
-  }
-  return false;
+  return SdFontGlyphCache::getInstance().isOverflowGlyph(glyph);
 }
 
 const uint8_t* SdCardFont::getOverflowBitmap(const EpdGlyph* glyph) const {
-  for (const auto& e : overflow_) {
-    if (&e.glyph == glyph) return e.bitmap;
-  }
-  return nullptr;
+  return SdFontGlyphCache::getInstance().bitmapFor(glyph);
 }
 
 SdCardFont* SdCardFont::fromMissCtx(void* ctx) { return static_cast<OverflowContext*>(ctx)->self; }

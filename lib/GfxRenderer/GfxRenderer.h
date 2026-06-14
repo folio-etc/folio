@@ -65,20 +65,28 @@ class GfxRenderer {
   mutable FontCacheManager* fontCacheManager_ = nullptr;
 
 
-  // Lazily populate `cache` with the decoded BMP at `path`. Returns the
-  // cached entry, or nullptr on miss (file missing, unsupported format,
-  // decode error, OOM). Callers own the cache; the renderer just decodes
-  // into it.
-  BitmapCacheManager::Entry* lookupOrLoadCachedBitmap(BitmapCacheManager& cache, const char* path) const;
-  void buildScaledBitmap(BitmapCacheManager::Entry* entry, int targetW, int targetH) const;
-
  public:
-  // Read and decode the BMP at `path` into a detached Entry that the caller can
-  // hand to a BitmapCacheManager via set(). Stateless and thread-safe (SD I/O
-  // goes through HalStorage's own mutex), so off-render-task loaders can use
-  // it without touching any GfxRenderer instance state. Returns an Entry with
-  // an empty `path` on failure (file missing, non-1-bit, decode error, OOM).
-  static BitmapCacheManager::Entry decodeBitmapEntry(const char* path);
+  // Build the 1-bit raster for `entry` at (targetW × targetH) from a 2bpp
+  // source buffer, allocating the raster from `arena`. Sets entry.scaledPixels
+  // / scaledWidth / scaledHeight / scaledPixelsBytes; leaves entry.width /
+  // height as the (caller-supplied) source dims. Returns false on arena OOM.
+  // Called by the prefetch worker under the cache lock.
+  bool buildScaledFromSource(BitmapCacheManager::Entry& entry, const uint8_t* src2bpp, int srcW, int srcH,
+                             bool topDown, int targetW, int targetH, Arena& arena) const;
+
+  // Decode the 1-bit BMP at `path` into the caller-supplied `dst` 2bpp buffer
+  // (Bitmap::readNextRow format, stride = (w+3)/4). No allocation — `dstCap` is
+  // the buffer size; decode fails if the image needs more. Stateless and
+  // thread-safe (SD I/O goes through HalStorage's own mutex), so off-render-task
+  // loaders can call it. Returns false on any failure (missing, non-1-bit,
+  // too-large, decode error); on success fills outW/outH/outTopDown.
+  static bool decodeThumbInto(const char* path, uint8_t* dst, std::size_t dstCap, int& outW, int& outH,
+                              bool& outTopDown);
+
+  // Target draw dimensions for a (srcW × srcH) bitmap aspect-fit into a
+  // (maxW × maxH) envelope, scaling DOWN only. Shared by the prefetch worker
+  // (to pre-scale) and drawCachedBitmap (to match), so both agree byte-for-byte.
+  static void computeThumbTarget(int srcW, int srcH, int maxW, int maxH, int& outW, int& outH);
 
  private:
   void renderChar(const EpdFontFamily& fontFamily, uint32_t cp, int* x, int* y, bool pixelState,
@@ -192,26 +200,20 @@ class GfxRenderer {
   // ─── Image cache ─────────────────────────────────────────────────────
   // Path-keyed bitmap cache. The renderer doesn't own the storage — the
   // caller (typically an activity that knows its working set) supplies a
-  // BitmapCacheManager sized to the scene. The first call for a (cache,
-  // path) pair reads + decodes from SD into the cache; subsequent calls
-  // render straight from the cached pixels. When the working set
-  // rotates, the owner calls BitmapCacheManager::clear() before
-  // re-populating.
+  // BitmapCacheManager sized to the scene, populated by a prefetch worker that
+  // pre-scales each cover to its draw dimensions. The render path only reads
+  // (never decodes): a miss falls through to a placeholder while the cover is
+  // in flight. When the working set rotates, the owner calls
+  // BitmapCacheManager::clear() / evictIf() before re-populating.
   //
-  // Returns the bitmap's native dimensions on success.
-  bool getCachedBitmapDimensions(BitmapCacheManager& cache, const char* path, int* outWidth, int* outHeight) const;
-
-  // Read-only sibling of getCachedBitmapDimensions: returns false on cache
-  // miss instead of triggering a load. Used by lazy-loading callers that
-  // populate the cache from a worker task and want the render path to fall
-  // through to a placeholder while the cover is in flight.
+  // Read-only lookup: returns the bitmap's native dimensions on a cache hit,
+  // false on a miss (no load triggered).
   bool peekCachedBitmapDimensions(BitmapCacheManager& cache, const char* path, int* outWidth, int* outHeight) const;
 
-  // Draw the BMP at `path`, scaled to fit (maxWidth × maxHeight) at top-
-  // left (x, y). Reads + decodes + stores in `cache` on first call for a
-  // given path; subsequent calls memcpy-style rasterize from cached
-  // pixels. Returns true on success. Currently 1-bit BMPs only — higher-
-  // bpp images fall through to the SD-backed drawBitmap path.
+  // Draw the pre-scaled raster cached for `path` at top-left (x, y), aspect-fit
+  // into (maxWidth × maxHeight). Returns false on a miss or if the cached raster
+  // isn't sized for the requested envelope (cover not yet (re)rasterized) so the
+  // caller can show a placeholder. 1-bit rasters only.
   //
   // Opaque=false (default): writes only the black-source pixels into the
   // framebuffer, leaving white-source pixels showing whatever was painted

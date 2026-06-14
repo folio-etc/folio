@@ -8,38 +8,49 @@
 #include "components/themes/BaseTheme.h"
 #include "components/themes/ThemeData.h"
 
-void PopupMenu::setItemCount(int count, int initialSelection) {
+void PopupMenu::setItemCount(int count, std::optional<uint8_t> initialSelection) {
   itemCount_ = count < 0 ? 0 : count;
-  if (itemCount_ == 0) {
-    selectedIndex_ = 0;
-    return;
-  }
-  selectedIndex_ = std::clamp(initialSelection, 0, itemCount_ - 1);
+  setSelectedIndex(initialSelection);
 }
 
-void PopupMenu::setSelectedIndex(int i) {
-  if (itemCount_ == 0) {
-    selectedIndex_ = 0;
+void PopupMenu::setSelectedIndex(std::optional<uint8_t> i) {
+  if (itemCount_ == 0 || !i.has_value()) {
+    selectedIndex_ = std::nullopt;
     return;
   }
-  selectedIndex_ = std::clamp(i, 0, itemCount_ - 1);
+  selectedIndex_ = static_cast<uint8_t>(std::clamp<int>(*i, 0, itemCount_ - 1));
 }
 
 bool PopupMenu::moveUp() {
-  if (selectedIndex_ <= 0) return false;
-  --selectedIndex_;
+  if (itemCount_ == 0) return false;
+  // From "no selection", the first press lands on the first row.
+  if (!selectedIndex_.has_value()) {
+    selectedIndex_ = 0;
+    return true;
+  }
+  // Wrap: up from the first row lands on the last.
+  const uint8_t next = (*selectedIndex_ == 0) ? static_cast<uint8_t>(itemCount_ - 1) : *selectedIndex_ - 1;
+  if (next == *selectedIndex_) return false;  // single row — nothing moved
+  selectedIndex_ = next;
   return true;
 }
 
 bool PopupMenu::moveDown() {
-  if (selectedIndex_ >= itemCount_ - 1) return false;
-  ++selectedIndex_;
+  if (itemCount_ == 0) return false;
+  if (!selectedIndex_.has_value()) {
+    selectedIndex_ = 0;
+    return true;
+  }
+  // Wrap: down from the last row lands on the first.
+  const uint8_t next = (*selectedIndex_ >= itemCount_ - 1) ? 0 : *selectedIndex_ + 1;
+  if (next == *selectedIndex_) return false;  // single row — nothing moved
+  selectedIndex_ = next;
   return true;
 }
 
 void PopupMenu::render(GfxRenderer& renderer, Rect rect, bool showSelection,
-                      const std::function<const char*(int)>& rowLabel,
-                      const std::function<Glyph(int)>& rowGlyph, int mutedRow) const {
+                       const std::function<const char*(int)>& rowLabel, const std::function<Glyph(int)>& rowGlyph,
+                       int mutedRow) const {
   if (itemCount_ <= 0) return;
   const auto& theme = GUI;
   const auto& pm = theme.getData()->popupMenu;
@@ -79,24 +90,25 @@ void PopupMenu::render(GfxRenderer& renderer, Rect rect, bool showSelection,
   for (int i = 0; i < itemCount_; ++i) {
     const Rect rowRect{innerX, rect.y + pm.borderThickness + i * pm.rowHeight, innerW, pm.rowHeight};
 
-    const bool isSelected = showSelection && (i == selectedIndex_);
+    const bool isSelected = showSelection && selectedIndex_.has_value() && (i == *selectedIndex_);
     const bool isMuted = (i == mutedRow) && pm.subPanelMutedFill;
 
     // Background pass.
     if (isMuted && !isSelected) {
-      renderer.fillRoundedRect(rowRect.x, rowRect.y, rowRect.width, rowRect.height, pm.selectionCornerRadius, Color::LightGray);
+      renderer.fillRoundedRect(rowRect.x, rowRect.y, rowRect.width, rowRect.height, pm.selectionCornerRadius,
+                               Color::LightGray);
     }
 
     if (isSelected) {
       switch (pm.selectionStyle) {
         case PopupMenuSelectionStyle::SolidFill:
-          renderer.fillRoundedRect(rowRect.x, rowRect.y, rowRect.width, rowRect.height, 
-              pm.selectionCornerRadius, Color::Black);
+          renderer.fillRoundedRect(rowRect.x, rowRect.y, rowRect.width, rowRect.height, pm.selectionCornerRadius,
+                                   Color::Black);
 
           break;
         case PopupMenuSelectionStyle::RoundedFill:
-          renderer.fillRoundedRect(rowRect.x, rowRect.y, rowRect.width, rowRect.height, 
-              pm.selectionCornerRadius > 0 ? pm.selectionCornerRadius : 4, Color::Black);
+          renderer.fillRoundedRect(rowRect.x, rowRect.y, rowRect.width, rowRect.height,
+                                   pm.selectionCornerRadius > 0 ? pm.selectionCornerRadius : 4, Color::Black);
 
           break;
         case PopupMenuSelectionStyle::BorderOnly:
@@ -145,6 +157,13 @@ void PopupMenu::render(GfxRenderer& renderer, Rect rect, bool showSelection,
             const int xs[3] = {cx, cx + w, cx};
             const int ys[3] = {gy, gy + glyphSize / 2, gy + glyphSize};
             renderer.fillPolygon(xs, ys, 3, textBlack);
+            break;
+          }
+          case Glyph::Circle: {
+            // Filled dot, smaller than the glyph box so it reads as a bullet.
+            const int radius = std::max(2, glyphSize / 3);
+            renderer.fillCircle(gx + glyphSize / 2, gy + glyphSize / 2, radius,
+                                textBlack ? Color::Black : Color::White);
             break;
           }
           case Glyph::None:

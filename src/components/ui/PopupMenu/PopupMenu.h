@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <optional>
 
 #include "components/themes/BaseTheme.h"  // for Rect
 
@@ -26,21 +27,26 @@ class PopupMenu {
     ArrowUp,       // active sort field, ascending
     ArrowDown,     // active sort field, descending
     ChevronRight,  // row expands into a submenu
+    Circle,        // filled dot marking the currently-selected option
   };
 
   PopupMenu() = default;
 
   // Configure the number of selectable rows. Clamps the current selection
-  // into the new range; pass `initialSelection` to override.
-  void setItemCount(int count, int initialSelection = 0);
+  // into the new range; pass `initialSelection` to override. Pass
+  // `std::nullopt` to open the panel with no row selected.
+  void setItemCount(int count, std::optional<uint8_t> initialSelection = uint8_t{0});
   int itemCount() const { return itemCount_; }
 
-  int selectedIndex() const { return selectedIndex_; }
-  void setSelectedIndex(int i);
+  // The selected row, or std::nullopt when no row is selected.
+  std::optional<uint8_t> selectedIndex() const { return selectedIndex_; }
+  void setSelectedIndex(std::optional<uint8_t> i);
 
   // Returns true when the selection actually moved — callers gate
-  // requestUpdate() on the result so a bounded press at the edge of the
-  // menu doesn't trigger a redraw.
+  // requestUpdate() on the result. Selection wraps vertically (up from the
+  // first row lands on the last, and vice versa), so a move only reports no
+  // change for a single-row menu. From "no selection", the first move selects
+  // row 0.
   bool moveUp();
   bool moveDown();
 
@@ -59,10 +65,9 @@ class PopupMenu {
   // dynamic state (e.g. the active sort field's arrow direction).
   void render(GfxRenderer& renderer, Rect rect, bool showSelection,
               const std::function<const char*(int index)>& rowLabel,
-              const std::function<Glyph(int index)>& rowGlyph = nullptr,
-              int mutedRow = -1) const;
+              const std::function<Glyph(int index)>& rowGlyph = nullptr, int mutedRow = -1) const;
 
  private:
   int itemCount_ = 0;
-  int selectedIndex_ = 0;
+  std::optional<uint8_t> selectedIndex_;
 };
