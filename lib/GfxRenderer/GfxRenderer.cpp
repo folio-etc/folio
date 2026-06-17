@@ -1038,7 +1038,7 @@ void GfxRenderer::drawIcon(const Bitmap1Bit& icon, const int x, const int y, con
   // Icon arrays are authored in physical orientation (for the legacy byte-blit),
   // but blit1Bit walks its source in logical orientation. Rotate 90° CW into
   // logical space so the glyph isn't drawn sideways. Square icons only.
-  constexpr int kMaxIconDim = 32;
+  constexpr int kMaxIconDim = 40;
   if (icon.bitmap == nullptr || icon.width <= 0 || icon.height <= 0 || icon.width > kMaxIconDim ||
       icon.height > kMaxIconDim) {
     LOG_ERR("GFX", "drawIcon: unsupported icon %dx%d (max %d)", icon.width, icon.height, kMaxIconDim);
