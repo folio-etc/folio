@@ -1118,7 +1118,7 @@ void LibraryActivity::renderEmptyState(const Rect& body) {
   renderer.drawText(font, at.x, at.y, msg, true, EpdFontFamily::ITALIC);
 }
 
-bool LibraryActivity::onSortSelect(uint8_t sortType) {
+bool LibraryActivity::onSortSelect(CrossPointSettings::LIBRARY_SORT_FIELD sortType) {
   uint8_t direction = SETTINGS.librarySortDirection;
   if (sortType == SETTINGS.librarySortField) {
     // Re-selecting the active field toggles its direction.
@@ -1130,7 +1130,7 @@ bool LibraryActivity::onSortSelect(uint8_t sortType) {
   return false;
 }
 
-std::optional<PopupMenu::Glyph> LibraryActivity::getSortGlyph(uint8_t sortType) {
+std::optional<PopupMenu::Glyph> LibraryActivity::getSortGlyph(CrossPointSettings::LIBRARY_SORT_FIELD sortType) {
   if(sortType == SETTINGS.librarySortField) {
     return SETTINGS.librarySortDirection == CrossPointSettings::LIB_SORT_ASC
       ? PopupMenu::Glyph::ArrowUp
@@ -1141,6 +1141,8 @@ std::optional<PopupMenu::Glyph> LibraryActivity::getSortGlyph(uint8_t sortType) 
 }
 
 std::vector<MenuRegistryEntry> LibraryActivity::getGlobalMenuEntries() {
+  using SortField = CrossPointSettings::LIBRARY_SORT_FIELD;
+
   auto entries = std::vector<MenuRegistryEntry>{
     MenuRegistryEntry{
       .icon = { 40, 40, Sort40Icon },
@@ -1148,23 +1150,23 @@ std::vector<MenuRegistryEntry> LibraryActivity::getGlobalMenuEntries() {
       .popupItems = {
         PopupMenuEntry{
           .label = tr(STR_SORT_RECENT),
-          .glyph = getSortGlyph(0),
-          .onSelected = [this]() { return this->onSortSelect(0); }
+          .glyph = getSortGlyph(SortField::LIB_SORT_RECENT),
+          .onSelected = [this]() { return this->onSortSelect(SortField::LIB_SORT_RECENT); }
         },
         PopupMenuEntry{
           .label = tr(STR_SORT_TITLE),
-          .glyph = getSortGlyph(1),
-          .onSelected = [this]() { return this->onSortSelect(1); }
+          .glyph = getSortGlyph(SortField::LIB_SORT_TITLE),
+          .onSelected = [this]() { return this->onSortSelect(SortField::LIB_SORT_TITLE); }
         },
         PopupMenuEntry{
           .label = tr(STR_SORT_AUTHOR),
-          .glyph = getSortGlyph(2),
-          .onSelected = [this]() { return this->onSortSelect(2); }
+          .glyph = getSortGlyph(SortField::LIB_SORT_AUTHOR),
+          .onSelected = [this]() { return this->onSortSelect(SortField::LIB_SORT_AUTHOR); }
         },
         PopupMenuEntry{
           .label = tr(STR_SORT_PROGRESS),
-          .glyph = getSortGlyph(3),
-          .onSelected = [this]() { return this->onSortSelect(3); }
+          .glyph = getSortGlyph(SortField::LIB_SORT_PROGRESS),
+          .onSelected = [this]() { return this->onSortSelect(SortField::LIB_SORT_PROGRESS); }
         },
       }
     },

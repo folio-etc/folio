@@ -16,6 +16,7 @@
 #include "components/themes/BaseTheme.h"  // for Rect
 #include "util/ButtonNavigator.h"
 #include "util/GridHelper.h"
+#include "CrossPointSettings.h"
 
 class LibraryActivity final : public Activity {
  private:
@@ -216,8 +217,8 @@ class LibraryActivity final : public Activity {
   void renderPageRail(const Rect& railArea);
   void renderBookTile(const Rect& cell, const LibraryBook& book, bool selected);
   void renderEmptyState(const Rect& body);
-  bool onSortSelect(uint8_t sortType);
-  std::optional<PopupMenu::Glyph> getSortGlyph(uint8_t sortType);
+  bool onSortSelect(CrossPointSettings::LIBRARY_SORT_FIELD sortType);
+  std::optional<PopupMenu::Glyph> getSortGlyph(CrossPointSettings::LIBRARY_SORT_FIELD sortType);
 
  public:
   explicit LibraryActivity(GfxRenderer& renderer, MappedInputManager& mappedInput)
