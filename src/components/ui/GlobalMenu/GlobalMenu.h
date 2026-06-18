@@ -21,6 +21,8 @@ class GlobalMenu {
 
     void renderNavBody(Rect area);
     void renderNavItems(Rect area);
+    // Draw a single nav slot: the selection indicator (when selected) and the icon.
+    void renderSlot(const MenuRegistryEntry& entry, Rect slot, bool selected);
 
     std::function<std::vector<MenuRegistryEntry>()> getTopEntries;
     std::function<std::vector<MenuRegistryEntry>()> getBottomEntries;

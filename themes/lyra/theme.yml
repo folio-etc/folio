@@ -129,13 +129,25 @@ popupMenu:
   selectionCornerRadius: 4
   selectionTextInverted: true
   subPanelMutedFill: true
-  fontRole: body-compact
 
 textField:
   horizontalPadding: 6
   normalThickness: 1
   cursorThickness: 3
   lineEndOffset: 0
+
+globalMenu:
+  paddingX: 4
+  paddingY: 4
+  cornerRadius: 6
+  borderWidth: 2
+  shadowOffsetX: 2
+  shadowOffsetY: 2
+  popupGap: 4
+  selectionPadding: 4
+  selectionCornerRadius: 4
+  selectionFill: black
+  selectionBorderWidth: 0
 
 fonts:
   title:

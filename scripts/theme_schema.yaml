@@ -274,12 +274,12 @@ struct:
       - { cpp: shadowOffsetX,         type: int,                       default: 3 }
       - { cpp: shadowOffsetY,         type: int,                       default: 3 }
       - { cpp: paddingX,              type: int,                       default: 12 }
-      - { cpp: panelGap,              type: int,                       default: 6 }
+      - { cpp: panelGap,              type: int,                       default: 0 }
       - { cpp: selectionStyle,        type: PopupMenuSelectionStyle,   default: "PopupMenuSelectionStyle::SolidFill" }
       - { cpp: selectionCornerRadius, type: int,                       default: 0 }
       - { cpp: selectionTextInverted, type: bool,                      default: true }
       - { cpp: subPanelMutedFill,     type: bool,                      default: true }
-      - { cpp: fontRole,              type: FontRole,                  default: "FontRole::BodyCompact" }
+      - { cpp: fontRole,              type: FontRole,                  default: "FontRole::Body" }
 
   - group: textField
     struct_name: TextField
@@ -292,8 +292,24 @@ struct:
   - group: globalMenu
     struct_name: GlobalMenuThemeSettings
     fields:
-      - { cpp: paddingX, type: int, default: 6 }
-      - { cpp: paddingY, type: int, default: 10 }
+      # Inset of the nav bar within its parent section, i.e. the margin between
+      # the nav bar frame and the screen/body edges (1: nav-area padding).
+      - { cpp: paddingX,              type: int,   default: 6 }
+      - { cpp: paddingY,              type: int,   default: 10 }
+      # Nav bar frame (7: border radius / border width).
+      - { cpp: cornerRadius,          type: int,   default: 0 }
+      - { cpp: borderWidth,           type: int,   default: 1 }
+      # Nav bar drop shadow (5).
+      - { cpp: shadowOffsetX,         type: int,   default: 3 }
+      - { cpp: shadowOffsetY,         type: int,   default: 3 }
+      # Gap between the nav bar and the popup it anchors (3). The gap between a
+      # popup and its cascading children is popupMenu.panelGap (4).
+      - { cpp: popupGap,              type: int,   default: 0 }
+      # Selected-entry indicator (2: inset from slot; 6: fill + border; 7: radius).
+      - { cpp: selectionPadding,      type: int,   default: 0 }
+      - { cpp: selectionCornerRadius, type: int,   default: 0 }
+      - { cpp: selectionFill,         type: Color, default: Color::Black }
+      - { cpp: selectionBorderWidth,  type: int,   default: 0 }
 
   # Trailing top-level field
   - { cpp: showsFileIcons, type: bool, default: false }

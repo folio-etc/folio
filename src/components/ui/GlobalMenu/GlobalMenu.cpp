@@ -163,13 +163,14 @@ void GlobalMenu::render() {
   const auto sections = flex::Hstack(
       body,
       {
-        flex::fixed(navWidth),
+        flex::fixed(navWidth + 2 * td.globalMenu.paddingX),
         flex::grow()
       },
       0
   );
 
-  const auto nav = sections[0];
+  // Inset the nav bar frame within its section (1: nav-area padding).
+  const auto nav = flex::inset(sections[0], flex::xy(td.globalMenu.paddingX, td.globalMenu.paddingY));
   const auto popupArea = sections[1];
 
   renderNavBody(nav);
@@ -177,7 +178,7 @@ void GlobalMenu::render() {
 
   if (popup_.isOpen()) {
     const Rect slot = selectedSlotRect(nav);
-    const Position anchor{nav.x + nav.width, slot.y};
+    const Position anchor{nav.x + nav.width + td.globalMenu.popupGap, slot.y};
     popup_.render(renderer, anchor, popupArea);
   }
 
@@ -202,11 +203,18 @@ Rect GlobalMenu::selectedSlotRect(Rect nav) {
 }
 
 void GlobalMenu::renderNavBody(Rect nav) {
-  auto shadow = flex::offset(nav, 3, 3);
+  const auto& td = *GUI.getData();
+  const int radius = td.globalMenu.cornerRadius;
 
-  renderer.fillRect(shadow.x, shadow.y, shadow.width, shadow.height);
-  renderer.fillRect(nav.x, nav.y, nav.width, nav.height, false);
-  renderer.drawRect(nav.x, nav.y, nav.width, nav.height, true);
+  if (td.globalMenu.shadowOffsetX != 0 || td.globalMenu.shadowOffsetY != 0) {
+    const Rect sh = flex::offset(nav, td.globalMenu.shadowOffsetX, td.globalMenu.shadowOffsetY);
+    renderer.fillRoundedRect(sh.x, sh.y, sh.width, sh.height, radius, Color::Black);
+  }
+
+  renderer.fillRoundedRect(nav.x, nav.y, nav.width, nav.height, radius, Color::White);
+  if (td.globalMenu.borderWidth > 0) {
+    renderer.drawRoundedRect(nav.x, nav.y, nav.width, nav.height, td.globalMenu.borderWidth, radius, true);
+  }
 }
 
 void GlobalMenu::renderNavItems(Rect body) {
@@ -217,17 +225,8 @@ void GlobalMenu::renderNavItems(Rect body) {
 
   // --- Main entries (stacked from top) ---
   for (uint8_t i = 0; i < entries.size(); ++i) {
-    const auto& entry = entries[i];
-    const bool selected = (i == selectedIndex);
-
     const Rect slot = { .x = body.x, .y = body.y + i * slotSize, .width = slotSize, .height = slotSize };
-
-    if (selected) {
-      renderer.fillRect(slot.x, slot.y, slot.width, slot.height, true);
-    }
-
-    const Rect target = flex::center(slot, entry.icon.width, entry.icon.height);
-    renderer.drawIcon(entry.icon, target.x, target.y, selected);
+    renderSlot(entries[i], slot, i == selectedIndex);
   }
 
   // --- Bottom entries (anchored to bottom, top-to-bottom: index 0 highest) ---
@@ -235,22 +234,35 @@ void GlobalMenu::renderNavItems(Rect body) {
   const uint16_t bottomBaseY = body.y + body.height - totalBottomHeight;
 
   for (size_t i = 0; i < bottomEntries.size(); ++i) {
-    const auto& entry = bottomEntries[i];
-    const bool selected = (i + entries.size()) == selectedIndex;
-
     const Rect slot = {
       .x = body.x,
       .y = static_cast<int>(bottomBaseY + i * slotSize),
       .width = slotSize,
       .height = slotSize
     };
-
-
-    if (selected) {
-      renderer.fillRect(slot.x, slot.y, slot.width, slot.height, true);
-    }
-
-    const Rect target = flex::center(slot, entry.icon.width, entry.icon.height);
-    renderer.drawIcon(entry.icon, target.x, target.y, selected);
+    renderSlot(bottomEntries[i], slot, (i + entries.size()) == selectedIndex);
   }
+}
+
+void GlobalMenu::renderSlot(const MenuRegistryEntry& entry, Rect slot, bool selected) {
+  const auto& td = *GUI.getData();
+  bool iconInverted = false;
+
+  if (selected) {
+    // Indicator inset from the slot (2), with fill (6), optional border (6) and radius (7).
+    const Rect ind = flex::inset(slot, flex::all(td.globalMenu.selectionPadding));
+    if (td.globalMenu.selectionFill != Color::Clear) {
+      renderer.fillRoundedRect(ind.x, ind.y, ind.width, ind.height,
+                               td.globalMenu.selectionCornerRadius, td.globalMenu.selectionFill);
+    }
+    if (td.globalMenu.selectionBorderWidth > 0) {
+      renderer.drawRoundedRect(ind.x, ind.y, ind.width, ind.height,
+                               td.globalMenu.selectionBorderWidth, td.globalMenu.selectionCornerRadius, true);
+    }
+    // White icon only over a dark fill; black icon over clear/light fills.
+    iconInverted = td.globalMenu.selectionFill == Color::Black || td.globalMenu.selectionFill == Color::DarkGray;
+  }
+
+  const Rect target = flex::center(slot, entry.icon.width, entry.icon.height);
+  renderer.drawIcon(entry.icon, target.x, target.y, iconInverted);
 }

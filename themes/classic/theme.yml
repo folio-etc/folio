@@ -113,6 +113,19 @@ textField:
   cursorThickness: 3
   lineEndOffset: 0
 
+globalMenu:
+  paddingX: 0
+  paddingY: 0
+  cornerRadius: 0
+  borderWidth: 2
+  shadowOffsetX: 3
+  shadowOffsetY: 3
+  popupGap: 0
+  selectionPadding: 0
+  selectionCornerRadius: 0
+  selectionFill: black
+  selectionBorderWidth: 0
+
 fonts:
   title:
     builtin: ui-12
