@@ -5,12 +5,10 @@
 
 #include <algorithm>
 
-#include "MappedInputManager.h"
 #include "components/UITheme.h"
 #include "components/themes/BaseTheme.h"
-#include "components/ui/ButtonHints/ButtonHints.h"
 
-bool CascadingPopupMenu::isBranch(const PopupMenuEntry& e) { return e.children.has_value() && !e.children->empty(); }
+bool CascadingPopupMenu::isBranch(const PopupMenuEntry& e) { return !e.children.empty(); }
 
 void CascadingPopupMenu::configure(std::function<std::vector<PopupMenuEntry>()> builder,
                                    std::function<void()> requestUpdate) {
@@ -32,14 +30,20 @@ void CascadingPopupMenu::pushLevel(const std::vector<PopupMenuEntry>& entries, s
 void CascadingPopupMenu::open(std::optional<uint8_t> initialSelection) {
   open_ = true;
   stack_.clear();
+  rootInitial_ = initialSelection;
   entries_ = builder_ ? builder_() : std::vector<PopupMenuEntry>{};
-  pushLevel(entries_, initialSelection);
+  // Open as an unselected preview; the first activate() reveals rootInitial_.
+  pushLevel(entries_, std::nullopt);
   notifyUpdate();
 }
 
 void CascadingPopupMenu::close() {
   open_ = false;
   stack_.clear();
+}
+
+bool CascadingPopupMenu::isEntered() const {
+  return open_ && !stack_.empty() && stack_.back().menu.selectedIndex().has_value();
 }
 
 const PopupMenuEntry* CascadingPopupMenu::focusedEntry() const {
@@ -68,7 +72,7 @@ void CascadingPopupMenu::rebuildPreservingPath() {
   for (size_t d = 1; d < path.size(); ++d) {
     const PopupMenuEntry* entry = focusedEntry();
     if (entry == nullptr || !isBranch(*entry)) break;
-    pushLevel(*entry->children, path[d]);
+    pushLevel(entry->children, path[d]);
   }
 }
 
@@ -83,47 +87,51 @@ void CascadingPopupMenu::moveDown() {
 }
 
 void CascadingPopupMenu::back() {
-  if (!open_) return;
+  if (!open_ || stack_.empty()) return;
   if (stack_.size() > 1) {
+    // Pop one submenu level; the parent keeps its selection (still entered).
     stack_.pop_back();
   } else {
-    close();
+    // At the root: de-select so the popup falls back to an unselected preview.
+    // The caller (GlobalMenu) regains navigation; it closes the popup itself.
+    stack_.back().menu.setSelectedIndex(std::nullopt);
   }
   notifyUpdate();
 }
 
-void CascadingPopupMenu::activate() {
-  if (!open_ || stack_.empty()) return;
+bool CascadingPopupMenu::activate() {
+  if (!open_ || stack_.empty()) return false;
 
-  // Activating a panel that has no row selected lands on the first row instead
-  // of acting — mirrors how the first Up/Down press behaves from "no selection".
+  // Activating a freshly-opened preview reveals the initial selection instead
+  // of acting — the user steps in before navigating.
   PopupMenu& focused = stack_.back().menu;
   if (!focused.selectedIndex().has_value()) {
-    if (focused.moveDown()) notifyUpdate();
-    return;
+    focused.setSelectedIndex(rootInitial_.value_or(uint8_t{0}));
+    notifyUpdate();
+    return false;
   }
 
   const PopupMenuEntry* entry = focusedEntry();
-  if (entry == nullptr) return;
+  if (entry == nullptr) return false;
 
   if (isBranch(*entry)) {
     // Entering a submenu lands on its pre-selected row, or row 0 by default.
-    pushLevel(*entry->children, entry->initialSelectedChild.value_or(uint8_t{0}));
+    pushLevel(entry->children, entry->initialSelectedChild.value_or(uint8_t{0}));
     notifyUpdate();
-    return;
+    return false;
   }
 
   if (entry->onSelected.has_value()) {
     const bool shouldClose = (*entry->onSelected)();
-    if (shouldClose) {
-      close();
-    } else {
+    if (!shouldClose) {
       // The leaf mutated state (e.g. the sort field); rebuild so the tree's
       // glyphs reflect it, keeping the user on the same row.
       rebuildPreservingPath();
     }
     notifyUpdate();
+    return shouldClose;
   }
+  return false;
 }
 
 int CascadingPopupMenu::panelHeight(int itemCount) {
@@ -153,11 +161,12 @@ int CascadingPopupMenu::panelWidth(GfxRenderer& renderer, const std::vector<Popu
   return 2 * pm.borderThickness + 2 * pm.paddingX + maxLabelW + glyphReserve;
 }
 
-void CascadingPopupMenu::render(GfxRenderer& renderer, int leftX, int bottomLimit, int rightLimit) const {
+void CascadingPopupMenu::render(GfxRenderer& renderer, Position anchor, Rect area) const {
   if (!open_ || stack_.empty()) return;
   const auto& pm = GUI.getData()->popupMenu;
-  const int panelBottom = bottomLimit - pm.shadowOffsetY;
-  const int screenH = renderer.getScreenHeight();
+  const int areaTop = area.y;
+  const int areaBottom = area.y + area.height;
+  const int rightLimit = area.x + area.width;
   const size_t focused = stack_.size() - 1;
 
   // The focused branch's children render as a preview panel (no highlight) when
@@ -165,14 +174,14 @@ void CascadingPopupMenu::render(GfxRenderer& renderer, int leftX, int bottomLimi
   PopupMenu previewMenu;
   const std::vector<PopupMenuEntry>* previewEntries = nullptr;
   if (const PopupMenuEntry* entry = focusedEntry(); entry != nullptr && isBranch(*entry)) {
-    previewEntries = &(*entry->children);
+    previewEntries = &(entry->children);
     previewMenu.setItemCount(static_cast<int>(previewEntries->size()), std::nullopt);
   }
   const int panelCount = static_cast<int>(stack_.size()) + (previewEntries != nullptr ? 1 : 0);
 
-  // Walk the panel chain left-to-right. The root anchors just above the footer;
+  // Walk the panel chain left-to-right. The root pins a corner to `anchor`;
   // every subsequent panel cascades from its parent's selected row.
-  int x = leftX;
+  int x = anchor.x;
   int prevTop = 0;                 // top edge of the panel drawn last iteration
   std::optional<uint8_t> prevSel;  // its selected row — the one a child hangs off
   for (int p = 0; p < panelCount; ++p) {
@@ -189,17 +198,22 @@ void CascadingPopupMenu::render(GfxRenderer& renderer, int leftX, int bottomLimi
     if (w < 2 * pm.borderThickness + pm.paddingX) break;
     const int h = panelHeight(count);
 
-    // Vertical placement: root anchors to the footer baseline; a child aligns
-    // its top with the parent's selected-row top when the whole panel still
-    // fits on-screen below that row, otherwise aligns its bottom with the row.
+    // Vertical placement: the root pins a corner to `anchor` — top-left when the
+    // panel fits below within `area`, otherwise bottom-left. A child aligns its
+    // top with the parent's selected-row top when it still fits below, otherwise
+    // aligns its bottom with the row. Everything is clamped into `area`.
     int y;
-    if (p == 0 || !prevSel.has_value()) {
-      y = panelBottom - h;
+    if (p == 0) {
+      const bool fitsBelow = anchor.y + h + pm.shadowOffsetY <= areaBottom;
+      y = fitsBelow ? anchor.y : anchor.y - h;
+    } else if (!prevSel.has_value()) {
+      y = prevTop;
     } else {
       const int rowTop = prevTop + pm.borderThickness + static_cast<int>(*prevSel) * pm.rowHeight;
-      y = (rowTop + h + pm.shadowOffsetY <= screenH) ? rowTop : (rowTop + pm.rowHeight - h);
-      if (y < 0) y = 0;
+      y = (rowTop + h + pm.shadowOffsetY <= areaBottom) ? rowTop : (rowTop + pm.rowHeight - h);
     }
+    if (y + h + pm.shadowOffsetY > areaBottom) y = areaBottom - h - pm.shadowOffsetY;
+    if (y < areaTop) y = areaTop;  // taller than area → clamp top, let shadow spill
 
     // Ancestors get a muted parent-row wash and no highlight; the focused panel
     // shows its selection; the preview shows none.
@@ -222,13 +236,7 @@ void CascadingPopupMenu::render(GfxRenderer& renderer, int leftX, int bottomLimi
   }
 }
 
-void CascadingPopupMenu::renderFooterHints(GfxRenderer& renderer, const MappedInputManager& mappedInput) const {
-  if (!open_) return;
-  const auto labels = getFooterLabels(mappedInput);
-  ButtonHints::render(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
-}
-
-MappedInputManager::Labels CascadingPopupMenu::getFooterLabels(const MappedInputManager& mappedInput) const {
+MappedInputManager::Labels CascadingPopupMenu::getButtonLabels(const MappedInputManager& mappedInput) const {
   const bool inSubmenu = stack_.size() > 1;
   const PopupMenuEntry* entry = focusedEntry();
   const bool confirmEnters = entry != nullptr && isBranch(*entry);
@@ -236,3 +244,4 @@ MappedInputManager::Labels CascadingPopupMenu::getFooterLabels(const MappedInput
   const char* confirm = confirmEnters ? tr(STR_ENTER) : tr(STR_SELECT);
   return mappedInput.mapLabels(back, confirm, "", "");
 }
+

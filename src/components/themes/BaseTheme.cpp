@@ -327,7 +327,7 @@ void BaseTheme::drawSelectionFrame(const GfxRenderer& renderer, Rect rect) {
 void BaseTheme::drawHeader(const GfxRenderer& renderer, Rect rect, const char* title, const char* subtitle) const {
   const auto& m = *data;
   const int titleFont = getFontForRole(FontRole::Title);
-  const int captionFont = getFontForRole(FontRole::Caption);
+  const int captionFont = getFontForRole(FontRole::BodyCompact);
   const bool hasTitle = title != nullptr && title[0] != '\0';
   const bool hasSubtitle = subtitle != nullptr && subtitle[0] != '\0';
 

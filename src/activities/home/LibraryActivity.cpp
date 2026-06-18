@@ -11,7 +11,6 @@
 #include <algorithm>
 #include <cstdint>
 #include <cstring>
-#include <iterator>  // std::size
 #include <string>
 #include <unordered_set>
 #include <vector>
@@ -24,7 +23,9 @@
 #include "activities/home/CollectionPickerActivity.h"
 #include "activities/home/CollectionsActivity.h"
 #include "components/UITheme.h"
-#include "components/icons/book-2.h"
+#include "components/icons/bookalt40.h"
+#include "components/icons/books40.h"
+#include "components/icons/sort40.h"
 #include "components/themes/BaseTheme.h"
 #include "components/themes/ThemeData.generated.h"
 #include "components/ui/ButtonHints/ButtonHints.h"
@@ -77,8 +78,11 @@ inline Rect computeSelectionFrame(const Rect& cell, int contentBottom) {
 
 // Page rail tick geometry.
 constexpr int RAIL_PAD_TOP = 8;
-
+static constexpr StrId kSortLabels[] = {StrId::STR_SORT_RECENT, StrId::STR_SORT_TITLE, StrId::STR_SORT_AUTHOR,
+                                            StrId::STR_SORT_PROGRESS};
 }  // namespace
+
+
 
 // ---- Lifecycle --------------------------------------------------------------
 
@@ -89,8 +93,6 @@ void LibraryActivity::onEnter() {
   // immediately auto-open the first book).
   lockNextConfirmRelease = mappedInput.isPressed(MappedInputManager::Button::Confirm);
   lockNextBackRelease = mappedInput.isPressed(MappedInputManager::Button::Back);
-
-  popup_.configure([this] { return buildEntries(); }, [this] { requestUpdate(); });
 
   LIBRARY_INDEX.loadFromFile();
 
@@ -384,152 +386,6 @@ void LibraryActivity::prefetchTaskLoop() {
   }
 }
 
-std::vector<PopupMenuEntry> LibraryActivity::buildEntries() {
-  std::vector<PopupMenuEntry> entries;
-  entries.reserve(6);
-
-  // ---- Collections (leaf) → suspend and open CollectionsActivity. ----
-  {
-    PopupMenuEntry collections;
-    collections.label = tr(STR_COLLECTIONS);
-    collections.onSelected = [this]() {
-      // Snapshot the active view so the return handler only rebuilds when the
-      // user actually switched views.
-      const uint8_t prevKind = SETTINGS.libraryViewKind;
-      const uint32_t prevId = SETTINGS.libraryViewCollectionId;
-      const std::string prevName = SETTINGS.libraryViewName;
-      startActivityForResult(std::make_unique<CollectionsActivity>(renderer, mappedInput),
-                             [this, prevKind, prevId, prevName](const ActivityResult&) {
-                               const bool changed = SETTINGS.libraryViewKind != prevKind ||
-                                                    SETTINGS.libraryViewCollectionId != prevId ||
-                                                    prevName != std::string(SETTINGS.libraryViewName);
-                               onReturnFromCollections(changed);
-                             });
-      return true;
-    };
-    entries.push_back(std::move(collections));
-  }
-
-  // ---- Sort: pre-select the active field; arrow on the active field row. ----
-  {
-    PopupMenuEntry sort{.label = tr(STR_SORT), .initialSelectedChild = SETTINGS.librarySortField};
-
-    static constexpr StrId kSortLabels[] = {StrId::STR_SORT_RECENT, StrId::STR_SORT_TITLE, StrId::STR_SORT_AUTHOR,
-                                            StrId::STR_SORT_PROGRESS};
-    std::vector<PopupMenuEntry> fields;
-    fields.reserve(std::size(kSortLabels));
-    for (uint8_t f = 0; f < std::size(kSortLabels); ++f) {
-      PopupMenuEntry field;
-      field.label = I18N.get(kSortLabels[f]);
-      if (f == SETTINGS.librarySortField) {
-        field.glyph = (SETTINGS.librarySortDirection == CrossPointSettings::LIB_SORT_ASC) ? PopupMenu::Glyph::ArrowUp
-                                                                                          : PopupMenu::Glyph::ArrowDown;
-      }
-      field.onSelected = [this, f]() {
-        uint8_t direction = SETTINGS.librarySortDirection;
-        if (f == SETTINGS.librarySortField) {
-          // Re-selecting the active field toggles its direction.
-          direction = (SETTINGS.librarySortDirection == CrossPointSettings::LIB_SORT_ASC)
-                          ? CrossPointSettings::LIB_SORT_DESC
-                          : CrossPointSettings::LIB_SORT_ASC;
-        }
-        setSort(f, direction);
-        return false;  // keep the menu open; rebuild refreshes the arrow
-      };
-      fields.push_back(std::move(field));
-    }
-    sort.children = std::move(fields);
-    entries.push_back(std::move(sort));
-  }
-
-  // ---- Book: collection membership for the selected book. ----
-  {
-    PopupMenuEntry book;
-    book.label = tr(STR_BOOK);
-    std::vector<PopupMenuEntry> membership;
-    membership.reserve(2);
-
-    PopupMenuEntry add;
-    add.label = tr(STR_ADD_TO_COLLECTION);
-    add.onSelected = [this]() { return openCollectionPicker(/*add=*/true); };
-    membership.push_back(std::move(add));
-
-    PopupMenuEntry remove;
-    remove.label = tr(STR_REMOVE_FROM_COLLECTION);
-    remove.onSelected = [this]() { return openCollectionPicker(/*add=*/false); };
-    membership.push_back(std::move(remove));
-
-    book.children = std::move(membership);
-    entries.push_back(std::move(book));
-  }
-
-  // ---- Files. ----
-  {
-    PopupMenuEntry files;
-    files.label = tr(STR_FILES);
-    std::vector<PopupMenuEntry> kids;
-    kids.reserve(2);
-
-    PopupMenuEntry browse;
-    browse.label = tr(STR_BROWSE);
-    browse.onSelected = [this]() {
-      activityManager.goToFileBrowser();
-      return true;
-    };
-    kids.push_back(std::move(browse));
-
-    PopupMenuEntry transfer;
-    transfer.label = tr(STR_TRANSFER);
-    transfer.onSelected = [this]() {
-      activityManager.goToFileTransfer();
-      return true;
-    };
-    kids.push_back(std::move(transfer));
-
-    files.children = std::move(kids);
-    entries.push_back(std::move(files));
-  }
-
-  // ---- Power button: pre-select the active behavior and mark it with a dot. ----
-  {
-    PopupMenuEntry power;
-    power.label = tr(STR_POWER_BUTTON);
-    power.initialSelectedChild = SETTINGS.libraryPowerButton;
-    std::vector<PopupMenuEntry> kids;
-    kids.reserve(2);
-
-    static constexpr StrId kPowerLabels[] = {StrId::STR_POWER_NEXT_IN_ROW, StrId::STR_POWER_NEXT_BOOK};
-    for (uint8_t b = 0; b < std::size(kPowerLabels); ++b) {
-      PopupMenuEntry option;
-      option.label = I18N.get(kPowerLabels[b]);
-      if (b == SETTINGS.libraryPowerButton) option.glyph = PopupMenu::Glyph::Circle;
-      option.onSelected = [this, b]() {
-        if (b != SETTINGS.libraryPowerButton) {
-          SETTINGS.libraryPowerButton = b;
-          SETTINGS.saveToFile();
-        }
-        return true;
-      };
-      kids.push_back(std::move(option));
-    }
-    power.children = std::move(kids);
-    entries.push_back(std::move(power));
-  }
-
-  // ---- Settings (leaf). ----
-  {
-    PopupMenuEntry settings;
-    settings.label = tr(STR_SETTINGS_TITLE);
-    settings.onSelected = [this]() {
-      activityManager.goToSettings();
-      return true;
-    };
-    entries.push_back(std::move(settings));
-  }
-
-  return entries;
-}
-
 bool LibraryActivity::openCollectionPicker(bool add) {
   const LibraryBook* book = bookForGridIndex(gridHelper.currentIndex());
   if (book == nullptr) return true;  // back tile / empty slot — nothing to edit
@@ -539,7 +395,7 @@ bool LibraryActivity::openCollectionPicker(bool add) {
   const auto mode = add ? CollectionPickerActivity::Mode::Add : CollectionPickerActivity::Mode::Remove;
   startActivityForResult(std::make_unique<CollectionPickerActivity>(renderer, mappedInput, bookHash, mode),
                          [this](const ActivityResult&) { onCollectionMembershipChanged(); });
-  return false;  // picker launched; the return handler closes the popup
+  return true;  // picker launched (pushed) — close the global menu behind it
 }
 
 // ---- Input ------------------------------------------------------------------
@@ -574,19 +430,6 @@ void LibraryActivity::loop() {
     return;
   }
 
-  if (mappedInput.wasPressed(MappedInputManager::Button::Back)) {
-    // The menu owns its own redraws (see configure() in onEnter).
-    if (popup_.isOpen()) {
-      popup_.back();
-    } else {
-      // open() (re)builds the entry tree, reallocating state the render task
-      // may be iterating — hold the render lock across the mutation.
-      RenderLock lock;
-      popup_.open();
-    }
-    return;
-  }
-
   if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
     doSelect();
     return;
@@ -595,15 +438,9 @@ void LibraryActivity::loop() {
   buttonNavigator.onRelease({MappedInputManager::Button::Up}, [this] { moveUp(); });
   buttonNavigator.onRelease({MappedInputManager::Button::Down}, [this] { moveDown(); });
 
-  buttonNavigator.onContinuous({MappedInputManager::Button::Up}, [this] {
-    if (popup_.isOpen()) return;
-    jumpPageBack();
-  });
+  buttonNavigator.onContinuous({MappedInputManager::Button::Up}, [this] { jumpPageBack(); });
 
-  buttonNavigator.onContinuous({MappedInputManager::Button::Down}, [this] {
-    if (popup_.isOpen()) return;
-    jumpPageForward();
-  });
+  buttonNavigator.onContinuous({MappedInputManager::Button::Down}, [this] { jumpPageForward(); });
 
   if (mappedInput.wasPressed(MappedInputManager::Button::Left)) {
     moveLeft();
@@ -619,11 +456,6 @@ void LibraryActivity::loop() {
 // ---- Navigation -------------------------------------------------------------
 
 void LibraryActivity::moveUp() {
-  if (popup_.isOpen()) {
-    popup_.moveUp();
-    return;
-  }
-
   const uint8_t oldPage = gridHelper.currentPage();
   this->gridHelper.up();
   const uint8_t newPage = gridHelper.currentPage();
@@ -635,11 +467,6 @@ void LibraryActivity::moveUp() {
 }
 
 void LibraryActivity::moveDown() {
-  if (popup_.isOpen()) {
-    popup_.moveDown();
-    return;
-  }
-
   const uint8_t oldPage = gridHelper.currentPage();
   this->gridHelper.down();
   const uint8_t newPage = gridHelper.currentPage();
@@ -648,7 +475,6 @@ void LibraryActivity::moveDown() {
 }
 
 void LibraryActivity::jumpPageForward() {
-  if (popup_.isOpen()) return;
   const uint8_t pages = gridHelper.pageCount();
   if (pages <= 1) return;
   const uint8_t oldPage = gridHelper.currentPage();
@@ -669,7 +495,6 @@ void LibraryActivity::jumpPageForward() {
 }
 
 void LibraryActivity::jumpPageBack() {
-  if (popup_.isOpen()) return;
   const uint8_t pages = gridHelper.pageCount();
   if (pages <= 1) return;
   const uint8_t oldPage = gridHelper.currentPage();
@@ -686,10 +511,6 @@ void LibraryActivity::jumpPageBack() {
 }
 
 void LibraryActivity::moveLeft() {
-  if (popup_.isOpen()) {
-    return;
-  }
-
   const uint8_t oldPage = gridHelper.currentPage();
   this->gridHelper.left();
   const uint8_t newPage = gridHelper.currentPage();
@@ -698,10 +519,6 @@ void LibraryActivity::moveLeft() {
 }
 
 void LibraryActivity::moveRight() {
-  if (popup_.isOpen()) {
-    return;
-  }
-
   const uint8_t oldPage = gridHelper.currentPage();
   this->gridHelper.right();
   const uint8_t newPage = gridHelper.currentPage();
@@ -710,10 +527,6 @@ void LibraryActivity::moveRight() {
 }
 
 void LibraryActivity::moveNext() {
-  if (popup_.isOpen()) {
-    return;
-  }
-
   const uint8_t oldPage = gridHelper.currentPage();
   this->gridHelper.nextItem();
   const uint8_t newPage = gridHelper.currentPage();
@@ -732,16 +545,6 @@ void LibraryActivity::endRapidJumpIfActive() {
 }
 
 void LibraryActivity::doSelect() {
-  if (popup_.isOpen()) {
-    // activate() descends into a submenu or fires the focused leaf's
-    // onSelected (built in buildEntries); the menu owns its own redraw.
-    // Both the descend (stack push) and a non-closing leaf (tree rebuild)
-    // reallocate state the render task may be iterating — hold the lock.
-    RenderLock lock;
-    popup_.activate();
-    return;
-  }
-
   const int idx = gridHelper.currentIndex();
   if (isBackTileIndex(idx)) {
     activateBack();
@@ -782,7 +585,6 @@ void LibraryActivity::reloadActiveView() {
 }
 
 void LibraryActivity::onCollectionMembershipChanged() {
-  popup_.close();
   lockSubActivityReturnRelease();
 
   // Only a collection view's contents depend on membership. Rebuild it so an
@@ -798,7 +600,6 @@ void LibraryActivity::onCollectionMembershipChanged() {
 }
 
 void LibraryActivity::onReturnFromCollections(bool viewChanged) {
-  popup_.close();
   lockSubActivityReturnRelease();
 
   // The picker may have switched the active view (or created collections). When
@@ -1003,8 +804,7 @@ void LibraryActivity::renderPasses() {
 
   const Rect screen{0, 0, renderer.getScreenWidth(), renderer.getScreenHeight()};
   const auto btnLabels =
-      popup_.isOpen() ? popup_.getFooterLabels(mappedInput)
-                      : mappedInput.mapLabels(tr(STR_MENU_LABEL), tr(STR_SELECT), tr(STR_DIR_LEFT), tr(STR_DIR_RIGHT));
+      mappedInput.mapLabels(tr(STR_MENU_LABEL), tr(STR_SELECT), tr(STR_DIR_LEFT), tr(STR_DIR_RIGHT));
 
   const auto body = UIPage::render(renderer, viewTitle_.empty() ? tr(STR_LIBRARY) : viewTitle_.c_str(),
                                    getHeaderSubtitleText().c_str(), btnLabels,
@@ -1022,10 +822,6 @@ void LibraryActivity::renderPasses() {
       renderLibraryShelf(bodyInner[0]);
       renderPageRail(bodyInner[1]);
     }
-  }
-
-  if (popup_.isOpen()) {
-    renderPopup();
   }
 }
 
@@ -1322,22 +1118,92 @@ void LibraryActivity::renderEmptyState(const Rect& body) {
   renderer.drawText(font, at.x, at.y, msg, true, EpdFontFamily::ITALIC);
 }
 
-void LibraryActivity::renderPopup() {
-  const int screenW = renderer.getScreenWidth();
-  const int screenH = renderer.getScreenHeight();
-  const int leftX = CONTENT_PAD_X + 12;
-  const int bottomLimit = screenH - FOOTER_HEIGHT - 6;
-  const int rightLimit = screenW - CONTENT_PAD_X;
-  popup_.render(renderer, leftX, bottomLimit, rightLimit);
+bool LibraryActivity::onSortSelect(uint8_t sortType) {
+  uint8_t direction = SETTINGS.librarySortDirection;
+  if (sortType == SETTINGS.librarySortField) {
+    // Re-selecting the active field toggles its direction.
+    direction = (SETTINGS.librarySortDirection == CrossPointSettings::LIB_SORT_ASC)
+                    ? CrossPointSettings::LIB_SORT_DESC
+                    : CrossPointSettings::LIB_SORT_ASC;
+  }
+  setSort(sortType, direction);
+  return false;
 }
 
-std::optional<MenuRegistryEntry> LibraryActivity::getGlobalMenuData() {
-  return MenuRegistryEntry{
-    .icon = {
-      .width = 32,
-      .height = 32,
-      .bitmap = Book2Icon 
+std::optional<PopupMenu::Glyph> LibraryActivity::getSortGlyph(uint8_t sortType) {
+  if(sortType == SETTINGS.librarySortField) {
+    return SETTINGS.librarySortDirection == CrossPointSettings::LIB_SORT_ASC
+      ? PopupMenu::Glyph::ArrowUp
+      : PopupMenu::Glyph::ArrowDown;
+  }
+
+  return std::nullopt;
+}
+
+std::vector<MenuRegistryEntry> LibraryActivity::getGlobalMenuEntries() {
+  auto entries = std::vector<MenuRegistryEntry>{
+    MenuRegistryEntry{
+      .icon = { 40, 40, Sort40Icon },
+      .name = tr(STR_SORT),
+      .popupItems = {
+        PopupMenuEntry{
+          .label = tr(STR_SORT_RECENT),
+          .glyph = getSortGlyph(0),
+          .onSelected = [this]() { return this->onSortSelect(0); }
+        },
+        PopupMenuEntry{
+          .label = tr(STR_SORT_TITLE),
+          .glyph = getSortGlyph(1),
+          .onSelected = [this]() { return this->onSortSelect(1); }
+        },
+        PopupMenuEntry{
+          .label = tr(STR_SORT_AUTHOR),
+          .glyph = getSortGlyph(2),
+          .onSelected = [this]() { return this->onSortSelect(2); }
+        },
+        PopupMenuEntry{
+          .label = tr(STR_SORT_PROGRESS),
+          .glyph = getSortGlyph(3),
+          .onSelected = [this]() { return this->onSortSelect(3); }
+        },
+      }
     },
-    .name = this->name 
+    MenuRegistryEntry{
+      .icon = { 40, 40, Books40Icon },
+      .name = tr(STR_COLLECTIONS),
+      .onPress = [this]() {
+        const uint8_t prevKind = SETTINGS.libraryViewKind;
+        const uint32_t prevId = SETTINGS.libraryViewCollectionId;
+        const std::string prevName = SETTINGS.libraryViewName;
+        startActivityForResult(std::make_unique<CollectionsActivity>(renderer, mappedInput),
+                               [this, prevKind, prevId, prevName](const ActivityResult&) {
+                                 const bool changed = SETTINGS.libraryViewKind != prevKind ||
+                                                      SETTINGS.libraryViewCollectionId != prevId ||
+                                                      prevName != std::string(SETTINGS.libraryViewName);
+                                 onReturnFromCollections(changed);
+                               });
+        return true;
+      }
+    }
   };
+
+  const int idx = gridHelper.currentIndex();
+  if (!isBackTileIndex(idx)) {
+    entries.insert(entries.begin(), MenuRegistryEntry{
+      .icon = { 40, 40, Bookalt40Icon },
+      .name = tr(STR_SELECTED_BOOK),
+      .popupItems = {
+        PopupMenuEntry{
+          .label = tr(STR_ADD_TO_COLLECTION),
+          .onSelected = [this]() { return openCollectionPicker(/*add=*/true); }
+        },
+        PopupMenuEntry{
+          .label = tr(STR_REMOVE_FROM_COLLECTION),
+          .onSelected = [this]() { return openCollectionPicker(/*add=*/false); }
+        }
+      }
+    });
+  }
+
+  return entries;
 }

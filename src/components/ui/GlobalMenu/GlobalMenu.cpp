@@ -1,44 +1,163 @@
 #include "GlobalMenu.h"
 #include "components/UITheme.h"
+#include "components/ui/ButtonHints/ButtonHints.h"
 #include "components/ui/UIPage/UIPage.h"
+#include "i18n.h"
 
 static constexpr int navWidth = 64;
-static constexpr int navPaddingX = 16;
-static constexpr int navPaddingY = 24;
-static constexpr int iconSize = 32;
+
+void GlobalMenu::closeMenu() {
+  opened = false;
+  selectedIndex = 0;
+  popup_.close();
+}
+
+void GlobalMenu::syncPopupToSelection() {
+  auto entry = getSelectedEntry();
+  if (entry.has_value() && !entry.value().popupItems.empty()) {
+    popup_.open();  // unselected preview; the first Confirm reveals the selection
+  } else {
+    popup_.close();
+  }
+}
 
 bool GlobalMenu::loop() {
-  // Toggle on the press edge — the same edge activities consume to open their
-  // own back-driven UI (e.g. the library popup). Reacting on release lets the
-  // activity see the press first and act on it before the menu opens.
+  // Back: open the menu when closed; step out of the popup when entered;
+  // otherwise close the menu.
   if (mappedInput.wasPressed(MappedInputManager::Button::Back)) {
-    opened = !opened;
     if (!opened) {
-      activityEntry.reset();
+      opened = true;
+      selectedIndex = 0;
+      syncPopupToSelection();
+      return true;
     }
+    if (popup_.isEntered()) {
+      popup_.back();  // pop a submenu level, or de-select the root (→ preview)
+      return true;
+    }
+    closeMenu();
     return true;
   }
+
+  // only check other buttons while menu is open
+  if (!opened) {
+    return false;
+  }
+
+  // While the popup is entered, navigation routes to it.
+  if (popup_.isEntered()) {
+    if (mappedInput.wasPressed(MappedInputManager::Button::Down)) {
+      popup_.moveDown();
+      return true;
+    }
+    if (mappedInput.wasPressed(MappedInputManager::Button::Up)) {
+      popup_.moveUp();
+      return true;
+    }
+    if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
+      if (popup_.activate()) closeMenu();  // a leaf requested the whole menu close
+      return true;
+    }
+    return false;
+  }
+
+  // Nav mode: move the selection (refreshing the preview popup), or act on it.
+  if (mappedInput.wasPressed(MappedInputManager::Button::Down)) {
+    const auto size = getTopEntries().size() + getBottomEntries().size();
+    selectedIndex = (selectedIndex == size - 1) ? 0 : selectedIndex + 1;
+    syncPopupToSelection();
+    return true;
+  }
+
+  if (mappedInput.wasPressed(MappedInputManager::Button::Up)) {
+    const auto size = getTopEntries().size() + getBottomEntries().size();
+    selectedIndex = (selectedIndex == 0) ? size - 1 : selectedIndex - 1;
+    syncPopupToSelection();
+    return true;
+  }
+
+  if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
+    auto current = getSelectedEntry();
+    if (current.has_value() && !current.value().popupItems.empty()) {
+      popup_.activate();  // reveal the initial selection — enters the popup
+      return true;
+    }
+    if (current.has_value() && current.value().onPress.has_value()) {
+      (current.value().onPress.value())();
+      closeMenu();
+      return true;
+    }
+    return false;
+  }
+
   return false;
 }
 
+std::optional<MenuRegistryEntry> GlobalMenu::getSelectedEntry() {
+  auto i = selectedIndex;
+
+  auto top = getTopEntries();
+  if(i < top.size()) {
+    return top[i];
+  }
+  
+  // attempt to index into bottom
+  i -= top.size(); 
+  auto bottom = getBottomEntries();
+
+  if(i < bottom.size()) {
+    return bottom[i];
+  }
+
+  // before we fail out, fall back to first top entry if possible
+  if(top.size() > 0) {
+    selectedIndex = 0;
+    return top[0];
+  }
+
+  // before we fail out, bail out to bottom top entry if possible
+  if(bottom.size() > 0) {
+    selectedIndex = 0;
+    return bottom[0];
+  }
+
+  return std::nullopt;
+}
+
 void GlobalMenu::render() {
+  if(!opened) {
+    return;
+  }
+
   const auto& td = *GUI.getData();
 
-  // background overlay
-  renderer.fillRectDither<true>(0, 0, renderer.getScreenWidth(), renderer.getScreenHeight(), Color::LightGray);
+  auto selected = getSelectedEntry();
+  auto subtitle = selected.has_value()
+    ? selected.value().name
+    : "";
 
-  const auto selected = getSelectedEntry();
+  MappedInputManager::Labels labels;
+  if (popup_.isEntered()) {
+    labels = popup_.getButtonLabels(mappedInput);
+  } else {
+    const char* confirm = "";
+    if (selected.has_value()) {
+      if (!selected.value().popupItems.empty()) {
+        confirm = tr(STR_ENTER);
+      } else if (selected.value().onPress.has_value()) {
+        confirm = tr(STR_SELECT);
+      }
+    }
+    labels = mappedInput.mapLabels(tr(STR_EXIT), confirm, "", "");
+  }
 
-  const auto body = flex::inset(
-    UIPage::render(
-      renderer,
-      "Menu",
-      selected.has_value()
-        ? selected.value().name.c_str()
-        : "",
-      MappedInputManager::Labels{}
-    ),
-    flex::Padding{ flex::xy(td.globalMenu.paddingX, td.globalMenu.paddingY) }
+  constexpr int gap = 10;
+  auto body = UIPage::render(
+      renderer, 
+      tr(STR_MENU_LABEL), 
+      subtitle.c_str(),
+      labels,
+      flex::Padding{ .bottom = gap }
   );
 
   const auto sections = flex::Hstack(
@@ -46,74 +165,92 @@ void GlobalMenu::render() {
       {
         flex::fixed(navWidth),
         flex::grow()
-      }
+      },
+      0
   );
 
   const auto nav = sections[0];
+  const auto popupArea = sections[1];
+
   renderNavBody(nav);
   renderNavItems(nav);
+
+  if (popup_.isOpen()) {
+    const Rect slot = selectedSlotRect(nav);
+    const Position anchor{nav.x + nav.width, slot.y};
+    popup_.render(renderer, anchor, popupArea);
+  }
 
   renderer.setRenderMode(GfxRenderer::BW);
   renderer.displayBuffer();
 }
 
-std::vector<MenuRegistryEntry> GlobalMenu::getEntries() {
-  std::vector<MenuRegistryEntry> entries;
-  entries.reserve(5);
+Rect GlobalMenu::selectedSlotRect(Rect nav) {
+  const auto top = getTopEntries();
+  const auto bottom = getBottomEntries();
+  const int slotSize = nav.width;
 
-  if(activityEntry.has_value()) {
-    entries.emplace_back(activityEntry.value());
+  if (selectedIndex < top.size()) {
+    return Rect{nav.x, nav.y + static_cast<int>(selectedIndex) * slotSize, slotSize, slotSize};
   }
 
-  return entries;
-}
-
-std::optional<MenuRegistryEntry> GlobalMenu::getSelectedEntry() {
-  auto entries = getEntries();
-
-  if(selectedIndex >= entries.size()) {
-    return std::nullopt;
-  }
-
-  return entries[selectedIndex];
+  // Bottom entries are anchored to the bottom of the nav, index 0 highest.
+  const int bi = static_cast<int>(selectedIndex - top.size());
+  const int totalBottomHeight = static_cast<int>(bottom.size()) * slotSize;
+  const int bottomBaseY = nav.y + nav.height - totalBottomHeight;
+  return Rect{nav.x, bottomBaseY + bi * slotSize, slotSize, slotSize};
 }
 
 void GlobalMenu::renderNavBody(Rect nav) {
-  const auto navShadow = flex::offset(nav, 5, 5);
+  auto shadow = flex::offset(nav, 3, 3);
 
-  renderer.fillRect(navShadow.x, navShadow.y, navShadow.width, navShadow.height);
-
+  renderer.fillRect(shadow.x, shadow.y, shadow.width, shadow.height);
   renderer.fillRect(nav.x, nav.y, nav.width, nav.height, false);
   renderer.drawRect(nav.x, nav.y, nav.width, nav.height, true);
 }
 
 void GlobalMenu::renderNavItems(Rect body) {
-  auto entries = getEntries();
+  const auto entries = getTopEntries();
+  const auto bottomEntries = getBottomEntries();
 
-  for (uint8_t i = 0; const MenuRegistryEntry& entry : entries) {
-    bool selected = i == selectedIndex;
+  const uint16_t slotSize = body.width;
 
-    Rect area = {
-      .x = body.x,
-      .y = body.y,
-      .width = body.width,
-      .height = entry.icon.height + (2 * navPaddingY)
-    };
+  // --- Main entries (stacked from top) ---
+  for (uint8_t i = 0; i < entries.size(); ++i) {
+    const auto& entry = entries[i];
+    const bool selected = (i == selectedIndex);
+
+    const Rect slot = { .x = body.x, .y = body.y + i * slotSize, .width = slotSize, .height = slotSize };
 
     if (selected) {
-      renderer.fillRect(area.x, area.y, area.width, area.height, true);
+      renderer.fillRect(slot.x, slot.y, slot.width, slot.height, true);
     }
 
-    Rect target = flex::center(area, entry.icon.width, entry.icon.height);
+    const Rect target = flex::center(slot, entry.icon.width, entry.icon.height);
     renderer.drawIcon(entry.icon, target.x, target.y, selected);
+  }
 
-    body = { 
+  // --- Bottom entries (anchored to bottom, top-to-bottom: index 0 highest) ---
+  const uint16_t totalBottomHeight = bottomEntries.size() * slotSize;
+  const uint16_t bottomBaseY = body.y + body.height - totalBottomHeight;
+
+  for (size_t i = 0; i < bottomEntries.size(); ++i) {
+    const auto& entry = bottomEntries[i];
+    const bool selected = (i + entries.size()) == selectedIndex;
+
+    const Rect slot = {
       .x = body.x,
-      .y = body.y + area.height,
-      .width = body.width,
-      .height = body.height - area.height
-    }; // shift the body down by the area dimensions to correctly derive the next target
+      .y = static_cast<int>(bottomBaseY + i * slotSize),
+      .width = slotSize,
+      .height = slotSize
+    };
 
-    ++i;
+
+    if (selected) {
+      renderer.fillRect(slot.x, slot.y, slot.width, slot.height, true);
+    }
+
+    const Rect target = flex::center(slot, entry.icon.width, entry.icon.height);
+    renderer.drawIcon(entry.icon, target.x, target.y, selected);
   }
 }

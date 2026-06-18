@@ -14,7 +14,6 @@
 #include "LibraryIndex.h"
 #include "activities/Activity.h"
 #include "components/themes/BaseTheme.h"  // for Rect
-#include "components/ui/CascadingPopupMenu/CascadingPopupMenu.h"
 #include "util/ButtonNavigator.h"
 #include "util/GridHelper.h"
 
@@ -54,11 +53,6 @@ class LibraryActivity final : public Activity {
   // Cached header title for the active view ("Library" for All Books,
   // otherwise the collection / series / author / genre name).
   std::string viewTitle_;
-
-  // The cascading popup (Sort / Files / Settings). Owns its own selection
-  // state, level, and chrome — LibraryActivity routes button presses to it
-  // and dispatches LeafActivated / SubItemActivated results.
-  CascadingPopupMenu popup_;
 
   // Drives Up/Down hold-to-page-jump (every 500ms after a 500ms hold) and
   // suppresses the tap callback when a continuous fired. Default 500/500
@@ -154,12 +148,6 @@ class LibraryActivity final : public Activity {
   // batch-done repaints with real covers (loop()). Lazy load: the page turn is
   // instant (placeholders) and covers fill in shortly after.
   void loadPage(uint8_t page);
-
-  // Build the cascading popup's entry tree from current settings. Installed as
-  // the menu's builder in onEnter, so it re-runs on every open (and after any
-  // non-closing leaf action), keeping state-dependent glyphs / pre-selections
-  // fresh without per-render callbacks.
-  std::vector<PopupMenuEntry> buildEntries();
   // Launch the collection-membership picker for the book under the cursor.
   // Returns true (close the popup) when there's no book to edit; false while
   // the picker is launched (the return handler closes the popup on resume).
@@ -226,9 +214,10 @@ class LibraryActivity final : public Activity {
   std::string getHeaderSubtitleText();
   void renderLibraryShelf(const Rect& shelfArea);
   void renderPageRail(const Rect& railArea);
-  void renderPopup();
   void renderBookTile(const Rect& cell, const LibraryBook& book, bool selected);
   void renderEmptyState(const Rect& body);
+  bool onSortSelect(uint8_t sortType);
+  std::optional<PopupMenu::Glyph> getSortGlyph(uint8_t sortType);
 
  public:
   explicit LibraryActivity(GfxRenderer& renderer, MappedInputManager& mappedInput)
@@ -243,6 +232,6 @@ class LibraryActivity final : public Activity {
   // library (delegates to moveNext()), wrapping at the end.
   bool handlePowerShortPress() override;
 
-  std::optional<MenuRegistryEntry> getGlobalMenuData() override;
+  std::vector<MenuRegistryEntry> getGlobalMenuEntries() override;
   bool useGlobalMenu() override { return true; }
 };

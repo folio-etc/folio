@@ -17,6 +17,13 @@ struct Rect {
   int height;
 };
 
+// A bare anchor point. Used where a caller wants to pin one corner of a
+// floating element (e.g. a popup) without implying any width/height.
+struct Position {
+  int x;
+  int y;
+};
+
 struct TabInfo {
   const char* label;
   bool selected;

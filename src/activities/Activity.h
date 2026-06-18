@@ -3,7 +3,6 @@
 
 #include <cassert>
 #include <memory>
-#include <optional>
 #include <string>
 #include <utility>
 
@@ -74,8 +73,8 @@ class Activity {
   void onGoHome();
   void onSelectBook(const std::string& path);
 
-  virtual std::optional<MenuRegistryEntry> getGlobalMenuData() {
-    return std::nullopt;
+  virtual std::vector<MenuRegistryEntry> getGlobalMenuEntries() {
+    return std::vector<MenuRegistryEntry>{};
   }
 
   virtual bool useGlobalMenu() {

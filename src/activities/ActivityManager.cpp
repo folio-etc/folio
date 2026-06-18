@@ -78,17 +78,10 @@ void ActivityManager::loop() {
   if (currentActivity) {
     bool menuHandled = false;
     if (currentActivity->useGlobalMenu()) {
-      const bool wasOpen = globalMenu.isOpen();
-      if (globalMenu.loop()) {
-        // The menu consumed this Back edge — don't let the activity also act on
-        // it this frame (e.g. closing the menu must not fall through and open
-        // the library popup off the same press).
+      bool handled = globalMenu.loop();
+      if (handled) {
         menuHandled = true;
-        // Capture the activity's menu data on the closed->open edge, while the
-        // activity is still alive.
-        if (globalMenu.isOpen() && !wasOpen) {
-          globalMenu.setEntry(currentActivity->getGlobalMenuData());
-        }
+
         // One refresh per menu state change. The render task's menu-open branch
         // re-composites the menu, so this can't wipe it (see renderTaskLoop).
         requestUpdate();
@@ -336,6 +329,15 @@ void ActivityManager::requestUpdateAndWait() {
 
   xTaskNotify(renderTaskHandle, 1, eIncrement);
   ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+}
+
+std::vector<MenuRegistryEntry> ActivityManager::getCurrentActivityMenuEntries() {
+  auto activity = getCurrentActivity();
+  if(!activity) {
+    return std::vector<MenuRegistryEntry>{};
+  }
+
+  return activity->getGlobalMenuEntries();
 }
 
 // RenderLock

@@ -24,7 +24,7 @@ struct PopupMenuEntry {
   const char* label = "";
   std::optional<PopupMenu::Glyph> glyph;
   std::optional<uint8_t> initialSelectedChild;
-  std::optional<std::vector<PopupMenuEntry>> children;
+  std::vector<PopupMenuEntry> children;
   std::optional<std::function<bool()>> onSelected;
 };
 
@@ -49,29 +49,39 @@ class CascadingPopupMenu {
   // menu changes visible state. Does not open the menu.
   void configure(std::function<std::vector<PopupMenuEntry>()> builder, std::function<void()> requestUpdate);
 
-  // Open onto the root panel. `initialSelection` pre-selects a root row
-  // (default row 0); pass std::nullopt to open with no row selected.
+  // Open onto the root panel with NO row selected (a preview). The root row
+  // revealed by the first activate() is `initialSelection` (default row 0).
   void open(std::optional<uint8_t> initialSelection = uint8_t{0});
   void close();
   bool isOpen() const { return open_; }
+
+  // True once the user has stepped into the popup — i.e. the focused panel has
+  // a selected row. False while the popup is an unselected preview (just
+  // opened, or backed out to the root). Callers route navigation to the popup
+  // only while it's entered.
+  bool isEntered() const;
 
   // Input. The menu calls requestUpdate() itself when state changed; callers
   // delegate and return.
   void moveUp();
   void moveDown();
-  void back();      // pop one level, or close the popup at the root
-  void activate();  // Confirm: descend into a branch, or fire a leaf's onSelected
+  void back();  // pop one level, or de-select the root (back out to preview)
+  // Confirm: reveal the initial selection on a preview, descend into a branch,
+  // or fire a leaf's onSelected. Returns true when the caller should close the
+  // whole menu (a leaf's onSelected requested it).
+  bool activate();
 
-  // Render the cascade (no-op when closed). Panels grow rightward from `leftX`,
-  // bottoms aligned just above `bottomLimit` (drop shadow included); the deepest
-  // panel is width-clamped so its shadow stays at or before `rightLimit`.
-  void render(GfxRenderer& renderer, int leftX, int bottomLimit, int rightLimit) const;
+  // Render the cascade (no-op when closed) within `area`. The root panel's left
+  // edge sits at `anchor.x`; `anchor.y` pins one of its corners — the panel
+  // grows downward from `anchor` (top-left) when it fits below within `area`,
+  // otherwise upward (bottom-left). Child panels cascade rightward, bounded by
+  // `area`'s right and bottom edges.
+  void render(GfxRenderer& renderer, Position anchor, Rect area) const;
 
-  // Footer button hints for the open popup (back: Close/Back, confirm:
-  // Enter/Select, left/right blank), routed through mappedInput so physical
-  // remapping applies.
-  void renderFooterHints(GfxRenderer& renderer, const MappedInputManager& mappedInput) const;
-  MappedInputManager::Labels getFooterLabels(const MappedInputManager& mappedInput) const;
+  // Button hints for the open popup (back: Close at root / Back in a submenu,
+  // confirm: Enter on a branch / Select on a leaf; left/right blank), routed
+  // through mappedInput so physical remapping applies.
+  MappedInputManager::Labels getButtonLabels(const MappedInputManager& mappedInput) const;
 
  private:
   // One open panel. `entries` points into the current `entries_` tree; `menu`
@@ -86,6 +96,8 @@ class CascadingPopupMenu {
   std::function<void()> requestUpdate_;
   std::vector<PopupMenuEntry> entries_;  // current tree (built by builder_)
   std::vector<Level> stack_;             // stack_.back() == focused panel
+  // Root row revealed by the first activate() on a freshly-opened preview.
+  std::optional<uint8_t> rootInitial_;
 
   // The selected entry in the focused panel, or nullptr when nothing is
   // selected / the menu is closed.

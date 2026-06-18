@@ -11,8 +11,11 @@
 
 #include "GfxRenderer.h"
 #include "MappedInputManager.h"
+#include "components/icons/apps40.h"
+#include "components/icons/settingsAlt40.h"
 #include "components/ui/GlobalMenu/GlobalMenu.h"
 #include "util/ScreenshotInfo.h"
+#include "i18n.h"
 
 class Activity;    // forward declaration
 class RenderLock;  // forward declaration
@@ -39,6 +42,7 @@ class ActivityManager {
   MappedInputManager& mappedInput;
   std::vector<std::unique_ptr<Activity>> stackActivities;
   std::unique_ptr<Activity> currentActivity;
+  GlobalMenu globalMenu;
 
   void exitActivity(const RenderLock& lock);
 
@@ -64,14 +68,54 @@ class ActivityManager {
   // This variable must only be set by the main loop, to avoid race conditions
   bool requestedUpdate = false;
 
-  GlobalMenu globalMenu;
-
  public:
   explicit ActivityManager(GfxRenderer& renderer, MappedInputManager& mappedInput)
       : renderer(renderer), 
         mappedInput(mappedInput), 
         renderingMutex(xSemaphoreCreateMutex()),
-        globalMenu(GlobalMenu{renderer, mappedInput})
+        globalMenu(GlobalMenu{
+            renderer, 
+            mappedInput, 
+            [this]() -> std::vector<MenuRegistryEntry> {
+              return this->getCurrentActivityMenuEntries();
+            },
+            [this]() -> std::vector<MenuRegistryEntry> {
+              std::vector<MenuRegistryEntry> entries{
+                MenuRegistryEntry{
+                  .icon = { 40, 40, Apps40Icon },
+                  .name = tr(STR_APPS),
+                  .popupItems = {
+                    PopupMenuEntry{
+                      .label = tr(STR_LIBRARY),
+                      .onSelected = [this]() { goHome(); return true; }
+                    },
+                    PopupMenuEntry{
+                      .label = tr(STR_FILES),
+                      .children = {
+                        PopupMenuEntry{
+                          .label = tr(STR_BROWSE),
+                          .onSelected = [this]() { goToFileBrowser(); return true; }
+                        },
+                        PopupMenuEntry{
+                          .label = tr(STR_TRANSFER),
+                          .onSelected = [this]() { goToFileTransfer(); return true; }
+                        }
+                      }
+                    }
+                  }
+                },
+                {
+                  .icon = Bitmap1Bit{ 40, 40, Settingsalt40Icon },
+                  .name = tr(STR_SETTINGS_TITLE),
+                  .onPress = [this]() -> void {
+                    this->goToSettings();
+                  }
+                }
+              };
+              
+              return entries;
+            }
+        })
     {
       assert(renderingMutex != nullptr && "Failed to create rendering mutex");
       stackActivities.reserve(10);
@@ -102,6 +146,8 @@ class ActivityManager {
   void goToFullScreenMessage(std::string message, EpdFontFamily::Style style = EpdFontFamily::REGULAR);
   void goToCrashReport();
   void goHome();
+
+  std::vector<MenuRegistryEntry> getCurrentActivityMenuEntries();
 
   // This will move current activity to stack instead of deleting it
   void pushActivity(std::unique_ptr<Activity>&& activity);
