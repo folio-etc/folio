@@ -936,5 +936,70 @@ struct PageLine {
 ```
 
 ---
+## Rules to Follow
+
+1. Prefer declarative initialization of deep structs over imperative code for building said structs.
+
+### DO:
+
+```cpp
+struct Inner {
+    int foo;
+};
+
+struct Outer {
+    int bar;
+    std::vector<Inner> things;
+};
+
+// ...
+
+Outer example = Outer{
+    .bar = 52,
+    .things = {
+        Inner{
+            .foo = 27
+        },
+        Inner {
+            .foo = 89
+        }
+    }
+};
+
+```
+
+### DON'T:
+
+```cpp
+struct Inner {
+    int foo;
+};
+
+struct Outer {
+    int bar;
+    std::vector<Inner> things;
+};
+
+// ...
+
+Outer example;
+example.bar = 52;
+
+Inner inner1;
+inner1.foo = 27;
+
+Inner inner2;
+inner2.foo = 89;
+
+example.things.push_back(inner1);
+example.things.push_back(inner2);
+
+```
+
+2. Use flex primitives for laying out UI elements. Always prefer flex primitives over hand-written layout math when applicable.
+
+---
+
+## Final Note
 
 Philosophy: We are building a dedicated e-reader, not a Swiss Army knife. If a feature adds RAM pressure without significantly improving the reading experience, it is Out of Scope.
