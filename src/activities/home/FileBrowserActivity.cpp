@@ -350,8 +350,10 @@ std::vector<MenuRegistryEntry> FileBrowserActivity::getGlobalMenuEntries() {
   const std::string& entry = files[selectorIndex];
   bool isDirectory = (entry.back() == '/');
 
-  std::vector<MenuRegistryEntry> entries = {
-    MenuRegistryEntry{
+  std::vector<MenuRegistryEntry> entries = {};
+
+  if (!files.empty()) {
+    entries.push_back(MenuRegistryEntry{
       .icon = Bitmap1Bit{
         40,
         40,
@@ -374,7 +376,7 @@ std::vector<MenuRegistryEntry> FileBrowserActivity::getGlobalMenuEntries() {
           }
         }
       }
-    }
+    });
   };
 
   if(basepath != "/") {
