@@ -42,7 +42,17 @@ Rect UIPage::render(
   );
 
 
-  ButtonHints::render(renderer, btnLabels.btn1, btnLabels.btn2, btnLabels.btn3, btnLabels.btn4);
+  auto orientation = renderer.getOrientation();
+  switch (orientation) {
+    case GfxRenderer::Orientation::LandscapeClockwise:
+    case GfxRenderer::Orientation::LandscapeCounterClockwise:
+      break;
+    case GfxRenderer::Orientation::Portrait:
+    case GfxRenderer::Orientation::PortraitInverted:
+      ButtonHints::render(renderer, btnLabels.btn1, btnLabels.btn2, btnLabels.btn3, btnLabels.btn4);
+      break;
+  }
+
 
   return bodyWithPadding;
 }
