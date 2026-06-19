@@ -4,7 +4,7 @@ Folio is open-source e-reader firmware - community-built, fully hackable, free f
 
 **Now running on:** ESP32C3-based Xteink [X4](https://www.xteink.com/products/xteink-x4) and [X3](https://www.xteink.com/products/xteink-x3).
 
-![Folio running on Xteink device](./docs/images/cover.jpg)
+![Folio running on Xteink device](./docs/images/cover.png)
 
 ## What can Folio do?
 
