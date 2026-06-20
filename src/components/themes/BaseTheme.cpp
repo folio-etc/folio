@@ -331,6 +331,10 @@ void BaseTheme::drawHeader(const GfxRenderer& renderer, Rect rect, const char* t
   const bool hasTitle = title != nullptr && title[0] != '\0';
   const bool hasSubtitle = subtitle != nullptr && subtitle[0] != '\0';
 
+  // Apply the theme's title prepend/append once; every header style draws this.
+  const std::string decoratedTitle = hasTitle ? (m.header.titlePrepend + title + m.header.titleAppend) : std::string();
+  const char* titleText = decoratedTitle.c_str();
+
   switch (data->header.style) {
     case HeaderStyle::CenteredTitle: {
       constexpr int maxBatteryWidth = 80;
@@ -343,7 +347,11 @@ void BaseTheme::drawHeader(const GfxRenderer& renderer, Rect rect, const char* t
       if (hasTitle) {
         const int padding = rect.width - batteryX + m.battery.width;
         auto truncated = renderer.truncatedText(
-            titleFont, title, rect.width - padding * 2 - m.layout.contentSidePadding * 2, data->header.titleStyle);
+            titleFont,
+            titleText,
+            rect.width - padding * 2 - m.layout.contentSidePadding * 2,
+            data->header.titleStyle
+        );
         renderer.drawCenteredText(titleFont, rect.y + 5, truncated.c_str(), true, data->header.titleStyle);
       }
       if (hasSubtitle) {
@@ -361,7 +369,7 @@ void BaseTheme::drawHeader(const GfxRenderer& renderer, Rect rect, const char* t
       const int batteryX = rect.x + rect.width - 12 - m.battery.width;
       drawBatteryRight(renderer, Rect{batteryX, rect.y + 5, m.battery.width, m.battery.height}, showPct);
 
-      int titleW = hasTitle ? renderer.getTextWidth(titleFont, title, data->header.titleStyle) : 0;
+      int titleW = hasTitle ? renderer.getTextWidth(titleFont, titleText, data->header.titleStyle) : 0;
       int subtitleW = hasSubtitle ? renderer.getTextWidth(captionFont, subtitle, data->header.subtitleStyle) : 0;
       const int available = rect.width - m.layout.contentSidePadding * 3;
       if (titleW + subtitleW > available) {
@@ -375,7 +383,7 @@ void BaseTheme::drawHeader(const GfxRenderer& renderer, Rect rect, const char* t
         }
       }
       if (hasTitle) {
-        auto truncated = renderer.truncatedText(titleFont, title, titleW, data->header.titleStyle);
+        auto truncated = renderer.truncatedText(titleFont, titleText, titleW, data->header.titleStyle);
         renderer.drawText(titleFont, rect.x + m.layout.contentSidePadding, rect.y + m.battery.barHeight + 3,
                           truncated.c_str(), true, data->header.titleStyle);
         // Full-width rule at the bottom of the header.
@@ -404,19 +412,12 @@ void BaseTheme::drawHeader(const GfxRenderer& renderer, Rect rect, const char* t
 
       const int contentPad = m.layout.contentSidePadding;
       const int titleMaxWidth = batteryX - rect.x - contentPad * 2;
-      // Header title — go through the role registry so an SD-installed
-      // title.cpfont overrides the embedded fallback, and the visual size
-      // stays consistent with any other activity that resolves Title (e.g.
-      // LibraryActivity's hand-rolled renderHeader). Previously this
-      // shortcut to NOTOSERIF_18 to give the header more weight, but that
-      // (a) ignored SD overrides, and (b) drifted Settings's title size
-      // away from Library's.
       const int headerTitleFont = getFontForRole(FontRole::Title);
       if (hasTitle) {
         // Shift up when a subtitle is present so both lines fit cleanly above
         // the bottom border.
         const int titleY = hasSubtitle ? 20 : 32;
-        auto truncated = renderer.truncatedText(headerTitleFont, title, titleMaxWidth, data->header.titleStyle);
+        auto truncated = renderer.truncatedText(headerTitleFont, titleText, titleMaxWidth, data->header.titleStyle);
         renderer.drawText(headerTitleFont, rect.x + contentPad, rect.y + titleY, truncated.c_str(), true,
                           data->header.titleStyle);
       }
@@ -446,7 +447,7 @@ void BaseTheme::drawHeader(const GfxRenderer& renderer, Rect rect, const char* t
         renderer.fillRect(batteryIconX - maxTextWidth - batteryPercentSpacing, rect.y + 14, clearW, clearH, false);
       }
       const int maxTitleWidth = std::max(0, batteryGroupLeftX - 20 - titleX);
-      auto truncated = renderer.truncatedText(titleFont, title, maxTitleWidth, data->header.titleStyle);
+      auto truncated = renderer.truncatedText(titleFont, titleText, maxTitleWidth, data->header.titleStyle);
       renderer.drawText(titleFont, titleX, titleY, truncated.c_str(), true, data->header.titleStyle);
       drawBatteryRight(renderer, Rect{batteryIconX, rect.y + 14, m.battery.width, m.battery.height}, showPct);
       break;

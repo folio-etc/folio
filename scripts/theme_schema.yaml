@@ -113,7 +113,9 @@ enums:
 # Each entry is either:
 #   - A nested struct group:  { group: name, fields: [...], children: {...} }
 #   - A top-level field:      { cpp: name, type: T, default: V }
-# "json" defaults to "cpp" when omitted. "default" is the Folio value.
+# "json" defaults to "cpp" when omitted. "default" is the generic value; add
+# "folio" to give the built-in Folio theme a different value. Field types: int,
+# bool, float, string, or any enum/external_type above.
 struct:
   - group: header
     struct_name: Header
@@ -124,6 +126,8 @@ struct:
       - { cpp: bottomBorderHeight, type: int,                  default: 3 }
       - { cpp: height,             type: int,                  default: 89 }
       - { cpp: fontRole,           type: FontRole,             default: "FontRole::Title" }
+      - { cpp: titlePrepend,       type: string,               default: "" }
+      - { cpp: titleAppend,        type: string,               default: "",                                folio: "." }
 
   - group: selection
     struct_name: Selection

@@ -62,7 +62,12 @@ def is_external_type(type_name: str, schema: dict) -> bool:
 
 
 def is_parseable_type(type_name: str, schema: dict) -> bool:
-    return type_name in PRIMITIVE_TYPES or is_enum_type(type_name, schema) or is_external_type(type_name, schema)
+    return (
+        type_name in PRIMITIVE_TYPES
+        or type_name == "string"
+        or is_enum_type(type_name, schema)
+        or is_external_type(type_name, schema)
+    )
 
 
 def enum_table_name(enum_name: str) -> str:
@@ -80,13 +85,20 @@ def get_table_name(type_name: str, schema: dict) -> str:
 
 def cpp_type_str(type_name: str) -> str:
     """Return the C++ type string for a schema type."""
-    if type_name in PRIMITIVE_TYPES:
-        return type_name
+    if type_name == "string":
+        return "std::string"
     return type_name
+
+
+def folio_default(field: dict) -> Any:
+    """Value the built-in Folio theme uses: `folio:` override, else `default:`."""
+    return field.get("folio", field["default"])
 
 
 def format_default(val: Any, type_name: str) -> str:
     """Format a default value for C++ designated initializer."""
+    if type_name == "string":
+        return '"{}"'.format(str(val).replace('\\', '\\\\').replace('"', '\\"'))
     if isinstance(val, bool):
         return "true" if val else "false"
     if isinstance(val, str):
@@ -134,6 +146,7 @@ def generate_header(schema: dict) -> str:
     for ext in schema.get("external_types", {}).values():
         includes.add(ext["include"])
     lines.append("#include <cstdint>\n")
+    lines.append("#include <string>\n")
     for inc in sorted(includes):
         if inc.startswith("<"):
             lines.append(f"#include {inc}\n")
@@ -230,7 +243,7 @@ def generate_defaults(schema: dict) -> str:
         if is_group(entry):
             _emit_default_group(lines, entry, schema, indent=4)
         elif is_field(entry):
-            val = format_default(entry["default"], entry["type"])
+            val = format_default(folio_default(entry), entry["type"])
             lines.append(f"    .{entry['cpp']} = {val},\n")
 
     lines.append("};\n\n")
@@ -245,7 +258,7 @@ def _emit_default_group(lines: list[str], group: dict, schema: dict, indent: int
     member = group["group"]
     lines.append(f"{pad}.{member} = {{\n")
     for field in group.get("fields", []):
-        val = format_default(field["default"], field["type"])
+        val = format_default(folio_default(field), field["type"])
         lines.append(f"{pad}    .{field['cpp']} = {val},\n")
     for child in group.get("children", []):
         _emit_default_group(lines, child, schema, indent + 4)
@@ -359,6 +372,8 @@ def _emit_parser_field(
 
     if type_name in PRIMITIVE_TYPES:
         lines.append(f'{pad}{target} = {obj_var}["{json_key}"] | {target};\n')
+    elif type_name == "string":
+        lines.append(f'{pad}{target} = {obj_var}["{json_key}"] | {target}.c_str();\n')
     elif is_enum_type(type_name, schema) or is_external_type(type_name, schema):
         table = get_table_name(type_name, schema)
         lines.append(
