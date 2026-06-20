@@ -11,7 +11,7 @@ namespace {
 
 void drawHairlineHint(const GfxRenderer& renderer, int x, int y, int buttonWidth, int buttonHeight, const char* label,
                       int labelFontId) {
-  // Outline only — no fill — so the paper background shows through.
+  renderer.fillRect(x, y, buttonWidth, buttonHeight, false);
   renderer.drawRect(x, y, buttonWidth, buttonHeight);
 
   // Anchor the rule at a fixed clearance from the button bottom so it never
