@@ -36,17 +36,14 @@ bool ButtonHints::suppressed_ = false;
 
 void ButtonHints::render(GfxRenderer& renderer, const char* btn1, const char* btn2, const char* btn3,
                          const char* btn4) {
-  if (suppressed_) return;
+  if (suppressed_ || (renderer.getOrientation() != GfxRenderer::Orientation::Portrait)) {
+    return;
+  }
 
   const auto& theme = GUI;
   const auto& data = *theme.getData();
 
   const auto bodyCompactFont = GUI.getFontForRole(FontRole::BodyCompact);
-
-  // Force portrait so the hints stay aligned with the physical front buttons
-  // regardless of the active reading orientation.
-  const GfxRenderer::Orientation origOrientation = renderer.getOrientation();
-  renderer.setOrientation(GfxRenderer::Orientation::Portrait);
 
   const int pageHeight = renderer.getScreenHeight();
   const int buttonY = data.buttonHints.height;
@@ -154,8 +151,6 @@ void ButtonHints::render(GfxRenderer& renderer, const char* btn1, const char* bt
       break;
     }
   }
-
-  renderer.setOrientation(origOrientation);
 }
 
 void ButtonHints::renderSide(const GfxRenderer& renderer, const char* topBtn, const char* bottomBtn,
