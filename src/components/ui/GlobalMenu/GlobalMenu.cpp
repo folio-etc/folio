@@ -172,11 +172,12 @@ void GlobalMenu::render() {
         flex::fixed(navWidth + 2 * td.globalMenu.paddingX),
         flex::grow()
       },
-      0
+      0,
+      flex::xy(0, td.globalMenu.paddingY) 
   );
 
   // Inset the nav bar frame within its section (1: nav-area padding).
-  const auto nav = flex::inset(sections[0], flex::xy(td.globalMenu.paddingX, td.globalMenu.paddingY));
+  const auto nav = flex::inset(sections[0], flex::xy(td.globalMenu.paddingX, 0));
   const auto popupArea = sections[1];
 
   renderNavBody(nav);
