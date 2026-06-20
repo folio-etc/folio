@@ -626,7 +626,7 @@ std::vector<MenuRegistryEntry> EpubReaderActivity::buildTallMenuEntries() {
   auto footnotes = footnoteItems();
 
   // Footnotes belongs after the two one-click actions, but only when the page has any.
-  if (footnotes.size() > 0) {
+  if (!footnotes.empty()) {
     entries.insert(
       entries.begin() + 2,
       MenuRegistryEntry{
@@ -642,15 +642,20 @@ std::vector<MenuRegistryEntry> EpubReaderActivity::buildWideMenuEntries() {
   // Landscape is only ~480px tall, so fold everything past the two most-used
   // actions under a single "More" entry to stay within the nav strip's slots.
   std::vector<PopupMenuEntry> more{
-      PopupMenuEntry{.label = tr(STR_ORIENTATION),
-                     .initialSelectedChild = SETTINGS.orientation,
-                     .children = orientationItems()},
-      PopupMenuEntry{.label = tr(STR_AUTO_TURN_PAGES_PER_MIN),
-                     .initialSelectedChild = autoTurnOption,
-                     .children = autoTurnItems()},
+      PopupMenuEntry{
+        .label = tr(STR_ORIENTATION),
+        .initialSelectedChild = SETTINGS.orientation,
+        .children = orientationItems()
+      },
+      PopupMenuEntry{
+        .label = tr(STR_AUTO_TURN_PAGES_PER_MIN),
+        .initialSelectedChild = autoTurnOption,
+        .children = autoTurnItems()
+      },
   };
 
-  if (!currentPageFootnotes.empty()) {
+  auto footnotes = footnoteItems();
+  if (!footnotes.empty()) {
     more.insert(
       more.begin(), 
       PopupMenuEntry{
