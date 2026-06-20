@@ -324,7 +324,7 @@ void BaseTheme::drawSelectionFrame(const GfxRenderer& renderer, Rect rect) {
 // Header / SubHeader
 // ============================================================================
 
-void BaseTheme::drawHeader(const GfxRenderer& renderer, Rect rect, const char* title, const char* subtitle) const {
+void BaseTheme::drawHeader(const GfxRenderer& renderer, Rect rect, const char* title, const char* subtitle, bool skipDecoration) const {
   const auto& m = *data;
   const int titleFont = getFontForRole(FontRole::Title);
   const int captionFont = getFontForRole(FontRole::BodyCompact);
@@ -333,7 +333,7 @@ void BaseTheme::drawHeader(const GfxRenderer& renderer, Rect rect, const char* t
 
   // Apply the theme's title prepend/append once; every header style draws this.
   const std::string decoratedTitle = hasTitle ? (m.header.titlePrepend + title + m.header.titleAppend) : std::string();
-  const char* titleText = decoratedTitle.c_str();
+  const char* titleText = skipDecoration ? title : decoratedTitle.c_str();
 
   switch (data->header.style) {
     case HeaderStyle::CenteredTitle: {

@@ -11,6 +11,7 @@ class UIPage {
         const char* title,
         const char* subtitle,
         const MappedInputManager::Labels btnLabels,
-        const std::optional<flex::Padding> paddingOverride = std::nullopt
+        const std::optional<flex::Padding> paddingOverride = std::nullopt,
+        bool skipTitleDecoration = false
     );
 };

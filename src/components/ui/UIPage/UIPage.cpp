@@ -9,7 +9,8 @@ Rect UIPage::render(
     const char* title,
     const char* subtitle,
     MappedInputManager::Labels btnLabels,
-    std::optional<flex::Padding> paddingOverride
+    std::optional<flex::Padding> paddingOverride,
+    bool skipTitleDecoration
 ) {
   const auto& td = *GUI.getData();
   const Rect screen{ 0, 0, renderer.getScreenWidth(), renderer.getScreenHeight() };
@@ -27,7 +28,7 @@ Rect UIPage::render(
   const auto top = flex::join(page[0], page[1]);
   renderer.fillRect(top.x, top.y, top.width, top.height, false);
 
-  GUI.drawHeader(renderer, page[1], title, subtitle);
+  GUI.drawHeader(renderer, page[1], title, subtitle, skipTitleDecoration);
 
   const auto body = page[2];
   const auto bodyWithPadding = flex::inset(

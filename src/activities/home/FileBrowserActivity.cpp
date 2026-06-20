@@ -10,6 +10,7 @@
 #include "activities/util/ConfirmationActivity.h"
 #include "components/UITheme.h"
 #include "components/ui/ButtonHints/ButtonHints.h"
+#include "components/ui/UIPage/UIPage.h"
 #include "fontIds.h"
 #include "components/icons/file40.h"
 #include "components/icons/folder40.h"
@@ -170,50 +171,6 @@ void FileBrowserActivity::render(RenderLock&&) {
       (mode == Mode::PickFirmware)
           ? std::string(tr(STR_SELECT_FIRMWARE_FILE))
           : ((basepath == "/") ? std::string(tr(STR_SD_CARD)) : basepath.substr(basepath.rfind('/') + 1));
-  GUI.drawHeader(renderer, Rect{0, td.layout.topPadding, pageWidth, td.header.height}, folderName.c_str());
-
-  const int pathLineHeight = renderer.getLineHeight(SMALL_FONT_ID);
-  const int pathReserved = pathLineHeight + td.layout.verticalSpacing;
-  const int contentTop = td.layout.topPadding + td.header.height;
-  const int contentHeight =
-      pageHeight - contentTop - td.buttonHints.height - pathReserved;
-  if (files.empty()) {
-    const char* emptyMsg = (mode == Mode::PickFirmware) ? tr(STR_NO_BIN_FILES) : tr(STR_NO_FILES_FOUND);
-    renderer.drawText(UI_10_FONT_ID, td.layout.contentSidePadding, contentTop + 20, emptyMsg);
-  } else {
-    GUI.drawList(
-        renderer, Rect{0, contentTop, pageWidth, contentHeight}, files.size(), selectorIndex,
-        [this](int index) { return getFileName(files[index]); }, nullptr,
-        [this](int index) { return UITheme::getFileIcon(files[index]); },
-        [this](int index) { return getFileExtension(files[index]); }, false);
-  }
-
-  // Full path display
-  {
-    const int pathY = pageHeight - td.buttonHints.height - td.layout.verticalSpacing - pathLineHeight;
-    const int separatorY = pathY - td.layout.verticalSpacing / 2;
-    renderer.drawLine(0, separatorY, pageWidth - 1, separatorY, 3, true);
-    const int pathMaxWidth = pageWidth - td.layout.contentSidePadding * 2;
-    // Left-truncate so the deepest directory is always visible
-    const char* pathStr = basepath.c_str();
-    const char* pathDisplay = pathStr;
-    char leftTruncBuf[256];
-    if (renderer.getTextWidth(SMALL_FONT_ID, pathStr) > pathMaxWidth) {
-      const char ellipsis[] = "\xe2\x80\xa6";  // UTF-8 ellipsis (…)
-      const int ellipsisWidth = renderer.getTextWidth(SMALL_FONT_ID, ellipsis);
-      const int available = pathMaxWidth - ellipsisWidth;
-      // Walk forward from the start until the suffix fits, skipping UTF-8 continuation bytes
-      const char* p = pathStr;
-      while (*p) {
-        if (renderer.getTextWidth(SMALL_FONT_ID, p) <= available) break;
-        ++p;
-        while (*p && (static_cast<unsigned char>(*p) & 0xC0) == 0x80) ++p;
-      }
-      snprintf(leftTruncBuf, sizeof(leftTruncBuf), "%s%s", ellipsis, p);
-      pathDisplay = leftTruncBuf;
-    }
-    renderer.drawText(SMALL_FONT_ID, td.layout.contentSidePadding, pathY, pathDisplay);
-  }
 
   // Help text
   const char* backLabel = (basepath == "/") ? (mode == Mode::PickFirmware ? tr(STR_BACK) : tr(STR_HOME)) : tr(STR_BACK);
@@ -229,7 +186,80 @@ void FileBrowserActivity::render(RenderLock&&) {
       files.empty() ? "" : tr(STR_DIR_DOWN)
   );
 
-  ButtonHints::render(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+  auto body = UIPage::render(
+      renderer, 
+      folderName.c_str(), 
+      "", 
+      labels,
+      flex::Padding{},
+      true
+  );
+
+  auto sections = flex::Vstack(body,
+      {
+        flex::grow(),
+        flex::fixed(50)
+      }
+  );
+
+  // draw section divider
+  renderer.drawLine(0, sections[1].y, sections[1].width, sections[1].y, 2, true);
+
+  auto listSection = flex::inset(sections[0], flex::xy(0, td.layout.topPadding));
+  auto pathSection = flex::inset(sections[1], flex::xy(td.layout.contentSidePadding, 0));
+
+  if (files.empty()) {
+    const char* emptyMsg = (mode == Mode::PickFirmware) ? tr(STR_NO_BIN_FILES) : tr(STR_NO_FILES_FOUND);
+
+    auto width = renderer.getTextWidth(UI_10_FONT_ID, emptyMsg);
+    auto height = renderer.getLineHeight(UI_10_FONT_ID);
+    auto position = flex::center(listSection, width, height);
+
+    renderer.drawText(UI_10_FONT_ID, position.x, position.y, emptyMsg);
+  } else {
+    GUI.drawList(
+        renderer, listSection, files.size(), selectorIndex,
+        [this](int index) { return getFileName(files[index]); }, nullptr,
+        [this](int index) { return UITheme::getFileIcon(files[index]); },
+        [this](int index) { return getFileExtension(files[index]); }, false);
+  }
+
+  // Full path display
+  {
+    const auto fontId = GUI.getFontForRole(FontRole::BodyCompact);
+
+    const int pathMaxWidth = pathSection.width;
+    // Left-truncate so the deepest directory is always visible
+    const char* pathStr = basepath.c_str();
+    const char* pathDisplay = pathStr;
+    char leftTruncBuf[256];
+
+    if (renderer.getTextWidth(fontId, pathStr) > pathMaxWidth) {
+      const char ellipsis[] = "\xe2\x80\xa6";  // UTF-8 ellipsis (…)
+      const int ellipsisWidth = renderer.getTextWidth(fontId, ellipsis);
+      const int available = pathMaxWidth - ellipsisWidth;
+      // Walk forward from the start until the suffix fits, skipping UTF-8 continuation bytes
+      const char* p = pathStr;
+      while (*p) {
+        if (renderer.getTextWidth(fontId, p) <= available) break;
+        ++p;
+        while (*p && (static_cast<unsigned char>(*p) & 0xC0) == 0x80) ++p;
+      }
+      snprintf(leftTruncBuf, sizeof(leftTruncBuf), "%s%s", ellipsis, p);
+      pathDisplay = leftTruncBuf;
+    }
+
+    auto height = renderer.getLineHeight(fontId);
+    auto position = flex::align(
+        pathSection, 
+        pathSection.width, 
+        height, 
+        flex::HAlign::Start, 
+        flex::VAlign::Center
+    );
+
+    renderer.drawText(fontId, position.x, position.y, pathDisplay);
+  }
 
   renderer.displayBuffer();
 }

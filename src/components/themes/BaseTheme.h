@@ -87,7 +87,7 @@ class BaseTheme {
                 const std::function<bool(int index)>& rowDimmed = nullptr,
                 const std::function<bool(int index)>& rowIsHeader = nullptr,
                 const std::function<bool(int index)>& rowBold = nullptr, bool valueMetaStyle = false) const;
-  void drawHeader(const GfxRenderer& renderer, Rect rect, const char* title, const char* subtitle = nullptr) const;
+  void drawHeader(const GfxRenderer& renderer, Rect rect, const char* title, const char* subtitle = nullptr, bool skipDecoration = false) const;
   void drawSubHeader(const GfxRenderer& renderer, Rect rect, const char* label, const char* rightLabel = nullptr) const;
   void drawTabBar(const GfxRenderer& renderer, Rect rect, const std::vector<TabInfo>& tabs, bool selected) const;
   void drawButtonMenu(GfxRenderer& renderer, Rect rect, int buttonCount, int selectedIndex,
