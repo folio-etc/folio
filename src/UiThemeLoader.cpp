@@ -85,9 +85,9 @@ bool UiThemeLoader::loadTheme(const char* themeId, GfxRenderer& renderer) {
   archive_.getCacheDir(themeId, cacheDir, sizeof(cacheDir));
   const auto ids = ThemeFontManager::getInstance().loadRoles(themeId, cacheDir, fontSpec, renderer);
   // Only overwrite roles that loadRoles actually resolved. parseThemeJson
-  // initialized themeData_->fonts from BuiltinThemes::Folio, so roles the
-  // SD theme.json omits (a 0 in `ids`) keep their flash-resident Folio
-  // defaults instead of getting clobbered to "no font" — which would force
+  // initialized themeData_->fonts from BuiltinThemes::Default, so roles the
+  // SD theme.json omits (a 0 in `ids`) keep their flash-resident default
+  // fonts instead of getting clobbered to "no font" — which would force
   // BaseTheme::resolveFontRole to chain compact → non-compact and risk
   // pulling compact glyphs through an SD-backed body/caption font.
   if (ids.title != 0)          themeData_->fonts.titleId          = ids.title;

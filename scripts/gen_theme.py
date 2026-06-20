@@ -208,15 +208,37 @@ def _emit_struct_group(lines: list[str], group: dict, schema: dict, indent: int)
 # ThemeDefaults.generated.h
 # ---------------------------------------------------------------------------
 
-def generate_defaults(schema: dict) -> str:
-    folio = schema.get("folio", {})
-    folio_id = folio.get("id", "folio")
-    folio_fonts = folio.get("fonts", {})
+FONT_ROLES = [
+    "titleId", "headingId", "bodyId", "captionId", "accentId",
+    "bodyIdCompact", "captionIdCompact", "accentIdCompact",
+]
 
-    font_roles = [
-        "titleId", "headingId", "bodyId", "captionId", "accentId",
-        "bodyIdCompact", "captionIdCompact", "accentIdCompact",
-    ]
+
+def _emit_theme_constant(lines: list[str], schema: dict, name: str, theme_id: str, use_folio: bool) -> None:
+    folio_fonts = schema.get("folio", {}).get("fonts", {})
+
+    lines.append(f"inline constexpr ThemeData {name} = {{\n")
+    lines.append(f'    .id = "{theme_id}",\n')
+
+    # Fonts sub-initializer (font IDs are folio's reasonable defaults; parsed
+    # themes override these via parseFontSpecs regardless).
+    lines.append("    .fonts = {")
+    font_parts = [f".{role} = {folio_fonts.get(role, '0')}" for role in FONT_ROLES]
+    lines.append(", ".join(font_parts))
+    lines.append("},\n")
+
+    for entry in schema["struct"]:
+        if is_group(entry):
+            _emit_default_group(lines, entry, schema, indent=4, use_folio=use_folio)
+        elif is_field(entry):
+            val = format_default(folio_default(entry) if use_folio else entry["default"], entry["type"])
+            lines.append(f"    .{entry['cpp']} = {val},\n")
+
+    lines.append("};\n\n")
+
+
+def generate_defaults(schema: dict) -> str:
+    folio_id = schema.get("folio", {}).get("id", "folio")
 
     lines: list[str] = []
     lines.append("#pragma once\n")
@@ -227,41 +249,28 @@ def generate_defaults(schema: dict) -> str:
     lines.append('#include "fontIds.h"\n')
     lines.append("\n")
     lines.append("namespace BuiltinThemes {\n\n")
-    lines.append("inline constexpr ThemeData Folio = {\n")
-    lines.append(f'    .id = "{folio_id}",\n')
 
-    # Fonts sub-initializer
-    lines.append("    .fonts = {")
-    font_parts = []
-    for role in font_roles:
-        val = folio_fonts.get(role, "0")
-        font_parts.append(f".{role} = {val}")
-    lines.append(", ".join(font_parts))
-    lines.append("},\n")
+    # Generic defaults — the seed for JSON-parsed themes. Folio-specific
+    # overrides (e.g. the title period) must NOT leak into other themes.
+    _emit_theme_constant(lines, schema, "Default", "default", use_folio=False)
+    # Built-in Folio theme, with its overrides applied.
+    _emit_theme_constant(lines, schema, "Folio", folio_id, use_folio=True)
 
-    for entry in schema["struct"]:
-        if is_group(entry):
-            _emit_default_group(lines, entry, schema, indent=4)
-        elif is_field(entry):
-            val = format_default(folio_default(entry), entry["type"])
-            lines.append(f"    .{entry['cpp']} = {val},\n")
-
-    lines.append("};\n\n")
     lines.append("}  // namespace BuiltinThemes\n")
     lines.append("\n")
     lines.append(CLANG_FORMAT_ON)
     return "".join(lines)
 
 
-def _emit_default_group(lines: list[str], group: dict, schema: dict, indent: int) -> None:
+def _emit_default_group(lines: list[str], group: dict, schema: dict, indent: int, use_folio: bool) -> None:
     pad = " " * indent
     member = group["group"]
     lines.append(f"{pad}.{member} = {{\n")
     for field in group.get("fields", []):
-        val = format_default(folio_default(field), field["type"])
+        val = format_default(folio_default(field) if use_folio else field["default"], field["type"])
         lines.append(f"{pad}    .{field['cpp']} = {val},\n")
     for child in group.get("children", []):
-        _emit_default_group(lines, child, schema, indent + 4)
+        _emit_default_group(lines, child, schema, indent + 4, use_folio=use_folio)
     lines.append(f"{pad}}},\n")
 
 

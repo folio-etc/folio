@@ -78,8 +78,8 @@ bool parseThemeJson(const char* json, size_t len, ThemeData& out,
                     char* idBuf, size_t idBufSize,
                     char* nameBuf, size_t nameBufSize,
                     ThemeFontSpec& fontSpec) {
-  // Start from Folio defaults.
-  out = BuiltinThemes::Folio;
+  // Start from generic defaults (NOT Folio — its overrides must not leak).
+  out = BuiltinThemes::Default;
 
   JsonDocument doc;
   DeserializationError err = deserializeJson(doc, json, len);
