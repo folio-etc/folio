@@ -21,6 +21,7 @@ struct BuiltinFontEntry {
 };
 
 constexpr BuiltinFontEntry kBuiltinFonts[] = {
+    {"literata-10", LITERATA_10_FONT_ID},
     {"notoserif-5", NOTOSERIF_5_FONT_ID},
     {"notoserif-6", NOTOSERIF_6_FONT_ID},
     {"notoserif-8", NOTOSERIF_8_FONT_ID},

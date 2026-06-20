@@ -35,6 +35,19 @@ uname -s
 find src -name "*.cpp" -o -name "*.h" | xargs clang-format -i
 ```
 
+### Python Tooling
+
+**Always use `uv` for Python.** Create environments with `uv venv` and run scripts
+with `uv run` (or `uv pip install` into a `uv venv`). Do NOT use bare `python`,
+`pip`, or hand-rolled `.venv` activation for project Python tasks (font conversion,
+i18n/theme/html generators, etc.).
+
+```bash
+uv venv                       # create .venv
+uv pip install -r requirements.txt
+uv run script.py              # run within the env
+```
+
 ---
 
 ## Platform and Hardware Constraints
