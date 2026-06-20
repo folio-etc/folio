@@ -272,12 +272,12 @@ struct:
   - group: popupMenu
     struct_name: PopupMenu
     fields:
-      - { cpp: rowHeight,             type: int,                       default: 46 }
+      - { cpp: rowHeight,             type: int,                       default: 38 }
       - { cpp: borderThickness,       type: int,                       default: 2 }
       - { cpp: cornerRadius,          type: int,                       default: 0 }
       - { cpp: shadowOffsetX,         type: int,                       default: 3 }
       - { cpp: shadowOffsetY,         type: int,                       default: 3 }
-      - { cpp: paddingX,              type: int,                       default: 15 }
+      - { cpp: paddingX,              type: int,                       default: 10 }
       - { cpp: panelGap,              type: int,                       default: 6 }
       - { cpp: selectionStyle,        type: PopupMenuSelectionStyle,   default: "PopupMenuSelectionStyle::SolidFill" }
       - { cpp: selectionCornerRadius, type: int,                       default: 0 }
