@@ -49,7 +49,7 @@ folio:
   fonts:
     titleId:          NOTOSERIF_14_FONT_ID
     headingId:        NOTOSERIF_14_FONT_ID
-    bodyId:           NOTOSERIF_10_FONT_ID
+    bodyId:           LITERATA_10_FONT_ID
     captionId:        NOTOSERIF_10_FONT_ID
     accentId:         NOTOSERIF_10_FONT_ID
     bodyIdCompact:    NOTOSERIF_8_FONT_ID
@@ -268,7 +268,7 @@ struct:
   - group: popupMenu
     struct_name: PopupMenu
     fields:
-      - { cpp: rowHeight,             type: int,                       default: 40 }
+      - { cpp: rowHeight,             type: int,                       default: 46 }
       - { cpp: borderThickness,       type: int,                       default: 2 }
       - { cpp: cornerRadius,          type: int,                       default: 0 }
       - { cpp: shadowOffsetX,         type: int,                       default: 3 }

@@ -32,6 +32,10 @@
 #include <builtinFonts/notoserif_18_bolditalic.h>
 #include <builtinFonts/notoserif_18_italic.h>
 #include <builtinFonts/notoserif_18_regular.h>
+#include <builtinFonts/literata_10_bold.h>
+#include <builtinFonts/literata_10_bolditalic.h>
+#include <builtinFonts/literata_10_italic.h>
+#include <builtinFonts/literata_10_regular.h>
 #include <builtinFonts/notosans_8_regular.h>
 #include <builtinFonts/notosans_12_bold.h>
 #include <builtinFonts/notosans_12_bolditalic.h>
