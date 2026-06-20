@@ -229,6 +229,7 @@ class LibraryActivity final : public Activity {
   bool handlePowerShortPress() override;
 
   std::vector<MenuRegistryEntry> getGlobalMenuEntries() override;
+  AppId appId() const override { return AppId::Library; }
   std::optional<GlobalMenuConfig> getGlobalMenuConfig() override {
     return GlobalMenuConfig{.clearFontCacheOnClose = false};
   }

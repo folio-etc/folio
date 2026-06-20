@@ -174,9 +174,9 @@ void FileBrowserActivity::render(RenderLock&&) {
 
   const int pathLineHeight = renderer.getLineHeight(SMALL_FONT_ID);
   const int pathReserved = pathLineHeight + td.layout.verticalSpacing;
-  const int contentTop = td.layout.topPadding + td.header.height + td.layout.verticalSpacing;
+  const int contentTop = td.layout.topPadding + td.header.height;
   const int contentHeight =
-      pageHeight - contentTop - td.buttonHints.height - td.layout.verticalSpacing - pathReserved;
+      pageHeight - contentTop - td.buttonHints.height - pathReserved;
   if (files.empty()) {
     const char* emptyMsg = (mode == Mode::PickFirmware) ? tr(STR_NO_BIN_FILES) : tr(STR_NO_FILES_FOUND);
     renderer.drawText(UI_10_FONT_ID, td.layout.contentSidePadding, contentTop + 20, emptyMsg);

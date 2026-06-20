@@ -81,35 +81,7 @@ class ActivityManager {
               return this->getCurrentActivityMenuEntries();
             },
             [this]() -> std::vector<MenuRegistryEntry> {
-              std::vector<MenuRegistryEntry> entries{
-                MenuRegistryEntry{
-                  .icon = { 40, 40, Apps40Icon },
-                  .name = tr(STR_APPS),
-                  .popupItems = {
-                    PopupMenuEntry{
-                      .label = tr(STR_LIBRARY),
-                      .onSelected = [this]() { goHome(); return true; }
-                    },
-                    PopupMenuEntry{
-                      .label = tr(STR_FILE_BROWSER),
-                      .onSelected = [this]() { goToFileBrowser(); return true; }
-                    },
-                    PopupMenuEntry{
-                      .label = tr(STR_FILE_TRANSFER),
-                      .onSelected = [this]() { goToFileTransfer(); return true; }
-                    }
-                  }
-                },
-                MenuRegistryEntry{
-                  .icon = Bitmap1Bit{ 40, 40, Settingsalt40Icon },
-                  .name = tr(STR_SETTINGS_TITLE),
-                  .onPress = [this]() -> void {
-                    this->goToSettings();
-                  }
-                }
-              };
-              
-              return entries;
+              return this->getGlobalMenuBottomEntries();
             }
         })
     {
@@ -144,6 +116,7 @@ class ActivityManager {
   void goHome();
 
   std::vector<MenuRegistryEntry> getCurrentActivityMenuEntries();
+  std::vector<MenuRegistryEntry> getGlobalMenuBottomEntries();
 
   // This will move current activity to stack instead of deleting it
   void pushActivity(std::unique_ptr<Activity>&& activity);

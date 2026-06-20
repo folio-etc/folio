@@ -14,6 +14,10 @@
 #include "util/ScreenshotInfo.h"
 #include "lib/MenuRegistry.h"
 
+// Identifies an entry in the GlobalMenu Apps submenu, so the menu can mark the
+// running app and no-op when it's re-selected. None = not an Apps target.
+enum class AppId { None, Library, FileBrowser, FileTransfer };
+
 class Activity {
   friend class ActivityManager;
 
@@ -45,6 +49,7 @@ class Activity {
   virtual bool skipLoopDelay() { return false; }
   virtual bool preventAutoSleep() { return false; }
   virtual bool isReaderActivity() const { return false; }
+  virtual AppId appId() const { return AppId::None; }
   virtual ScreenshotInfo getScreenshotInfo() const { return {}; }
 
   // Optional per-activity power-button override. The "Short Power Button

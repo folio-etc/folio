@@ -357,6 +357,36 @@ std::vector<MenuRegistryEntry> ActivityManager::getCurrentActivityMenuEntries() 
   return activity->getGlobalMenuEntries();
 }
 
+std::vector<MenuRegistryEntry> ActivityManager::getGlobalMenuBottomEntries() {
+  const AppId current = currentActivity ? currentActivity->appId() : AppId::None;
+
+  // The running app gets a Circle marker and a no-op (close the menu without
+  // re-launching itself); every other app navigates.
+  auto appItem = [current](const char* label, AppId id, std::function<void()> nav) {
+    const bool isCurrent = (id == current);
+    return PopupMenuEntry{
+        .label = label,
+        .glyph = isCurrent ? std::optional<PopupMenu::Glyph>(PopupMenu::Glyph::Circle) : std::nullopt,
+        .onSelected = [isCurrent, nav = std::move(nav)]() {
+          if (!isCurrent) nav();
+          return true;
+        }};
+  };
+
+  return std::vector<MenuRegistryEntry>{
+      MenuRegistryEntry{
+          .icon = {40, 40, Apps40Icon},
+          .name = tr(STR_APPS),
+          .popupItems = {
+              appItem(tr(STR_LIBRARY), AppId::Library, [this]() { goHome(); }),
+              appItem(tr(STR_FILE_BROWSER), AppId::FileBrowser, [this]() { goToFileBrowser(); }),
+              appItem(tr(STR_FILE_TRANSFER), AppId::FileTransfer, [this]() { goToFileTransfer(); })}},
+      MenuRegistryEntry{
+          .icon = Bitmap1Bit{40, 40, Settingsalt40Icon},
+          .name = tr(STR_SETTINGS_TITLE),
+          .onPress = [this]() -> void { this->goToSettings(); }}};
+}
+
 // RenderLock
 
 RenderLock::RenderLock() {

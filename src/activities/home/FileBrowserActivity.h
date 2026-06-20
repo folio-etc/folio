@@ -52,4 +52,5 @@ class FileBrowserActivity final : public Activity {
                                : std::nullopt;
   }
   std::vector<MenuRegistryEntry> getGlobalMenuEntries() override;
+  AppId appId() const override { return AppId::FileBrowser; }
 };
