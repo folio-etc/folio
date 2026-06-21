@@ -33,8 +33,9 @@ class FileBrowserActivity final : public Activity {
 
   void onGoToRoot();
   void onGoBack();
-  void onSelectEntry(); 
+  void onSelectEntry();
   void onDeleteEntry();
+  void onRenameEntry();
 
  public:
   explicit FileBrowserActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, std::string initialPath = "/",
