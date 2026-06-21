@@ -53,6 +53,16 @@ struct DirFrame {
   std::string path;
 };
 
+// Filename stem for the indexing progress label:
+// "/Books/0064_The Glass Bridge.epub" -> "0064_The Glass Bridge".
+std::string epubLabel(const std::string& path) {
+  const size_t slash = path.find_last_of('/');
+  const size_t start = (slash == std::string::npos) ? 0 : slash + 1;
+  size_t end = path.size();
+  if (end - start >= 5 && path.compare(end - 5, 5, ".epub") == 0) end -= 5;
+  return path.substr(start, end - start);
+}
+
 }  // namespace
 
 LibraryIndex LibraryIndex::instance;
@@ -157,7 +167,7 @@ bool LibraryIndex::saveToFile() const {
   return true;
 }
 
-bool LibraryIndex::refreshFromSdCard(GfxRenderer* progressRenderer) {
+bool LibraryIndex::refreshFromSdCard(const IndexProgressFn& onProgress) {
   if (!Storage.exists(BOOKS_ROOT)) {
     LOG_DBG(LOG_TAG, "%s not present — empty library", BOOKS_ROOT);
     const bool changed = !books.empty();
@@ -192,10 +202,10 @@ bool LibraryIndex::refreshFromSdCard(GfxRenderer* progressRenderer) {
   stack.reserve(MAX_TRAVERSAL_DEPTH);
   stack.push_back({std::move(root), BOOKS_ROOT});
 
-  Rect popupRect;
-  bool popupShown = false;
-  int newBooksIndexed = 0;
-  bool changed = false;
+  // --- Pass 1: gather candidate EPUB paths in one cheap directory walk (no
+  // parsing). This yields an exact count before any heavy per-book work. ---
+  std::vector<std::string> epubPaths;
+  epubPaths.reserve(previousCount + 16);
 
   while (!stack.empty()) {
     DirFrame& frame = stack.back();
@@ -227,16 +237,21 @@ bool LibraryIndex::refreshFromSdCard(GfxRenderer* progressRenderer) {
       continue;
     }
 
-    if (books.size() >= static_cast<size_t>(MAX_LIBRARY_BOOKS)) {
+    if (epubPaths.size() >= static_cast<size_t>(MAX_LIBRARY_BOOKS)) {
       LOG_ERR(LOG_TAG, "Hit MAX_LIBRARY_BOOKS=%d; skipping remaining EPUBs", MAX_LIBRARY_BOOKS);
       break;
     }
 
-    std::string path = frame.path + "/" + nameBuf;
-    const uint32_t h = hashPath(path);
+    epubPaths.push_back(frame.path + "/" + nameBuf);
+  }
 
-    // Reuse cached metadata if the path matches — guards against the unlikely
-    // case of two different paths hashing to the same value.
+  // --- Partition: reuse cached metadata for known books, collect the rest as
+  // the work list. Reused books are added straight to `books`. ---
+  std::vector<std::string> newPaths;
+  bool changed = false;
+  for (auto& path : epubPaths) {
+    const uint32_t h = hashPath(path);
+    // The path check guards against two different paths hashing to the same value.
     auto it = existingByHash.find(h);
     if (it != existingByHash.end() && it->second.path == path) {
       LibraryBook b = std::move(it->second);
@@ -248,27 +263,29 @@ bool LibraryIndex::refreshFromSdCard(GfxRenderer* progressRenderer) {
         changed = true;
       }
       books.push_back(std::move(b));
-      continue;
+    } else {
+      newPaths.push_back(std::move(path));
     }
+  }
 
-    // New book — show the popup the first time we have actual work to do.
-    if (progressRenderer && !popupShown) {
-      popupRect = GUI.drawPopup(*progressRenderer, tr(STR_LIBRARY_INDEXING));
-      popupShown = true;
-    }
+  // --- Pass 2: index the new books, reporting progress. onProgress fires only
+  // when there is real work, so the caller shows its indexing UI only then. ---
+  const int total = static_cast<int>(newPaths.size());
+  for (int i = 0; i < total; ++i) {
+    std::string& path = newPaths[i];
+    if (onProgress) onProgress(i, total, epubLabel(path).c_str());
 
+    const uint32_t h = hashPath(path);
     Epub epub(path, CACHE_DIR);
-    // buildIfMissing=true so we get a populated book.bin metadata cache;
-    // skipLoadingCss=true because we only need title/author/spine info;
-    // metadataOnly=true defers the TOC parse + per-spine size scan to the first
-    // reader open — the library list never reads either.
+    // buildIfMissing=true populates book.bin; skipLoadingCss=true (only need
+    // title/author/spine); metadataOnly=true defers TOC + per-spine size scan
+    // to the first reader open — the library list reads neither.
     if (!epub.load(true, true, /*metadataOnly=*/true)) {
       LOG_ERR(LOG_TAG, "Epub load failed: %s", path.c_str());
       continue;
     }
 
     LibraryBook b;
-    b.path = std::move(path);
     b.pathHash = h;
     b.title = epub.getTitle();
     b.author = epub.getAuthor();
@@ -278,15 +295,15 @@ bool LibraryIndex::refreshFromSdCard(GfxRenderer* progressRenderer) {
     b.spineCount = static_cast<uint16_t>(epub.getSpineItemsCount());
     const BookProgress* prog = PROGRESS_STORE.find(h);
     b.progressSpineIndex = prog ? prog->spineIndex : 0;
+    b.path = std::move(path);
 
-    // Best-effort thumbnail. Failures here just mean we'll render a
-    // title-only fallback tile in LibraryActivity.
+    // Best-effort thumbnail. A failure just renders a title-only fallback tile.
     epub.generateThumbBmp(LibraryIndex::THUMB_MAX_WIDTH, THUMB_HEIGHT);
 
     books.push_back(std::move(b));
-    newBooksIndexed++;
     changed = true;
   }
+  if (onProgress && total > 0) onProgress(total, total, "");
 
   // Any books left in existingByHash were removed from disk between runs.
   if (!existingByHash.empty()) {
@@ -302,7 +319,7 @@ bool LibraryIndex::refreshFromSdCard(GfxRenderer* progressRenderer) {
     saveToFile();
   }
 
-  LOG_DBG(LOG_TAG, "Library refresh: %d books indexed (%d new)", static_cast<int>(books.size()), newBooksIndexed);
+  LOG_DBG(LOG_TAG, "Library refresh: %d books (%d new)", static_cast<int>(books.size()), total);
   return true;
 }
 

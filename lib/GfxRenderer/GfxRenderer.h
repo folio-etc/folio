@@ -31,6 +31,11 @@ class GfxRenderer {
     LandscapeCounterClockwise  // 800x480 logical coordinates, native panel orientation
   };
 
+  enum Truncate {
+    Start,
+    End
+  };
+
  private:
   static constexpr size_t BW_BUFFER_CHUNK_SIZE = 8000;  // 8KB chunks to allow for non-contiguous memory
 
@@ -298,7 +303,7 @@ class GfxRenderer {
   int getFontAscenderSize(int fontId) const;
   int getLineHeight(int fontId) const;
   std::string truncatedText(int fontId, const char* text, int maxWidth,
-                            EpdFontFamily::Style style = EpdFontFamily::REGULAR) const;
+                            EpdFontFamily::Style style = EpdFontFamily::REGULAR, Truncate truncation = Truncate::End) const;
   /// Word-wrap \p text into at most \p maxLines lines, each no wider than
   /// \p maxWidth pixels. Overflowing words and excess lines are UTF-8-safely
   /// truncated with an ellipsis (U+2026).

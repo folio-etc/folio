@@ -67,7 +67,10 @@ class LibraryActivity final : public Activity {
   // placeholder flash); placeholders appear only while a rapid-jump (Up/Down
   // hold) flicks through pages. Entries hold no 2bpp source; the worker reuses a
   // single decode scratch (decodeScratch_).
-  BitmapCacheManager pageCache_{PER_PAGE, COVER_ARENA_BYTES};
+  // Arena starts at 0 bytes and is grown to COVER_ARENA_BYTES in onEnter AFTER
+  // indexing — a cold index can drive free heap under 2 KB, so we don't want the
+  // 20 KB cover region reserved while EPUB parsing needs every byte it can get.
+  BitmapCacheManager pageCache_{PER_PAGE, 0};
 
   // Reused 2bpp decode scratch for the prefetch worker (allocated in onEnter,
   // freed in onExit). Single-producer: only the worker writes/reads it.
@@ -212,6 +215,10 @@ class LibraryActivity final : public Activity {
   void renderPageRail(const Rect& railArea);
   void renderBookTile(const Rect& cell, const LibraryBook& book, bool selected);
   void renderEmptyState(const Rect& body);
+  // Full-screen indexing progress (header + body VStack, no button-hint band).
+  // Drawn directly during onEnter's refresh callback; the normal library render
+  // overwrites it once indexing completes.
+  void renderIndexingProgress(int done, int total, const char* label);
   bool onSortSelect(CrossPointSettings::LIBRARY_SORT_FIELD sortType);
   std::optional<PopupMenu::Glyph> getSortGlyph(CrossPointSettings::LIBRARY_SORT_FIELD sortType);
 

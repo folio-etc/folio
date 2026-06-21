@@ -76,6 +76,13 @@ int utf8SafeTruncateBuffer(const char* buf, int len) {
   return len;
 }
 
+size_t utf8RemoveFirstChar(std::string& str) {
+  if (str.empty()) return 0;
+  const int len = utf8CodepointLen(static_cast<unsigned char>(str[0]));
+  str.erase(0, std::min(static_cast<size_t>(len), str.size()));
+  return str.size();
+}
+
 size_t utf8RemoveLastChar(std::string& str) {
   if (str.empty()) return 0;
   size_t pos = str.size() - 1;

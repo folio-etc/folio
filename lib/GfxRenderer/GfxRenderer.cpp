@@ -1652,7 +1652,7 @@ void GfxRenderer::displayBuffer(const HalDisplay::RefreshMode refreshMode) const
 }
 
 std::string GfxRenderer::truncatedText(const int fontId, const char* text, const int maxWidth,
-                                       const EpdFontFamily::Style style) const {
+                                       const EpdFontFamily::Style style, Truncate truncation) const {
   if (!text || maxWidth <= 0) return "";
 
   // U+2026 HORIZONTAL ELLIPSIS (UTF-8: 0xE2 0x80 0xA6)
@@ -1665,11 +1665,24 @@ std::string GfxRenderer::truncatedText(const int fontId, const char* text, const
     return item;
   }
 
+  auto removeChar = truncation == Truncate::End ? utf8RemoveLastChar : utf8RemoveFirstChar;
   while (!item.empty() && getTextWidth(fontId, (item + ellipsis).c_str(), style) >= maxWidth) {
-    utf8RemoveLastChar(item);
+    removeChar(item);
   }
 
-  return item.empty() ? ellipsis : item + ellipsis;
+  if(item.empty()) {
+    return ellipsis;
+  }
+
+  switch(truncation) {
+    case Truncate::End:
+      return item + ellipsis;
+    case Truncate::Start:
+      return ellipsis + item;
+    default:
+      // shouldn't happen but the compiler complains if we don't include this
+      return text;
+  }
 }
 
 std::vector<std::string> GfxRenderer::wrappedText(const int fontId, const char* text, const int maxWidth,

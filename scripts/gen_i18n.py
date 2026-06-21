@@ -806,9 +806,19 @@ def _append_string_entry(lines: List[str], text: str, comment: str = "") -> None
 
 
 def _write_file(path: str, lines: List[str], verbose: bool = False) -> None:
+    content = "\n".join(lines) + "\n"
+    # Write only when content changed: this runs as a PlatformIO pre: script on
+    # every build, and an unconditional rewrite churns the header mtime, which
+    # confuses the incremental build's header-dependency tracking. Touching the
+    # file only on a real change keeps mtimes meaningful so dependents recompile
+    # exactly when (and only when) the generated code actually changed.
+    try:
+        if Path(path).read_text(encoding="utf-8") == content:
+            return
+    except FileNotFoundError:
+        pass
     with open(path, "w", encoding="utf-8", newline="\n") as f:
-        f.write("\n".join(lines))
-        f.write("\n")
+        f.write(content)
     if verbose:
         print(f"Generated: {path}")
 

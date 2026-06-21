@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -103,11 +104,20 @@ class LibraryIndex {
   // Safe to call repeatedly — re-reads from disk every time.
   bool loadFromFile();
 
-  // Walks /Books (recursive, depth-limited), indexes any EPUBs not already in
-  // the cache, refreshes progress for known books, and persists library.bin
-  // if anything changed. Shows a "Indexing library..." popup if a renderer is
-  // supplied. Returns true on success (an empty library is a successful result).
-  bool refreshFromSdCard(GfxRenderer* progressRenderer = nullptr);
+  // Progress callback for refreshFromSdCard. Invoked only when there is new
+  // work: once per new book with (done, total, label) where `done` is the count
+  // already indexed (0-based at the start of each book), `total` is the number
+  // of NEW books, and `label` is the current book's filename stem. A final call
+  // arrives with done==total and an empty label. Never called when nothing is
+  // new — so the caller can use the first invocation to show its indexing UI.
+  using IndexProgressFn = std::function<void(int done, int total, const char* label)>;
+
+  // Walks /Books (recursive, depth-limited) in a single pass to gather EPUB
+  // paths, reuses cached metadata for books already in library.bin, indexes the
+  // rest (reporting via onProgress), refreshes progress for known books, and
+  // persists library.bin if anything changed. Returns true on success (an empty
+  // library is a successful result).
+  bool refreshFromSdCard(const IndexProgressFn& onProgress = {});
 
   // Books whose metadata contains `query` as a case-insensitive substring.
   // Searches all available text metadata: title, author, series, and genre.
