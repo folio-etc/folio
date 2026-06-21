@@ -8,14 +8,15 @@
 #include "CrossPointSettings.h"
 #include "MappedInputManager.h"
 #include "activities/util/ConfirmationActivity.h"
+#include "activities/util/KeyboardEntryActivity.h"
 #include "components/UITheme.h"
 #include "components/ui/ButtonHints/ButtonHints.h"
 #include "components/ui/UIPage/UIPage.h"
 #include "fontIds.h"
-#include "components/icons/file40.h"
-#include "components/icons/folder40.h"
 #include "components/icons/arrowUp40.h"
 #include "components/icons/slash.h"
+#include "components/icons/trashx40.h"
+#include "components/icons/filepencil40.h"
 
 void FileBrowserActivity::loadFiles() {
   files.clear();
@@ -335,6 +336,41 @@ void FileBrowserActivity::onDeleteEntry() {
   startActivityForResult(std::make_unique<ConfirmationActivity>(renderer, mappedInput, heading, entry), handler);
 }
 
+void FileBrowserActivity::onRenameEntry() {
+  const std::string& entry = files[selectorIndex];
+  const bool isDirectory = (entry.back() == '/');
+  const std::string currentName = isDirectory ? entry.substr(0, entry.length() - 1) : entry;
+
+  std::string cleanBasePath = basepath;
+  if (cleanBasePath.back() != '/') cleanBasePath += "/";
+
+  auto handler = [this, cleanBasePath, currentName, isDirectory](const ActivityResult& res) {
+    if (res.isCancelled) return;
+
+    const std::string newName = std::get<KeyboardResult>(res.data).text;
+    if (newName.empty() || newName == currentName) return;
+
+    const std::string oldPath = cleanBasePath + currentName;
+    const std::string newPath = cleanBasePath + newName;
+
+    // Cache hash is path-derived, so the rename orphans the old entry; clear it.
+    if (!isDirectory) clearFileMetadata(oldPath);
+
+    if (Storage.rename(oldPath.c_str(), newPath.c_str())) {
+      LOG_DBG("FileBrowser", "Renamed %s -> %s", oldPath.c_str(), newPath.c_str());
+      loadFiles();
+      selectorIndex = findEntry(isDirectory ? newName + "/" : newName);
+      requestUpdate(true);
+    } else {
+      LOG_ERR("FileBrowser", "Failed to rename: %s -> %s", oldPath.c_str(), newPath.c_str());
+    }
+  };
+
+  startActivityForResult(
+      std::make_unique<KeyboardEntryActivity>(renderer, mappedInput, tr(STR_RENAME), currentName, 0, InputType::Text),
+      handler);
+}
+
 void FileBrowserActivity::onGoToRoot() {
   basepath = "/";
   loadFiles();
@@ -368,37 +404,22 @@ std::vector<MenuRegistryEntry> FileBrowserActivity::getGlobalMenuEntries() {
     return {};
   }
 
-  const std::string& entry = files[selectorIndex];
-  bool isDirectory = (entry.back() == '/');
-
   std::vector<MenuRegistryEntry> entries = {};
 
   if (!files.empty()) {
-    entries.push_back(MenuRegistryEntry{
-      .icon = Bitmap1Bit{
-        40,
-        40,
-        isDirectory ? Folder40Icon : File40Icon
+    entries.insert(entries.end(), std::initializer_list<MenuRegistryEntry>{
+      MenuRegistryEntry{
+        .icon = Bitmap1Bit{ 40, 40, Filepencil40Icon },
+        .name = tr(STR_RENAME),
+        .onPress = [this]() { this->onRenameEntry(); }
       },
-      .name = isDirectory ? tr(STR_SELECTED_DIRECTORY) : tr(STR_SELECTED_FILE),
-      .popupItems = {
-        PopupMenuEntry{
-          .label = tr(STR_OPEN),
-          .onSelected = [this]() { 
-            this->onSelectEntry();
-            return true;
-          }
-        },
-        PopupMenuEntry{
-          .label = tr(STR_DELETE),
-          .onSelected = [this]() {
-            this->onDeleteEntry();
-            return true; 
-          }
-        }
+      MenuRegistryEntry{
+        .icon = Bitmap1Bit{ 40, 40, Trashx40Icon },
+        .name = tr(STR_DELETE),
+        .onPress = [this]() { this->onDeleteEntry(); }
       }
     });
-  };
+  }
 
   if(basepath != "/") {
     entries.insert(entries.end(), std::initializer_list<MenuRegistryEntry>{
