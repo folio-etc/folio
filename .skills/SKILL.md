@@ -368,6 +368,14 @@ sdkApiThatTakesOwnership(obj);  // SDK calls delete
   page chrome (top padding + header + body + button hints) from theme metrics and returns the
   body `Rect` to fill. This is the standard going forward — do NOT hand-assemble header /
   body / footer stacks per activity.
+* **Hint-less full-screen views (progress / status / splash):** `UIPage::render` always
+  reserves a button-hint band at the bottom, so it's the wrong tool when a view takes no
+  input. Instead compose header + body directly: a `flex::Vstack` of
+  `{fixed(layout.topPadding), fixed(header.height), grow()}`, `flex::join` slots 0+1 and
+  `fillRect` them for the header background, `GUI.drawHeader(...)`, then use slot 2 (`grow`)
+  as the body — which now extends to the screen's bottom edge. Reference:
+  `LibraryActivity::renderIndexingProgress` (the indexing screen). Don't reach for UIPage and
+  then hide/ignore the hints.
 * For list bodies, prefer the [`List`](../src/components/ui/List/List.h) component (each
   `ListItem` owns its own content + `onSelect` callback) over the deprecated index-keyed
   `GUI.drawList(...)`. Drive it with `List::up()/down()/triggerSelected()`.
@@ -383,6 +391,11 @@ sdkApiThatTakesOwnership(obj);  // SDK calls delete
   [docs/flex-layout.md](../docs/flex-layout.md). Read it before laying out new UI.
 * Size from theme metrics (`GUI.getData()->layout.*`, `header.height`, `buttonHints.height`), never
   raw pixels, so layouts stay orientation-correct.
+* **Centering is a flex op, not arithmetic.** Use `flex::center(parent, w, h)` (both axes) or
+  `flex::align(...)` to place an intrinsically-sized element — never `x + (parent.width - w) / 2`
+  by hand. For a centered stack, lay rows out with a `Vstack` (uniform `gap`) over a
+  `flex::center`-ed block, then `flex::center` each row's content within its row rect. Reach for
+  raw padding (`flex::inset`) only when content is edge-anchored; centered content needs none.
 
 ### Logical Button Mapping
 
