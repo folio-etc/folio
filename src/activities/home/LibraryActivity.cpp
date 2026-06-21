@@ -1220,7 +1220,7 @@ void LibraryActivity::renderIndexingProgress(int done, int total, const char* la
     const int width = (rows[4].width) * 7 / 10;
     const Rect r1 = flex::center(rows[4], width, labelH);
 
-    std::string truncatedLabel = renderer.truncatedText(capFont, label, width, EpdFontFamily::ITALIC, GfxRenderer::Truncate::Start);
+    std::string truncatedLabel = renderer.truncatedText(capFont, label, width, EpdFontFamily::ITALIC);
     const int truncatedWidth = renderer.getTextWidth(capFont, truncatedLabel.c_str());
 
     const Rect r2 = flex::center(rows[4], truncatedWidth, labelH);
