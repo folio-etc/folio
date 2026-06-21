@@ -9,7 +9,7 @@
 #include "FsHelpers.h"
 
 namespace {
-constexpr uint8_t BOOK_CACHE_VERSION = 8;
+constexpr uint8_t BOOK_CACHE_VERSION = 9;
 constexpr char bookBinFile[] = "/book.bin";
 constexpr char tmpSpineBinFile[] = "/spine.bin.tmp";
 constexpr char tmpTocBinFile[] = "/toc.bin.tmp";
@@ -98,7 +98,7 @@ bool BookMetadataCache::endWrite() {
   return true;
 }
 
-bool BookMetadataCache::buildBookBin(const std::string& epubPath, const BookMetadata& metadata) {
+bool BookMetadataCache::buildBookBin(const BookMetadata& metadata, ZipFile& zip, const bool full) {
   // Open all three files, writing to meta, reading from spine and toc
   if (!Storage.openFileForWrite("BMC", cachePath + bookBinFile, bookFile)) {
     return false;
@@ -117,8 +117,9 @@ bool BookMetadataCache::buildBookBin(const std::string& epubPath, const BookMeta
     return false;
   }
 
-  constexpr uint32_t headerASize =
-      sizeof(BOOK_CACHE_VERSION) + /* LUT Offset */ sizeof(uint32_t) + sizeof(spineCount) + sizeof(tocCount);
+  const uint8_t completeFlag = full ? 1 : 0;
+  constexpr uint32_t headerASize = sizeof(BOOK_CACHE_VERSION) + sizeof(uint8_t) /* complete flag */ +
+                                   /* LUT Offset */ sizeof(uint32_t) + sizeof(spineCount) + sizeof(tocCount);
   const uint32_t metadataSize = metadata.title.size() + metadata.author.size() + metadata.language.size() +
                                 metadata.coverItemHref.size() + metadata.textReferenceHref.size() +
                                 metadata.series.size() + metadata.genre.size() + sizeof(uint32_t) * 7 +
@@ -128,6 +129,7 @@ bool BookMetadataCache::buildBookBin(const std::string& epubPath, const BookMeta
 
   // Header A
   serialization::writePod(bookFile, BOOK_CACHE_VERSION);
+  serialization::writePod(bookFile, completeFlag);
   serialization::writePod(bookFile, lutOffset);
   serialization::writePod(bookFile, spineCount);
   serialization::writePod(bookFile, tocCount);
@@ -172,24 +174,27 @@ bool BookMetadataCache::buildBookBin(const std::string& epubPath, const BookMeta
     }
   }
 
-  ZipFile zip(epubPath);
-  // Pre-open zip file to speed up size calculations
-  if (!zip.open()) {
-    LOG_ERR("BMC", "Could not open EPUB zip for size calculations");
-    // Explicit close() required: member variables persist beyond function scope
-    bookFile.close();
-    spineFile.close();
-    tocFile.close();
-    return false;
-  }
-  // Batch size lookup: one ZIP central-directory pass for all spine items.
-  // We intentionally avoid loadAllFileStatSlims() — that hashes every entry in
-  // the EPUB (images/CSS/etc.) and OOMs on large books. The targets array here
-  // is bounded by spineCount only.
-  // See: https://github.com/crosspoint-reader/crosspoint-reader/issues/134
+  // Per-spine uncompressed sizes (and the TOC merge) are only needed by the
+  // reader. A metadata-only build (full=false) skips the ZIP size scan entirely
+  // and leaves cumulativeSize=0; the first reader open rebuilds with full=true.
   std::deque<uint32_t> spineSizes;
 
-  if (spineCount > 0) {
+  if (full && spineCount > 0) {
+    // The caller owns `zip` and keeps it open across the OPF/TOC passes, so the
+    // central-directory cursor is already warm here — we neither open nor close it.
+    if (!zip.isOpen()) {
+      LOG_ERR("BMC", "EPUB zip not open for size calculations");
+      // Explicit close() required: member variables persist beyond function scope
+      bookFile.close();
+      spineFile.close();
+      tocFile.close();
+      return false;
+    }
+    // Batch size lookup: one ZIP central-directory pass for all spine items.
+    // We intentionally avoid loadAllFileStatSlims() — that hashes every entry in
+    // the EPUB (images/CSS/etc.) and OOMs on large books. The targets array here
+    // is bounded by spineCount only.
+    // See: https://github.com/crosspoint-reader/crosspoint-reader/issues/134
     std::deque<ZipFile::SizeTarget> targets;
     targets.resize(spineCount);
 
@@ -222,32 +227,32 @@ bool BookMetadataCache::buildBookBin(const std::string& epubPath, const BookMeta
 
     spineEntry.tocIndex = spineToTocIndex[i];
 
-    // Not a huge deal if we don't fine a TOC entry for the spine entry, this is expected behaviour for EPUBs
-    // Logging here is for debugging
-    if (spineEntry.tocIndex == -1) {
-      LOG_DBG("BMC", "Warning: Could not find TOC entry for spine item %d: %s, using title from last section", i,
-              spineEntry.href.c_str());
-      spineEntry.tocIndex = lastSpineTocIndex;
-    }
-    lastSpineTocIndex = spineEntry.tocIndex;
-
-    size_t itemSize = spineSizes[i];
-    if (itemSize == 0) {
-      // Batch lookup missed (path mismatch, etc.) — fall back to single lookup
-      const std::string path = FsHelpers::normalisePath(spineEntry.href);
-      if (!zip.getInflatedFileSize(path.c_str(), &itemSize)) {
-        LOG_ERR("BMC", "Warning: Could not get size for spine item: %s", path.c_str());
+    if (full) {
+      // Not a huge deal if we don't find a TOC entry for the spine entry, this is expected behaviour for EPUBs
+      // Logging here is for debugging
+      if (spineEntry.tocIndex == -1) {
+        LOG_DBG("BMC", "Warning: Could not find TOC entry for spine item %d: %s, using title from last section", i,
+                spineEntry.href.c_str());
+        spineEntry.tocIndex = lastSpineTocIndex;
       }
+      lastSpineTocIndex = spineEntry.tocIndex;
+
+      size_t itemSize = spineSizes[i];
+      if (itemSize == 0) {
+        // Batch lookup missed (path mismatch, etc.) — fall back to single lookup
+        const std::string path = FsHelpers::normalisePath(spineEntry.href);
+        if (!zip.getInflatedFileSize(path.c_str(), &itemSize)) {
+          LOG_ERR("BMC", "Warning: Could not get size for spine item: %s", path.c_str());
+        }
+      }
+      cumSize += itemSize;
     }
 
-    cumSize += itemSize;
-    spineEntry.cumulativeSize = cumSize;
+    spineEntry.cumulativeSize = cumSize;  // 0 for a metadata-only build
 
     // Write out spine data to book.bin
     writeSpineEntry(bookFile, spineEntry);
   }
-  // Close opened zip file
-  zip.close();
 
   // Loop through toc entries from toc file writing to book.bin
   tocFile.seek(0);
@@ -369,6 +374,10 @@ bool BookMetadataCache::load() {
     bookFile.close();
     return false;
   }
+
+  uint8_t completeFlag = 0;
+  serialization::readPod(bookFile, completeFlag);
+  complete = completeFlag != 0;
 
   serialization::readPod(bookFile, lutOffset);
   serialization::readPod(bookFile, spineCount);

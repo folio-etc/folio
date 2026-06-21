@@ -356,7 +356,7 @@ void Epub::parseCssFiles() const {
 }
 
 // load in the meta data for the epub file
-bool Epub::load(const bool buildIfMissing, const bool skipLoadingCss) {
+bool Epub::load(const bool buildIfMissing, const bool skipLoadingCss, const bool metadataOnly) {
   LOG_DBG("EBP", "Loading ePub: %s", filepath.c_str());
 
   // Initialize spine/TOC cache
@@ -366,26 +366,33 @@ bool Epub::load(const bool buildIfMissing, const bool skipLoadingCss) {
 
   // Try to load existing cache first
   if (bookMetadataCache->load()) {
-    if (!skipLoadingCss) {
-      // Rebuild CSS cache when missing or when cache version changed (loadFromCache removes stale file)
-      if (!cssParser->hasCache() || !cssParser->loadFromCache()) {
-        LOG_DBG("EBP", "CSS rules cache missing or stale, attempting to parse CSS files");
-        cssParser->deleteCache();
+    // A metadata-only cache satisfies a metadata-only caller, but a full caller
+    // (the reader) must complete the build — fall through to the build path below.
+    if (metadataOnly || bookMetadataCache->isComplete()) {
+      if (!skipLoadingCss) {
+        // Rebuild CSS cache when missing or when cache version changed (loadFromCache removes stale file)
+        if (!cssParser->hasCache() || !cssParser->loadFromCache()) {
+          LOG_DBG("EBP", "CSS rules cache missing or stale, attempting to parse CSS files");
+          cssParser->deleteCache();
 
-        // Pre-open the shared zip so parseContentOpf + parseCssFiles share one handle
-        zipRef().open();
-        if (!parseContentOpf(bookMetadataCache->coreMetadata)) {
-          LOG_ERR("EBP", "Could not parse content.opf from cached bookMetadata for CSS files");
-          // continue anyway - book will work without CSS and we'll still load any inline style CSS
+          // Pre-open the shared zip so parseContentOpf + parseCssFiles share one handle
+          zipRef().open();
+          if (!parseContentOpf(bookMetadataCache->coreMetadata)) {
+            LOG_ERR("EBP", "Could not parse content.opf from cached bookMetadata for CSS files");
+            // continue anyway - book will work without CSS and we'll still load any inline style CSS
+          }
+          parseCssFiles();
+          zipRef().close();
+          // Invalidate section caches so they are rebuilt with the new CSS
+          Storage.removeDir((cachePath + "/sections").c_str());
         }
-        parseCssFiles();
-        zipRef().close();
-        // Invalidate section caches so they are rebuilt with the new CSS
-        Storage.removeDir((cachePath + "/sections").c_str());
       }
+      LOG_DBG("EBP", "Loaded ePub: %s", filepath.c_str());
+      return true;
     }
-    LOG_DBG("EBP", "Loaded ePub: %s", filepath.c_str());
-    return true;
+    LOG_DBG("EBP", "Metadata-only cache present; completing full build");
+    // Drop the read handle before rebuilding (member FsFile reopen — see CLAUDE.md).
+    bookMetadataCache.reset(new BookMetadataCache(cachePath));
   }
 
   // If we didn't load from cache above and we aren't allowed to build, fail now
@@ -441,21 +448,26 @@ bool Epub::load(const bool buildIfMissing, const bool skipLoadingCss) {
 
   bool tocParsed = false;
 
-  // Try EPUB 3 nav document first (preferred)
-  if (!tocNavItem.empty()) {
-    LOG_DBG("EBP", "Attempting to parse EPUB 3 nav document");
-    tocParsed = parseTocNavFile();
-  }
+  // Metadata-only build skips the TOC parse entirely (it's reader-only data).
+  // We still run begin/endTocPass to emit an empty toc.bin.tmp so buildBookBin's
+  // file expectations hold; tocCount stays 0.
+  if (!metadataOnly) {
+    // Try EPUB 3 nav document first (preferred)
+    if (!tocNavItem.empty()) {
+      LOG_DBG("EBP", "Attempting to parse EPUB 3 nav document");
+      tocParsed = parseTocNavFile();
+    }
 
-  // Fall back to NCX if nav parsing failed or wasn't available
-  if (!tocParsed && !tocNcxItem.empty()) {
-    LOG_DBG("EBP", "Falling back to NCX TOC");
-    tocParsed = parseTocNcxFile();
-  }
+    // Fall back to NCX if nav parsing failed or wasn't available
+    if (!tocParsed && !tocNcxItem.empty()) {
+      LOG_DBG("EBP", "Falling back to NCX TOC");
+      tocParsed = parseTocNcxFile();
+    }
 
-  if (!tocParsed) {
-    LOG_ERR("EBP", "Warning: Could not parse any TOC format");
-    // Continue anyway - book will work without TOC
+    if (!tocParsed) {
+      LOG_ERR("EBP", "Warning: Could not parse any TOC format");
+      // Continue anyway - book will work without TOC
+    }
   }
 
   if (!bookMetadataCache->endTocPass()) {
@@ -470,12 +482,10 @@ bool Epub::load(const bool buildIfMissing, const bool skipLoadingCss) {
     return false;
   }
 
-  // Release our zip handle before BMC opens its own for buildBookBin.
-  zipRef().close();
-
-  // Build final book.bin
+  // Build final book.bin. The shared zip stays open from the OPF/TOC passes so
+  // buildBookBin's size scan (full builds only) reuses the warm central-dir cursor.
   const uint32_t buildStart = millis();
-  if (!bookMetadataCache->buildBookBin(filepath, bookMetadata)) {
+  if (!bookMetadataCache->buildBookBin(bookMetadata, zipRef(), /*full=*/!metadataOnly)) {
     LOG_ERR("EBP", "Could not update mappings and sizes");
     return false;
   }
@@ -494,8 +504,7 @@ bool Epub::load(const bool buildIfMissing, const bool skipLoadingCss) {
   }
 
   if (!skipLoadingCss) {
-    // Reopen the shared zip for CSS reads (closeZipOnExit will close on return)
-    zipRef().open();
+    // Shared zip is still open from the OPF/TOC passes (closeZipOnExit closes on return).
     parseCssFiles();
     Storage.removeDir((cachePath + "/sections").c_str());
   }

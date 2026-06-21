@@ -57,8 +57,9 @@ void KOReaderSyncActivity::ensureEpubLoaded() {
     LOG_DBG("KOSync", "Loading epub for progress mapping (heap: %u)", (unsigned)ESP.getFreeHeap());
     epub = std::make_shared<Epub>(epubPath, "/.crosspoint");
     epub->setupCacheDir();
-    // Load metadata only (no CSS needed for progress mapping, don't rebuild if cache is missing).
-    if (!epub->load(false, true)) {
+    // Progress mapping reads the TOC, which requires a full (complete) cache. Build/complete
+    // it if needed (buildIfMissing=true); skip CSS since it isn't needed for mapping.
+    if (!epub->load(true, true)) {
       LOG_ERR("KOSync", "Failed to load epub for progress mapping");
       epub.reset();
       return;

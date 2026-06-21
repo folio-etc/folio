@@ -259,8 +259,10 @@ bool LibraryIndex::refreshFromSdCard(GfxRenderer* progressRenderer) {
 
     Epub epub(path, CACHE_DIR);
     // buildIfMissing=true so we get a populated book.bin metadata cache;
-    // skipLoadingCss=true because we only need title/author/spine info.
-    if (!epub.load(true, true)) {
+    // skipLoadingCss=true because we only need title/author/spine info;
+    // metadataOnly=true defers the TOC parse + per-spine size scan to the first
+    // reader open — the library list never reads either.
+    if (!epub.load(true, true, /*metadataOnly=*/true)) {
       LOG_ERR(LOG_TAG, "Epub load failed: %s", path.c_str());
       continue;
     }

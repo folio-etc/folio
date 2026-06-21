@@ -292,8 +292,8 @@ void SleepActivity::renderCoverSleepScreen() const {
   } else if (FsHelpers::hasEpubExtension(APP_STATE.openEpubPath)) {
     // Handle EPUB file
     Epub lastEpub(APP_STATE.openEpubPath, "/.crosspoint");
-    // Skip loading css since we only need metadata here
-    if (!lastEpub.load(true, true)) {
+    // Skip loading css and use metadataOnly — the sleep screen only needs title/cover.
+    if (!lastEpub.load(true, true, /*metadataOnly=*/true)) {
       LOG_ERR("SLP", "Failed to load last epub");
       return (this->*renderNoCoverSleepScreen)();
     }

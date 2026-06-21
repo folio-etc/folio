@@ -47,7 +47,11 @@ class Epub {
   explicit Epub(std::string filepath, const std::string& cacheDir);
   ~Epub();
   std::string& getBasePath() { return contentBasePath; }
-  bool load(bool buildIfMissing = true, bool skipLoadingCss = false);
+  // metadataOnly=true builds/accepts a lightweight cache (OPF-derived fields only:
+  // title/author/series/genre/spineCount/cover). TOC + per-spine sizes are deferred;
+  // the first full load (metadataOnly=false) completes the build. The library list
+  // uses metadataOnly=true; the reader uses the default (full).
+  bool load(bool buildIfMissing = true, bool skipLoadingCss = false, bool metadataOnly = false);
   bool clearCache() const;
   bool setupCacheDir() const;
   const std::string& getCachePath() const;

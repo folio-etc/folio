@@ -111,7 +111,9 @@ RecentBook RecentBooksStore::getDataFromBook(std::string path) const {
   // blank until the book is opened, and entries with missing title are omitted from recent list.
   if (FsHelpers::hasEpubExtension(lastBookFileName)) {
     Epub epub(path, "/.crosspoint");
-    epub.load(false, true);
+    // metadataOnly=true: a deferred (metadata-only) cache is enough for title/author,
+    // and avoids forcing a full build just to populate the recent-books list.
+    epub.load(false, true, /*metadataOnly=*/true);
     return RecentBook{path, epub.getTitle(), epub.getAuthor(), epub.getThumbBmpPath()};
   } else if (FsHelpers::hasXtcExtension(lastBookFileName)) {
     // Handle XTC file

@@ -2,7 +2,13 @@
 
 ## `book.bin`
 
-### Version 6
+### Version 9
+
+Two-tier build (v9+): the library indexer writes a **metadata-only** `book.bin`
+(`complete = 0`) containing the metadata + spine hrefs but with `cumulativeSize = 0`
+and zero TOC entries — the per-spine size scan and TOC parse are deferred. The first
+full load (the reader) rebuilds the file completely with `complete = 1`. Readers must
+treat a `complete = 0` cache as needing a rebuild before relying on sizes/TOC.
 
 ImHex Pattern:
 
@@ -12,7 +18,7 @@ import std.string;
 import std.core;
 
 // === Configuration ===
-#define EXPECTED_VERSION 6
+#define EXPECTED_VERSION 9
 #define MAX_STRING_LENGTH 65535
 
 // === String Structure ===
@@ -71,9 +77,10 @@ struct BookBin {
         std::error(std::format("Unsupported version: {} (expected {})", version, EXPECTED_VERSION));
     }
     
+    u8 complete [[comment("1 = full build (sizes + TOC); 0 = metadata-only, rebuild on first reader open"), color("FFA94D")]];
     u32 lutOffset [[comment("Offset to lookup tables"), color("6BCB77")]];
     u16 spineCount [[comment("Number of spine entries"), color("4D96FF")]];
-    u16 tocCount [[comment("Number of TOC entries"), color("FF6B9D")]];
+    u16 tocCount [[comment("Number of TOC entries (0 in a metadata-only build)"), color("FF6B9D")]];
     
     // Metadata section
     Metadata metadata [[comment("Book metadata")]];

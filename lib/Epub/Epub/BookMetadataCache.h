@@ -6,6 +6,8 @@
 #include <deque>
 #include <string>
 
+class ZipFile;
+
 class BookMetadataCache {
  public:
   struct BookMetadata {
@@ -52,6 +54,8 @@ class BookMetadataCache {
   uint16_t tocCount;
   bool loaded;
   bool buildMode;
+  // false = metadata-only build (TOC + per-spine sizes deferred to first reader open)
+  bool complete = false;
 
   FsFile bookFile;
   // Temp file handles during build
@@ -100,8 +104,12 @@ class BookMetadataCache {
   bool endWrite();
   bool cleanupTmpFiles() const;
 
-  // Post-processing to update mappings and sizes
-  bool buildBookBin(const std::string& epubPath, const BookMetadata& metadata);
+  // Post-processing to update mappings and sizes. `zip` must be open (the caller
+  // owns it and keeps it open across the OPF/TOC passes so the central-directory
+  // cursor stays warm for the size scan).
+  // full=false writes a metadata-only book.bin (cumulativeSize=0, no TOC merge,
+  // complete flag cleared) — the size scan is deferred to the first reader open.
+  bool buildBookBin(const BookMetadata& metadata, ZipFile& zip, bool full = true);
 
   // Reading phase (read mode)
   bool load();
@@ -110,4 +118,7 @@ class BookMetadataCache {
   int getSpineCount() const { return spineCount; }
   int getTocCount() const { return tocCount; }
   bool isLoaded() const { return loaded; }
+  // True only for a fully-built cache (sizes + TOC). A metadata-only cache
+  // returns false, signalling the reader to complete the build on first open.
+  bool isComplete() const { return complete; }
 };
