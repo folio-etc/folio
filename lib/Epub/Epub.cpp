@@ -395,7 +395,9 @@ bool Epub::load(const bool buildIfMissing, const bool skipLoadingCss) {
 
   // Cache doesn't exist or is invalid, build it
   LOG_DBG("EBP", "Cache not found, building spine/TOC cache");
-  setupCacheDir();
+  if (!setupCacheDir()) {
+    return false;
+  }
 
   const uint32_t indexingStart = millis();
 
@@ -517,12 +519,29 @@ bool Epub::clearCache() const {
   return true;
 }
 
-void Epub::setupCacheDir() const {
+bool Epub::setupCacheDir() const {
   if (Storage.exists(cachePath.c_str())) {
-    return;
+    // A stray non-directory entry at the cache path blocks all writes beneath
+    // it (book.bin reads "does not exist", spine.bin.tmp can't be created).
+    // Remove it so we can recreate a real directory.
+    HalFile entry = Storage.open(cachePath.c_str());
+    const bool isDir = entry && entry.isDirectory();
+    entry.close();
+    if (isDir) {
+      return true;
+    }
+    LOG_ERR("EBP", "Cache path exists but is not a directory, removing: %s", cachePath.c_str());
+    if (!Storage.remove(cachePath.c_str())) {
+      LOG_ERR("EBP", "Failed to remove stray cache entry: %s", cachePath.c_str());
+      return false;
+    }
   }
 
-  Storage.mkdir(cachePath.c_str());
+  if (!Storage.mkdir(cachePath.c_str())) {
+    LOG_ERR("EBP", "Failed to create cache dir: %s", cachePath.c_str());
+    return false;
+  }
+  return true;
 }
 
 const std::string& Epub::getCachePath() const { return cachePath; }

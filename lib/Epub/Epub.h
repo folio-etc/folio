@@ -49,7 +49,7 @@ class Epub {
   std::string& getBasePath() { return contentBasePath; }
   bool load(bool buildIfMissing = true, bool skipLoadingCss = false);
   bool clearCache() const;
-  void setupCacheDir() const;
+  bool setupCacheDir() const;
   const std::string& getCachePath() const;
   const std::string& getPath() const;
   const std::string& getTitle() const;
