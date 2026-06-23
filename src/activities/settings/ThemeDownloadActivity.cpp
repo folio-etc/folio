@@ -47,12 +47,7 @@ void ThemeDownloadActivity::onEnter() {
 void ThemeDownloadActivity::onExit() {
   Activity::onExit();
 
-  if (WiFi.getMode() != WIFI_MODE_NULL) {
-    esp_wifi_set_ps(WIFI_PS_MIN_MODEM);  // restore default power-save (parity with OtaUpdater)
-    WiFi.disconnect(false);
-    delay(30);
-    silentRestart();
-  }
+  teardownWifiSession();
 }
 
 void ThemeDownloadActivity::onWifiSelectionComplete(const bool success) {

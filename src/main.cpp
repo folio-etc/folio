@@ -189,6 +189,13 @@ void silentRestartToReader() {
   ESP.restart();
 }
 
+void teardownWifiSession() {
+  if (WiFi.getMode() == WIFI_MODE_NULL) return;
+  WiFi.disconnect(true);        // STA: disconnect + power down the radio
+  WiFi.softAPdisconnect(true);  // AP: stop softAP (no-op when not in AP mode)
+  WiFi.mode(WIFI_OFF);
+}
+
 // Verify power button press duration on wake-up from deep sleep
 // Pre-condition: isWakeupByPowerButton() == true
 void verifyPowerButtonDuration() {

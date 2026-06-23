@@ -45,11 +45,7 @@ void OpdsBookBrowserActivity::onExit() {
   entries.clear();
   navigationHistory.clear();
 
-  if (WiFi.getMode() != WIFI_MODE_NULL) {
-    WiFi.disconnect(false);
-    delay(30);
-    silentRestart();
-  }
+  teardownWifiSession();
 }
 
 void OpdsBookBrowserActivity::loop() {
@@ -371,7 +367,7 @@ void OpdsBookBrowserActivity::onWifiSelectionComplete(const bool connected) {
     requestUpdate(true);
     fetchFeed(currentPath);
   } else {
-    // Leave WiFi up; onExit's silent reboot handles teardown without fragmenting.
+    // Leave WiFi up; onExit's teardownWifiSession() handles cleanup.
     state = BrowserState::ERROR;
     errorMessage = tr(STR_WIFI_CONN_FAILED);
     requestUpdate();

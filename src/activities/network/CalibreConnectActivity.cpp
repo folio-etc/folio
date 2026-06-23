@@ -53,11 +53,7 @@ void CalibreConnectActivity::onEnter() {
 void CalibreConnectActivity::onExit() {
   Activity::onExit();
 
-  if (WiFi.getMode() != WIFI_MODE_NULL) {
-    WiFi.disconnect(false);
-    delay(30);
-    silentRestart();
-  }
+  teardownWifiSession();
 }
 
 void CalibreConnectActivity::onWifiSelectionComplete(const bool connected) {

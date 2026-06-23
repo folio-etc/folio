@@ -314,11 +314,7 @@ void KOReaderSyncActivity::onEnter() {
 void KOReaderSyncActivity::onExit() {
   Activity::onExit();
 
-  if (wifiActivated) {
-    WiFi.disconnect(false);
-    delay(30);
-    silentRestartToReader();
-  }
+  teardownWifiSession();
 }
 
 void KOReaderSyncActivity::render(RenderLock&&) {

@@ -77,16 +77,8 @@ void CrossPointWebServerActivity::onExit() {
 
   state = WebServerActivityState::SHUTTING_DOWN;
 
-  // Skip reboot if WiFi was never activated (e.g. user backed out of mode selection).
-  if (WiFi.getMode() != WIFI_MODE_NULL) {
-    if (isApMode) {
-      WiFi.softAPdisconnect(true);
-    } else {
-      WiFi.disconnect(false);
-    }
-    delay(30);
-    silentRestart();
-  }
+  // Tear down WiFi in place (handles both AP and STA); no reboot needed.
+  teardownWifiSession();
 
   LOG_DBG("WEBACT", "Free heap at onExit end: %d bytes", ESP.getFreeHeap());
 }
