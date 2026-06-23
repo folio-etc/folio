@@ -883,6 +883,18 @@ std::string LibraryActivity::getHeaderSubtitleText() {
     return std::string("");
   }
 
+  const auto& td = *GUI.getData(); 
+  std::string booksText = std::to_string(view_.size()) + " " + tr(STR_BOOKS);
+
+  // only left-aligned-bordered leaves enough room for the full text
+  // keep it to the book count otherwise
+  switch(td.header.style) {
+    case HeaderStyle::LeftAlignedBordered:
+      break;
+    default:
+      return booksText;
+  }
+
   StrId sortedKey = StrId::STR_LIBRARY_SORTED_RECENT;
   switch (SETTINGS.librarySortField) {
     case CrossPointSettings::LIB_SORT_TITLE:
@@ -901,14 +913,11 @@ std::string LibraryActivity::getHeaderSubtitleText() {
   }
 
   const char* arrow = (SETTINGS.librarySortDirection == CrossPointSettings::LIB_SORT_ASC) ? "(asc)" : "(desc)";
-
   return std::string(I18n::getInstance().get(sortedKey)) 
     + " " 
     + arrow 
     + "  ·  " 
-    + std::to_string(view_.size()) 
-    + " " 
-    + tr(STR_BOOKS);
+    + booksText; 
 }
 
 void LibraryActivity::renderLibraryShelf(const Rect& shelfArea) {
