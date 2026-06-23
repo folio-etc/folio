@@ -46,15 +46,12 @@ constexpr char LOG_TAG[] = "LIBA";
 
 int libFont(FontRole role) { return GUI.getFontForRole(role); }
 
-constexpr int HEADER_HEIGHT = 89;
-constexpr int HEADER_BOTTOM_BORDER = 3;
-constexpr int FOOTER_HEIGHT = 40;
-
 constexpr int CONTENT_PAD_X = 18;
 constexpr int CONTENT_PAD_Y = 8;
 constexpr int RAIL_WIDTH = 18;
 constexpr int RAIL_GAP = 10;
-constexpr int CELL_GAP = 14;
+constexpr int CELL_GAP_X = 5;
+constexpr int CELL_GAP_Y = 0;
 
 constexpr int kTilePadTop = 4;
 constexpr int kTilePadBottom = 16;
@@ -797,7 +794,7 @@ Rect LibraryActivity::computeCoverSlot() const {
 
   flex::Hstack bodyInner(body, {flex::grow(), flex::fixed(RAIL_WIDTH)}, RAIL_GAP,
                          flex::xy(CONTENT_PAD_X, CONTENT_PAD_Y));
-  flex::Grid cells(bodyInner[0], ROWS, COLS, CELL_GAP, CELL_GAP);
+  flex::Grid cells(bodyInner[0], ROWS, COLS, CELL_GAP_Y, CELL_GAP_X);
 
   const flex::Padding tilePad{kTilePadTop, 0, kTilePadBottom, 0};
   flex::Vstack tile(cells[0], {flex::percent(kCoverPercent), flex::fixed(kCoverBottomPadding), flex::grow()}, 0,
