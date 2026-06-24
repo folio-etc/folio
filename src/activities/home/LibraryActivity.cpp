@@ -923,7 +923,7 @@ void LibraryActivity::renderLibraryShelf(const Rect& shelfArea) {
   const uint8_t itemsPerPage = gridHelper.itemsPerPage();
   const uint16_t baseIndex = currentPage * itemsPerPage;
 
-  flex::Grid cells(shelfArea, ROWS, COLS, CELL_GAP, CELL_GAP);
+  flex::Grid cells(shelfArea, ROWS, COLS, CELL_GAP_Y, CELL_GAP_X);
   {
     for (int slot = 0; slot < PER_PAGE; ++slot) {
       const int idx = baseIndex + slot;
