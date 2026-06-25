@@ -5,12 +5,11 @@
 #include <freertos/semphr.h>
 #include <freertos/task.h>
 
-#include <cstddef>
 #include <cstdint>
-#include <memory>
 #include <string>
 #include <vector>
 
+#include "CoverPrefetcher.h"
 #include "LibraryIndex.h"
 #include "activities/Activity.h"
 #include "components/themes/BaseTheme.h"  // for Rect
@@ -24,19 +23,6 @@ class LibraryActivity final : public Activity {
   static constexpr int COLS = 3;
   static constexpr int ROWS = 3;
   static constexpr int PER_PAGE = COLS * ROWS;
-
-  // Worst-case 2bpp source for one thumbnail (THUMB_MAX_WIDTH × THUMB_HEIGHT,
-  // stride = (w+3)/4). Reused decode scratch for the prefetch worker.
-  static constexpr std::size_t DECODE_SCRATCH_BYTES =
-      static_cast<std::size_t>((LibraryIndex::THUMB_MAX_WIDTH + 3) / 4) * LibraryIndex::THUMB_HEIGHT;
-
-  // Dedicated raster region for the cover cache. Worst case is one page of 9
-  // covers × (1bpp 120×120 = (120+7)/8 × 120 = 1800 B) = 16.2 KB + ~0.1 KB block
-  // headers; 20 KB leaves margin for intra-arena fragmentation. The page is
-  // cleared and reloaded as a unit, so the free list coalesces cleanly and an
-  // over-budget raster simply renders a placeholder (no crash). All cover buffer
-  // churn lives here instead of fragmenting the general heap.
-  static constexpr std::size_t COVER_ARENA_BYTES = 20 * 1024;
 
   // ---- View state ---------------------------------------------------------
   // GridHelper
@@ -60,93 +46,23 @@ class LibraryActivity final : public Activity {
   // matches the cadence used by every settings list in the app.
   ButtonNavigator buttonNavigator;
 
-  // Fixed-capacity cover cache sized to ONE page of thumbs, backed by its own
-  // arena (COVER_ARENA_BYTES). The async prefetch worker decodes + pre-scales
-  // each cover to its draw dimensions and stores only the 1bpp raster. On a page
-  // change we clear the cache and load the new page before rendering it (no
-  // placeholder flash); placeholders appear only while a rapid-jump (Up/Down
-  // hold) flicks through pages. Entries hold no 2bpp source; the worker reuses a
-  // single decode scratch (decodeScratch_).
-  // Arena starts at 0 bytes and is grown to COVER_ARENA_BYTES in onEnter AFTER
-  // indexing — a cold index can drive free heap under 2 KB, so we don't want the
-  // 20 KB cover region reserved while EPUB parsing needs every byte it can get.
-  BitmapCacheManager pageCache_{PER_PAGE, 0};
+  // Cover cache + async prefetch worker. Fed a flat item index → cover pathHash by
+  // the resolver closure below (which adapts the grid view model). Created in
+  // onEnter (start), joined/freed in onExit (stop). Hold prefetcher_.lockCache()
+  // around cache reads in the render path AND around any rebuildView/sortBy (the
+  // worker reads view_ via the resolver under that same lock).
+  CoverPrefetcher prefetcher_{renderer, PER_PAGE, [this](int itemIndex) -> std::optional<uint32_t> {
+                                const LibraryBook* b = bookForGridIndex(itemIndex);  // null = back tile / OOB
+                                return b ? std::optional<uint32_t>(b->pathHash) : std::nullopt;
+                              }};
 
-  // Reused 2bpp decode scratch for the prefetch worker (allocated in onEnter,
-  // freed in onExit). Single-producer: only the worker writes/reads it.
-  std::unique_ptr<uint8_t[]> decodeScratch_;
-
-  // Cover draw dimensions (the grid's cover-slot W/H), computed from the flex
-  // layout in onEnter and refreshed on theme/orientation change. The worker
-  // pre-scales each cover to fit this envelope via GfxRenderer::computeThumbTarget.
-  int coverBoxW_ = 0;
-  int coverBoxH_ = 0;
-
-  // ---- Prefetch worker state ---------------------------------------------
-  // FreeRTOS task that decodes neighbor-page covers off the render path.
-  // Created in onEnter, joined and destroyed in onExit. Communication:
-  //   - cacheLock_ guards pageCache_, prefetchQueue_, and the queue count.
-  //   - prefetchSignal_ is a binary semaphore the worker waits on.
-  //   - prefetchCancel_ is a volatile flag the worker checks between
-  //     covers to abandon its current scan (set on page change / sort /
-  //     rapid-jump / shutdown).
-  //   - prefetchShutdown_ tells the worker to exit cleanly.
-  // Owner: activity thread enqueues page indices; worker dequeues and, for each
-  // cover, decodes into decodeScratch_ off-lock, then (under cacheLock_) scales
-  // to the draw dims and stores the 1bpp raster via GfxRenderer + cache.set.
-  TaskHandle_t prefetchTask_ = nullptr;
-  SemaphoreHandle_t cacheLock_ = nullptr;
-  SemaphoreHandle_t prefetchSignal_ = nullptr;
-  // Given by the worker after its main loop has exited. onExit waits on
-  // this before calling vTaskDelete, ensuring the worker isn't holding
-  // cacheLock_ or mid-SD-decode when it's deleted.
-  SemaphoreHandle_t prefetchExited_ = nullptr;
-  // Given by the worker after each fully-completed page batch (not on
-  // cancel). Activity loop polls it to clear pendingPageRender_ and
-  // trigger the deferred repaint once the awaited page lands in the cache.
-  SemaphoreHandle_t prefetchBatchDone_ = nullptr;
-  // Only ever one page is in flight (we clear + load a single page on each
-  // settle), but a release mid-decode can enqueue a second before the worker
-  // drains the first. Sentinel 0xFF = empty slot.
-  static constexpr std::size_t PREFETCH_QUEUE_CAPACITY = 4;
-  uint8_t prefetchQueue_[PREFETCH_QUEUE_CAPACITY] = {0xFF, 0xFF, 0xFF, 0xFF};
-  uint8_t prefetchQueueCount_ = 0;
-  volatile bool prefetchCancel_ = false;
-  volatile bool prefetchShutdown_ = false;
-
-  // gridHelper.currentPage() as last loaded, for bookkeeping.
-  uint8_t lastObservedPage_ = 0;
   // True while a rapid-jump (continuous Up/Down) hold is in progress. We don't
   // decode pages flicked past, so the render path peeks and shows placeholders
   // for the uncached page; release (endRapidJumpIfActive) loads the landed page
-  // for real. Volatile because the render task reads it without cacheLock_.
+  // for real. Volatile because the render task reads it without the cache lock.
   volatile bool rapidJumping_ = false;
-  // Set by loadPage: a page load is in flight. The caller repaints immediately
-  // (placeholders for the not-yet-decoded covers); when the worker signals
-  // batch-done the activity loop clears this and repaints again to swap the
-  // placeholders for the now-resident covers.
-  volatile bool pendingPageRender_ = false;
 
-  // ---- Prefetch helpers --------------------------------------------------
-  static void prefetchTaskTrampoline(void* ctx);
-  void prefetchTaskLoop();
-  // Build the SD path for the cover at (page, slot). Returns false if no
-  // book occupies that grid position (past end of library). out must be
-  // at least 64 bytes.
-  bool buildThumbPath(uint8_t page, uint8_t slot, char* out, std::size_t outSize) const;
-  // Enqueue a page for prefetch. Validates the page index, dedupes against
-  // the existing queue, signals the worker. Caller holds cacheLock_. Returns
-  // false only when the page is out of range (nothing to load).
-  bool enqueuePrefetchLocked(uint8_t page);
-  // Cancel any in-flight or queued prefetch. Acquires cacheLock_.
-  void cancelAllPrefetch();
-  // Swap the (single-page) cache to `page`: cancel any in-flight prefetch, clear
-  // the cache, enqueue `page`, drain any stale batch-done, and set
-  // pendingPageRender_. Does NOT requestUpdate itself — main-loop callers paint
-  // placeholders immediately (peek misses the cleared cache) and the worker's
-  // batch-done repaints with real covers (loop()). Lazy load: the page turn is
-  // instant (placeholders) and covers fill in shortly after.
-  void loadPage(uint8_t page);
+  // ---- Navigation helpers ------------------------------------------------
   // Launch the collection-membership picker for the book under the cursor.
   // Returns true (close the popup) when there's no book to edit; false while
   // the picker is launched (the return handler closes the popup on resume).
@@ -201,8 +117,8 @@ class LibraryActivity final : public Activity {
   // ---- Rendering helpers --------------------------------------------------
   // Compute the cover-slot rect for a grid cell by replaying the same flex
   // layout the render path uses (no drawing). Cells are uniform, so this is the
-  // draw envelope for every cover. Used to seed coverBoxW_/H_ and to detect
-  // theme/orientation layout changes.
+  // draw envelope for every cover, handed to prefetcher_ (start / setCoverBox) so it
+  // scales covers to the exact dims the render path requests.
   Rect computeCoverSlot() const;
 
   // Body of the render: header + library shelf or menu + footer hints.

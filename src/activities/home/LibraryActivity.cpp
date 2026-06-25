@@ -128,272 +128,21 @@ void LibraryActivity::onEnter() {
     }
   }
 
-  lastObservedPage_ = gridHelper.currentPage();
-
-  // Seed the cover draw envelope (the worker scales each cover to fit it) and
-  // the reused decode scratch BEFORE the worker starts. A null scratch is
-  // tolerated — decodeThumbInto fails gracefully and the cover shows a
-  // placeholder.
   const Rect coverSlot = computeCoverSlot();
-  coverBoxW_ = coverSlot.width;
-  coverBoxH_ = coverSlot.height;
-  decodeScratch_ = makeUniqueNoThrow<uint8_t[]>(DECODE_SCRATCH_BYTES);
-  if (!decodeScratch_) LOG_ERR(LOG_TAG, "OOM: cover decode scratch (%u bytes)",
-                               static_cast<unsigned>(DECODE_SCRATCH_BYTES));
+  prefetcher_.start(coverSlot.width, coverSlot.height);
+  prefetcher_.loadPage(gridHelper.currentPage(), gridHelper.pageCount());
 
-  // Indexing is done — now reserve the cover-cache arena (deferred from
-  // construction so it didn't compete with EPUB parsing for heap during a cold
-  // index). The worker and render path need it before the first page load.
-  pageCache_.arena().init(COVER_ARENA_BYTES);
-
-  // Spin up the prefetch worker before requesting the first paint so it's
-  // ready by the time we ask for page fills.
-  cacheLock_ = xSemaphoreCreateBinary();
-  prefetchSignal_ = xSemaphoreCreateBinary();
-  prefetchExited_ = xSemaphoreCreateBinary();
-  prefetchBatchDone_ = xSemaphoreCreateBinary();
-  assert(cacheLock_ != nullptr && prefetchSignal_ != nullptr && prefetchExited_ != nullptr &&
-         prefetchBatchDone_ != nullptr);
-  // Binary semaphores from xSemaphoreCreateBinary are born "taken"
-  // (count = 0). Give once so the first acquirer can take it.
-  xSemaphoreGive(cacheLock_);
-  prefetchCancel_ = false;
-  prefetchShutdown_ = false;
-  prefetchQueueCount_ = 0;
-  for (auto& slot : prefetchQueue_) slot = 0xFF;
-  xTaskCreate(&prefetchTaskTrampoline, "LibPrefetch",
-              4096,     // stack: SD I/O + bitmap parsing
-              this, 1,  // priority: same tier as render
-              &prefetchTask_);
-  assert(prefetchTask_ != nullptr);
-
-  // Swap the cache to the current page and paint immediately: placeholders show
-  // first, then the worker's batch-done repaints with real covers (loop()). The
-  // render path never decodes — the worker owns all decode + scaling.
-  loadPage(lastObservedPage_);
   requestUpdate();
 }
 
 void LibraryActivity::onExit() {
   Activity::onExit();
 
-  if (prefetchTask_ != nullptr) {
-    xSemaphoreTake(cacheLock_, portMAX_DELAY);
-
-    prefetchShutdown_ = true;
-    prefetchCancel_ = true;
-    prefetchQueueCount_ = 0;
-
-    xSemaphoreGive(cacheLock_);
-    xSemaphoreGive(prefetchSignal_);
-    xSemaphoreTake(prefetchExited_, portMAX_DELAY);
-
-    vTaskDelete(prefetchTask_);
-    prefetchTask_ = nullptr;
-  }
-
-  if (prefetchSignal_ != nullptr) {
-    vSemaphoreDelete(prefetchSignal_);
-    prefetchSignal_ = nullptr;
-  }
-
-  if (prefetchExited_ != nullptr) {
-    vSemaphoreDelete(prefetchExited_);
-    prefetchExited_ = nullptr;
-  }
-
-  if (prefetchBatchDone_ != nullptr) {
-    vSemaphoreDelete(prefetchBatchDone_);
-    prefetchBatchDone_ = nullptr;
-  }
-
-  pageCache_.clear();
-
-  // Worker has joined (vTaskDelete above), so the scratch has no remaining
-  // reader and can be freed.
-  decodeScratch_.reset();
-
-  if (cacheLock_ != nullptr) {
-    vSemaphoreDelete(cacheLock_);
-    cacheLock_ = nullptr;
-  }
-
+  prefetcher_.stop();
   LIBRARY_INDEX.unload();
-  // Note: the global font glyph/group caches are reset centrally by
-  // ActivityManager on full navigation (Replace), not here — see
-  // ActivityManager::loop().
 }
 
-// ---- Prefetch worker --------------------------------------------------------
-
-bool LibraryActivity::buildThumbPath(uint8_t page, uint8_t slot, char* out, std::size_t outSize) const {
-  if (out == nullptr || outSize < 64) return false;
-  const int idx = static_cast<int>(page) * PER_PAGE + static_cast<int>(slot);
-  // bookForGridIndex returns nullptr for the back-tile slot (no cover) and for
-  // positions past the end of the filtered view.
-  const LibraryBook* book = bookForGridIndex(idx);
-  if (book == nullptr) {
-    out[0] = '\0';
-    return false;
-  }
-  snprintf(out, outSize, "/.crosspoint/epub_%lu/thumb_%d.bmp", static_cast<unsigned long>(book->pathHash),
-           LibraryIndex::THUMB_HEIGHT);
-  return true;
-}
-
-bool LibraryActivity::enqueuePrefetchLocked(uint8_t page) {
-  const uint8_t pages = gridHelper.pageCount();
-  if (pages == 0 || page >= pages) return false;
-
-  for (uint8_t i = 0; i < prefetchQueueCount_; ++i) {
-    if (prefetchQueue_[i] == page) return true;  // already queued
-  }
-
-  if (prefetchQueueCount_ >= PREFETCH_QUEUE_CAPACITY) {
-    // Drop the oldest pending — newer requests reflect more recent
-    // user intent. Shift down one slot.
-    for (uint8_t i = 1; i < prefetchQueueCount_; ++i) {
-      prefetchQueue_[i - 1] = prefetchQueue_[i];
-    }
-    --prefetchQueueCount_;
-  }
-
-  prefetchQueue_[prefetchQueueCount_++] = page;
-  xSemaphoreGive(prefetchSignal_);
-  return true;
-}
-
-void LibraryActivity::cancelAllPrefetch() {
-  if (cacheLock_ == nullptr) return;
-  xSemaphoreTake(cacheLock_, portMAX_DELAY);
-  prefetchCancel_ = true;
-  prefetchQueueCount_ = 0;
-  for (auto& slot : prefetchQueue_) slot = 0xFF;
-
-  xSemaphoreGive(cacheLock_);
-  xSemaphoreGive(prefetchSignal_);
-}
-
-void LibraryActivity::loadPage(uint8_t page) {
-  if (cacheLock_ == nullptr) return;
-
-  // Cancel any in-flight decode, swap the single-page working set to `page`, and
-  // arm the batch-done repaint. The caller paints immediately afterward — the
-  // cleared cache peek-misses into placeholders, then the worker's batch-done
-  // (loop()) repaints with the now-resident real covers.
-  cancelAllPrefetch();
-
-  xSemaphoreTake(cacheLock_, portMAX_DELAY);
-  pageCache_.clear();
-  pendingPageRender_ = enqueuePrefetchLocked(page);  // false → empty page, no batch-done to await
-  xSemaphoreTake(prefetchBatchDone_, 0);             // drop any stale completion signal
-  lastObservedPage_ = page;
-  xSemaphoreGive(cacheLock_);
-}
-
-void LibraryActivity::prefetchTaskTrampoline(void* ctx) {
-  auto* self = static_cast<LibraryActivity*>(ctx);
-  self->prefetchTaskLoop();
-
-  xSemaphoreGive(self->prefetchExited_);
-  while (true) vTaskDelay(portMAX_DELAY);
-}
-
-void LibraryActivity::prefetchTaskLoop() {
-  while (true) {
-    // Wait for work. Activity gives the semaphore on enqueue or on
-    // cancel/shutdown (so we always wake to re-check our state).
-    xSemaphoreTake(prefetchSignal_, portMAX_DELAY);
-
-    while (true) {
-      uint8_t targetPage = 0xFF;
-      xSemaphoreTake(cacheLock_, portMAX_DELAY);
-      if (prefetchShutdown_) {
-        xSemaphoreGive(cacheLock_);
-        return;
-      }
-      if (prefetchQueueCount_ > 0) {
-        targetPage = prefetchQueue_[0];
-        for (uint8_t i = 1; i < prefetchQueueCount_; ++i) {
-          prefetchQueue_[i - 1] = prefetchQueue_[i];
-        }
-        prefetchQueue_[--prefetchQueueCount_] = 0xFF;
-        // Reset the cancel flag for the new work unit. Old in-flight
-        // cancellations were already honored by the previous iteration.
-        prefetchCancel_ = false;
-      }
-      xSemaphoreGive(cacheLock_);
-      if (targetPage == 0xFF) break;  // queue empty, go back to sleep
-
-      // Decode each of the 9 covers. Path build, cache check, scaling, and
-      // cache.set are lock-protected; only the SD decode runs unlocked so the
-      // render thread can still touch the cache for hits while we're working.
-      bool batchCompleted = true;  // false if we broke early (cancel/shutdown)
-      for (uint8_t slot = 0; slot < PER_PAGE; ++slot) {
-        if (prefetchCancel_ || prefetchShutdown_) {
-          batchCompleted = false;
-          break;
-        }
-        char path[64];
-        bool pathOk = false;
-        xSemaphoreTake(cacheLock_, portMAX_DELAY);
-        pathOk = buildThumbPath(targetPage, slot, path, sizeof(path));
-        bool alreadyCached = false;
-        if (pathOk) {
-          alreadyCached = (pageCache_.get(path) != nullptr);
-        }
-        xSemaphoreGive(cacheLock_);
-        if (!pathOk || alreadyCached) continue;
-
-        // Slow path — decode the 2bpp source into the reused scratch off-lock.
-        // HalStorage serializes its own SD access, so the render thread can
-        // still read the cache for hits while this runs. The scratch is
-        // single-producer (only this worker touches it).
-        int srcW = 0;
-        int srcH = 0;
-        bool topDown = false;
-        if (!GfxRenderer::decodeThumbInto(path, decodeScratch_.get(), DECODE_SCRATCH_BYTES, srcW, srcH, topDown)) {
-          continue;  // decode failed / no scratch — nothing to insert
-        }
-
-        int targetW = 0;
-        int targetH = 0;
-        GfxRenderer::computeThumbTarget(srcW, srcH, coverBoxW_, coverBoxH_, targetW, targetH);
-        if (targetW <= 0 || targetH <= 0) continue;
-
-        if (prefetchCancel_ || prefetchShutdown_) {
-          batchCompleted = false;
-          break;
-        }
-
-        // Scale into a fresh 1bpp arena raster and store, under the lock. The
-        // scaling reads the scratch (no other writer) and the arena mutates
-        // only here / in eviction — all serialized by cacheLock_.
-        xSemaphoreTake(cacheLock_, portMAX_DELAY);
-        if (!prefetchShutdown_) {
-          BitmapCacheManager::Entry entry;
-          entry.path = path;
-          entry.width = srcW;
-          entry.height = srcH;
-          entry.topDown = topDown;
-          if (renderer.buildScaledFromSource(entry, decodeScratch_.get(), srcW, srcH, topDown, targetW, targetH,
-                                             pageCache_.arena())) {
-            pageCache_.set(std::move(entry));
-          }
-          // else: arena full — skip; the cover paints a placeholder.
-        }
-        xSemaphoreGive(cacheLock_);
-      }
-      // Signal the activity loop that this page's covers are resident
-      // in the cache. Activity uses this to clear pendingPageRender_
-      // and trigger the deferred repaint when the awaited page lands.
-      // Suppressed on cancel — the partial state shouldn't paint.
-      if (batchCompleted && !prefetchShutdown_) {
-        xSemaphoreGive(prefetchBatchDone_);
-      }
-    }
-  }
-}
+// ---- Collections ------------------------------------------------------------
 
 bool LibraryActivity::openCollectionPicker(bool add) {
   const LibraryBook* book = bookForGridIndex(gridHelper.currentIndex());
@@ -410,15 +159,10 @@ bool LibraryActivity::openCollectionPicker(bool add) {
 // ---- Input ------------------------------------------------------------------
 
 void LibraryActivity::loop() {
-  // Pick up the prefetch worker's batch-completion signal. After a page load
-  // (loadPage) the caller painted placeholders; once the page's covers are
-  // resident we clear the flag and repaint to swap them for real artwork.
-  if (prefetchBatchDone_ != nullptr && xSemaphoreTake(prefetchBatchDone_, 0) == pdTRUE) {
-    if (pendingPageRender_) {
-      pendingPageRender_ = false;
-      requestUpdate();
-    }
-  }
+  // Pick up the prefetch worker's batch-completion signal. After a page load the
+  // caller painted placeholders; once the page's covers are resident we repaint to
+  // swap them for real artwork.
+  if (prefetcher_.consumeBatchDone()) requestUpdate();
 
   if (rapidJumping_ && !mappedInput.isPressed(MappedInputManager::Button::Up) &&
       !mappedInput.isPressed(MappedInputManager::Button::Down)) {
@@ -457,7 +201,7 @@ void LibraryActivity::moveUp() {
   // On a page change, swap the cache to the new page; the requestUpdate below
   // paints placeholders immediately and the worker's batch-done repaints with
   // real covers. Within-page moves just repaint (covers already cached).
-  if (oldPage != newPage) loadPage(newPage);
+  if (oldPage != newPage) prefetcher_.loadPage(newPage, gridHelper.pageCount());
   requestUpdate();
 }
 
@@ -465,7 +209,7 @@ void LibraryActivity::moveDown() {
   const uint8_t oldPage = gridHelper.currentPage();
   this->gridHelper.down();
   const uint8_t newPage = gridHelper.currentPage();
-  if (oldPage != newPage) loadPage(newPage);
+  if (oldPage != newPage) prefetcher_.loadPage(newPage, gridHelper.pageCount());
   requestUpdate();
 }
 
@@ -483,9 +227,8 @@ void LibraryActivity::jumpPageForward() {
   // (see the onContinuous binding's release handler).
   if (!rapidJumping_) {
     rapidJumping_ = true;
-    cancelAllPrefetch();
+    prefetcher_.cancelAll();
   }
-  lastObservedPage_ = gridHelper.currentPage();
   requestUpdate();
 }
 
@@ -499,9 +242,8 @@ void LibraryActivity::jumpPageBack() {
   gridHelper.setByRowColPage(row, col, newPage);
   if (!rapidJumping_) {
     rapidJumping_ = true;
-    cancelAllPrefetch();
+    prefetcher_.cancelAll();
   }
-  lastObservedPage_ = gridHelper.currentPage();
   requestUpdate();
 }
 
@@ -509,7 +251,7 @@ void LibraryActivity::moveLeft() {
   const uint8_t oldPage = gridHelper.currentPage();
   this->gridHelper.left();
   const uint8_t newPage = gridHelper.currentPage();
-  if (oldPage != newPage) loadPage(newPage);
+  if (oldPage != newPage) prefetcher_.loadPage(newPage, gridHelper.pageCount());
   requestUpdate();
 }
 
@@ -517,7 +259,7 @@ void LibraryActivity::moveRight() {
   const uint8_t oldPage = gridHelper.currentPage();
   this->gridHelper.right();
   const uint8_t newPage = gridHelper.currentPage();
-  if (oldPage != newPage) loadPage(newPage);
+  if (oldPage != newPage) prefetcher_.loadPage(newPage, gridHelper.pageCount());
   requestUpdate();
 }
 
@@ -525,7 +267,7 @@ void LibraryActivity::moveNext() {
   const uint8_t oldPage = gridHelper.currentPage();
   this->gridHelper.nextItem();
   const uint8_t newPage = gridHelper.currentPage();
-  if (oldPage != newPage) loadPage(newPage);
+  if (oldPage != newPage) prefetcher_.loadPage(newPage, gridHelper.pageCount());
   requestUpdate();
 }
 
@@ -533,9 +275,7 @@ void LibraryActivity::endRapidJumpIfActive() {
   if (!rapidJumping_) return;
   rapidJumping_ = false;
 
-  // Hold ended — swap the cache to the landed page and repaint. The flick's
-  // placeholders persist until the worker's batch-done fills in real covers.
-  loadPage(gridHelper.currentPage());
+  prefetcher_.loadPage(gridHelper.currentPage(), gridHelper.pageCount());
   requestUpdate();
 }
 
@@ -551,8 +291,6 @@ void LibraryActivity::doSelect() {
 
   LOG_DBG(LOG_TAG, "Opening book: %s", book->path.c_str());
 
-  // The font caches are reset by ActivityManager on the Replace below, freeing
-  // heap before the reader's (memory-hungry) onEnter — no explicit clear here.
   activityManager.goToReader(book->path);
 }
 
@@ -581,17 +319,17 @@ bool LibraryActivity::onSearch() {
 }
 
 void LibraryActivity::reloadActiveView() {
-  cancelAllPrefetch();
-  xSemaphoreTake(cacheLock_, portMAX_DELAY);
-  rebuildView();
-  xSemaphoreGive(cacheLock_);
+  prefetcher_.cancelAll();
+  {
+    auto g = prefetcher_.lockCache();  // worker reads view_ via the resolver under this lock
+    rebuildView();
+  }
 
   // Non-All views insert a back tile at slot 0, so default selection to the
   // first real book (slot 1); All Books starts at slot 0.
   const int initialIndex = (SETTINGS.libraryViewKind == CrossPointSettings::LIB_VIEW_ALL) ? 0 : 1;
   gridHelper = GridHelper(viewItemCount(), ROWS, COLS, initialIndex);
-  lastObservedPage_ = 0;
-  loadPage(0);  // caller repaints; placeholders show until the new view's covers load
+  prefetcher_.loadPage(0, gridHelper.pageCount());  // caller repaints; placeholders until covers load
 }
 
 void LibraryActivity::onCollectionMembershipChanged() {
@@ -608,31 +346,27 @@ void LibraryActivity::onCollectionMembershipChanged() {
 }
 
 void LibraryActivity::onReturnFromCollections(bool viewChanged) {
-  // The picker may have switched the active view (or created collections). When
-  // it changed, reloadActiveView swaps the cache (placeholders until covers
-  // load); otherwise preserve grid position. Repaint either way.
   if (viewChanged) reloadActiveView();
   requestUpdate();
 }
 
 void LibraryActivity::applySort() {
-  cancelAllPrefetch();
+  prefetcher_.cancelAll();
 
-  // Hold cacheLock_ across sortBy. The worker reads LIBRARY_INDEX from
-  // inside buildThumbPath (called under cacheLock_), so sorting outside
-  // the lock would race with a worker that won the lock between
-  // cancelAllPrefetch's release and our sortBy.
-  xSemaphoreTake(cacheLock_, portMAX_DELAY);
-  LIBRARY_INDEX.sortBy(static_cast<LibraryIndex::SortField>(SETTINGS.librarySortField),
-                       static_cast<LibraryIndex::SortDirection>(SETTINGS.librarySortDirection));
-  // sortBy reorders the index in place, invalidating view_'s pointers — rebuild
-  // the filtered view (same membership, new order) under the same lock.
-  rebuildView();
-  xSemaphoreGive(cacheLock_);
+  // Hold the cache lock across sortBy. The worker reads LIBRARY_INDEX (via the
+  // resolver, under this lock), so sorting outside it would race with a worker that
+  // won the lock between cancelAll's release and our sortBy.
+  {
+    auto g = prefetcher_.lockCache();
+    LIBRARY_INDEX.sortBy(static_cast<LibraryIndex::SortField>(SETTINGS.librarySortField),
+                         static_cast<LibraryIndex::SortDirection>(SETTINGS.librarySortDirection));
+    // sortBy reorders the index in place, invalidating view_'s pointers — rebuild
+    // the filtered view (same membership, new order) under the same lock.
+    rebuildView();
+  }
 
   this->gridHelper = GridHelper(viewItemCount(), ROWS, COLS, 0);
-  lastObservedPage_ = 0;
-  loadPage(0);
+  prefetcher_.loadPage(0, gridHelper.pageCount());
   requestUpdate();  // placeholders now; real covers on batch-done
 }
 
@@ -683,12 +417,15 @@ void LibraryActivity::rebuildView() {
     for (const auto& b : books) view_.push_back(&b);
     hasBackTile_ = false;
     viewTitle_ = tr(STR_LIBRARY);
-    if (SETTINGS.libraryViewKind != CrossPointSettings::LIB_VIEW_ALL) {
-      SETTINGS.libraryViewKind = CrossPointSettings::LIB_VIEW_ALL;
-      SETTINGS.libraryViewCollectionId = 0;
-      SETTINGS.libraryViewName[0] = '\0';
-      SETTINGS.saveToFile();
+
+    if (SETTINGS.libraryViewKind == CrossPointSettings::LIB_VIEW_ALL) {
+      return;
     }
+
+    SETTINGS.libraryViewKind = CrossPointSettings::LIB_VIEW_ALL;
+    SETTINGS.libraryViewCollectionId = 0;
+    SETTINGS.libraryViewName[0] = '\0';
+    SETTINGS.saveToFile();
   };
 
   if (kind == CrossPointSettings::LIB_VIEW_ALL) {
@@ -760,14 +497,14 @@ void LibraryActivity::activateBack() {
   SETTINGS.libraryViewName[0] = '\0';
   SETTINGS.saveToFile();
 
-  cancelAllPrefetch();
-  xSemaphoreTake(cacheLock_, portMAX_DELAY);
-  rebuildView();
-  xSemaphoreGive(cacheLock_);
+  prefetcher_.cancelAll();
+  {
+    auto g = prefetcher_.lockCache();  // worker reads view_ via the resolver under this lock
+    rebuildView();
+  }
 
   this->gridHelper = GridHelper(viewItemCount(), ROWS, COLS, 0);
-  lastObservedPage_ = 0;
-  loadPage(0);
+  prefetcher_.loadPage(0, gridHelper.pageCount());
   requestUpdate();  // placeholders now; real covers on batch-done
 }
 
@@ -805,19 +542,15 @@ Rect LibraryActivity::computeCoverSlot() const {
 void LibraryActivity::renderPasses() {
   const auto& td = *GUI.getData();
 
-  // Theme/orientation can change the cover-slot size between paints. When it
-  // does, re-seed the draw envelope and reload the page at the new dims. This
-  // runs mid-paint, so this frame paints placeholders for the just-cleared
-  // covers; batch-done then repaints with correctly-sized rasters (rare path).
-  if (cacheLock_ != nullptr) {
+  // Theme/orientation can change the cover-slot size between paints. When it does,
+  // re-seed the draw envelope and reload the page at the new dims. Runs mid-paint
+  // (render task), so this frame paints placeholders for the just-cleared covers and
+  // the worker's batch-done triggers the real repaint from loop() (main task) — no
+  // requestUpdate here.
+  {
     const Rect cs = computeCoverSlot();
-    if (cs.width != coverBoxW_ || cs.height != coverBoxH_) {
-      coverBoxW_ = cs.width;
-      coverBoxH_ = cs.height;
-      // No requestUpdate here — we're on the render task mid-paint. This frame
-      // paints placeholders for the just-cleared covers; the worker's batch-done
-      // triggers the real repaint from loop() (main task).
-      loadPage(gridHelper.currentPage());
+    if (prefetcher_.setCoverBox(cs.width, cs.height)) {
+      prefetcher_.loadPage(gridHelper.currentPage(), gridHelper.pageCount());
     }
   }
 
@@ -947,16 +680,6 @@ void LibraryActivity::renderBookTile(const Rect& cell, const LibraryBook& book, 
 
   constexpr int kProgressGap = 8;
 
-  // ---- Tile interior bands ----
-  // Vstack padding {top=kTilePadTop, bottom=kTilePadBottom}. Inside that span:
-  //   * cover  — kCoverPercent (60%) of inner — Cover::render aspect-fits
-  //              the thumb; small fallback frame uses Cover::kFallback*.
-  //   * text   — grows to fill the rest (absorbs the progress bands when the
-  //              book has no progress); the title/author render top-anchored
-  //              at the slot top so titles line up across the grid.
-  //   * gap + progress — only when book.hasProgress(); ProgressBar's
-  //                       intrinsic height drives the slot, pinned to the
-  //                       inner bottom so bars line up across the grid.
   const flex::Padding tilePad{kTilePadTop, 0, kTilePadBottom, 0};
 
   Rect coverSlot;
@@ -979,9 +702,6 @@ void LibraryActivity::renderBookTile(const Rect& cell, const LibraryBook& book, 
     textSlot = tile[2];
   }
 
-  // Measure the title/author stack before drawing the frame: the selection
-  // frame hugs the actual content bottom (progress-bar bottom for progress
-  // books; the author/title bottom otherwise).
   const int authorReserved = book.author.empty() ? 0 : (kTitleAuthorGap + captionLineH);
   const int titleBudget = textSlot.height - authorReserved;
   const int maxTitleLines = std::min(2, std::max(1, titleBudget / captionLineH));
@@ -994,8 +714,6 @@ void LibraryActivity::renderBookTile(const Rect& cell, const LibraryBook& book, 
           ? std::string()
           : renderer.truncatedText(captionFont, book.author.c_str(), textSlot.width - 8, EpdFontFamily::ITALIC);
 
-  // Tight, top-anchored text box: TextBlock vertically centers within the box,
-  // so a box sized to the natural text height places the text at the slot top.
   const int textH =
       static_cast<int>(titleLines.size()) * captionLineH + (authorTrunc.empty() ? 0 : (kTitleAuthorGap + captionLineH));
 
@@ -1012,16 +730,14 @@ void LibraryActivity::renderBookTile(const Rect& cell, const LibraryBook& book, 
 
   {
     char thumbPath[64];
-    snprintf(thumbPath, sizeof(thumbPath), "/.crosspoint/epub_%lu/thumb_%d.bmp",
-             static_cast<unsigned long>(book.pathHash), LibraryIndex::THUMB_HEIGHT);
+    CoverPrefetcher::thumbPath(book.pathHash, thumbPath, sizeof(thumbPath));
 
-    xSemaphoreTake(cacheLock_, portMAX_DELAY);
     {
+      auto g = prefetcher_.lockCache();
       const Cover::Fallback coverFallback{book.title.c_str(), captionFont, EpdFontFamily::BOLD};
-      Cover::render(renderer, coverSlot, pageCache_, thumbPath, invertText, coverSlot.height * 2 / 3, coverSlot.height,
-                    &coverFallback);
+      Cover::render(renderer, coverSlot, prefetcher_.cache(), thumbPath, invertText, coverSlot.height * 2 / 3,
+                    coverSlot.height, &coverFallback);
     }
-    xSemaphoreGive(cacheLock_);
 
     TextBlock::Line tlines[3];  // up to 2 title lines + 1 author line
     std::size_t tcount = 0;

@@ -251,13 +251,18 @@ memcpy(&val, buf, sizeof(val));
 This applies to all cache deserialization code and any raw buffer-to-struct casting. `__attribute__((packed))` structs have the same hazard when accessed via member reference.
 
 #### Template and `std::function` Bloat
-Each template instantiation generates a separate binary copy. `std::function<void()>` adds ~2–4 KB per unique signature and heap-allocates its closure. Avoid both in library code and any path called from the render loop:
+Each template instantiation generates a separate binary copy. `std::function` adds ~2–4 KB per unique signature and **heap-allocates its closure when the capture exceeds the small-buffer size**. It is NOT banned outright — it's fine for a single (or few) instance(s) with a small capture (e.g. `[this]`, which fits the SBO and allocates nothing) that isn't called per-frame.
+
+Reach for the lighter alternatives only when one of these holds:
+- the closure is **instantiated in quantity** (per-item, per-tile, a container of them), or
+- the capture is **large enough to heap-allocate**, or
+- it sits on a **per-frame render-loop path** where the indirection cost matters.
 
 ```cpp
-// Avoid — heap-allocating, large binary footprint:
-std::function<void()> callback;
+// Fine — one instance, tiny [this] capture, called occasionally (not per-frame):
+std::function<void()> onDone = [this]{ finish(); };
 
-// Prefer — zero overhead:
+// Avoid for the three cases above — zero overhead:
 void (*callback)() = nullptr;
 
 // For member function + context (common activity callback pattern):
