@@ -164,8 +164,19 @@ class SdCardFont {
     uint32_t ligatureFileOffset = 0;
     uint32_t bitmapFileOffset = 0;
 
-    // Full intervals loaded from file (kept in RAM for codepoint lookup)
+    // Resident interval table for codepoint lookup. Exactly one of these is
+    // non-null once intervals are loaded. BMP-only fonts with <=65535 glyphs
+    // (the common case: Latin/Cyrillic/Hebrew/Greek/Vietnamese) use the compact
+    // 6-byte form, halving resident lookup metadata; large sparse CJK subsets
+    // fall back to the full 12-byte table. The on-disk format is always 12-byte.
     EpdUnicodeInterval* fullIntervals = nullptr;
+    struct BmpInterval16 {
+      uint16_t first;
+      uint16_t last;
+      uint16_t offset;
+    };
+    static_assert(sizeof(BmpInterval16) == 6, "BmpInterval16 must remain compact");
+    BmpInterval16* bmpIntervals = nullptr;
 
     // Persistent kern-class + ligature tables (loaded once on first use).
     // The full kern MATRIX is NOT resident — on Literata-class fonts a single

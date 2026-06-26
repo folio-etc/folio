@@ -88,6 +88,8 @@ void SdCardFont::freeStyleKernLigatureData(PerStyle& s) {
 void SdCardFont::freeStyleAll(PerStyle& s) {
   delete[] s.fullIntervals;
   s.fullIntervals = nullptr;
+  delete[] s.bmpIntervals;
+  s.bmpIntervals = nullptr;
   freeStyleKernLigatureData(s);
   s.present = false;
 }
@@ -217,7 +219,7 @@ bool SdCardFont::ensureStyleIntervalsLoaded(uint8_t styleIdx) {
   if (styleIdx >= MAX_STYLES) return false;
   auto& s = styles_[styleIdx];
   if (!s.present) return false;
-  if (s.fullIntervals) return true;
+  if (s.fullIntervals || s.bmpIntervals) return true;
 
   FsFile file;
   if (!Storage.openFileForRead("SDCF", filePath_, file)) {
@@ -248,6 +250,9 @@ bool SdCardFont::ensureStyleIntervalsLoaded(uint8_t styleIdx) {
   // Validate interval contents before any later code (findGlobalGlyphIndex,
   // glyph reads) trusts them. A malformed file could otherwise drive
   // out-of-range glyph indices into bogus on-disk reads.
+  // A BMP-only font (<=65535 glyphs, all interval bounds + offsets <=65535) can
+  // drop to the 6-byte compact table after this validation pass.
+  bool canUseBmp16 = s.header.glyphCount <= UINT16_MAX;
   uint32_t expectedOffset = 0;
   uint32_t prevLast = 0;
   for (uint32_t j = 0; j < s.header.intervalCount; ++j) {
@@ -271,8 +276,27 @@ bool SdCardFont::ensureStyleIntervalsLoaded(uint8_t styleIdx) {
       s.fullIntervals = nullptr;
       return false;
     }
+    if (iv.first > UINT16_MAX || iv.last > UINT16_MAX || iv.offset > UINT16_MAX) {
+      canUseBmp16 = false;
+    }
     expectedOffset += span;
     prevLast = iv.last;
+  }
+
+  // Compact to the 6-byte table when the font fits in 16 bits, then drop the
+  // 12-byte buffer. On OOM, keep the validated full table — correctness over
+  // the saving.
+  if (canUseBmp16) {
+    s.bmpIntervals = new (std::nothrow) PerStyle::BmpInterval16[s.header.intervalCount];
+    if (s.bmpIntervals) {
+      for (uint32_t j = 0; j < s.header.intervalCount; ++j) {
+        const auto& iv = s.fullIntervals[j];
+        s.bmpIntervals[j] = {static_cast<uint16_t>(iv.first), static_cast<uint16_t>(iv.last),
+                             static_cast<uint16_t>(iv.offset)};
+      }
+      delete[] s.fullIntervals;
+      s.fullIntervals = nullptr;
+    }
   }
 
   return true;
@@ -462,13 +486,15 @@ int32_t SdCardFont::findGlobalGlyphIndex(const PerStyle& s, uint32_t codepoint) 
   int right = static_cast<int>(s.header.intervalCount) - 1;
   while (left <= right) {
     int mid = left + (right - left) / 2;
-    const auto& interval = s.fullIntervals[mid];
-    if (codepoint < interval.first) {
+    const uint32_t first = s.bmpIntervals ? s.bmpIntervals[mid].first : s.fullIntervals[mid].first;
+    const uint32_t last = s.bmpIntervals ? s.bmpIntervals[mid].last : s.fullIntervals[mid].last;
+    if (codepoint < first) {
       right = mid - 1;
-    } else if (codepoint > interval.last) {
+    } else if (codepoint > last) {
       left = mid + 1;
     } else {
-      return static_cast<int32_t>(interval.offset + (codepoint - interval.first));
+      const uint32_t offset = s.bmpIntervals ? s.bmpIntervals[mid].offset : s.fullIntervals[mid].offset;
+      return static_cast<int32_t>(offset + (codepoint - first));
     }
   }
   return -1;
