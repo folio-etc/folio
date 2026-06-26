@@ -4,7 +4,10 @@
 #include <Epub/Section.h>
 
 #include <optional>
+#include <vector>
 
+#include "../../BookmarkEntry.h"
+#include "ProgressMapper.h"
 #include "activities/Activity.h"
 
 class EpubReaderActivity final : public Activity {
@@ -53,6 +56,16 @@ class EpubReaderActivity final : public Activity {
   SavedPosition savedPositions[MAX_FOOTNOTE_DEPTH] = {};
   int footnoteDepth = 0;
 
+  // Bookmark support. cachedBookmarks mirrors the on-SD bookmark file for this
+  // book; currentPageBookmarked drives the status-bar indicator and the toggle
+  // icon; bookmarkRemoved records which way the last toggle went.
+  static constexpr size_t initialBookmarkCacheCapacity = 16;
+  std::vector<BookmarkEntry> cachedBookmarks;
+  bool currentPageBookmarked = false;
+  bool bookmarkRemoved = false;
+  // Guards the Confirm long-press bookmark toggle so it fires once per hold.
+  bool bookmarkLongPressFired = false;
+
   void renderContents(std::unique_ptr<Page> page, int orientedMarginTop, int orientedMarginRight,
                       int orientedMarginBottom, int orientedMarginLeft);
   void renderStatusBar() const;
@@ -69,6 +82,7 @@ class EpubReaderActivity final : public Activity {
   // because the nav strip has far fewer 64px slots when the screen is 480px tall.
   std::vector<MenuRegistryEntry> buildTallMenuEntries();
   std::vector<MenuRegistryEntry> buildWideMenuEntries();
+  std::vector<PopupMenuEntry> navigateItems();
   std::vector<PopupMenuEntry> orientationItems();
   std::vector<PopupMenuEntry> autoTurnItems();
   std::vector<PopupMenuEntry> toolItems();
@@ -77,6 +91,15 @@ class EpubReaderActivity final : public Activity {
   // Reader actions invoked from the sidebar (formerly onReaderMenuConfirm cases).
   void selectChapter();
   void goToPercent();
+  void openBookmarks();
+
+  // Bookmark subsystem.
+  CrossPointPosition getCurrentPosition() const;
+  void loadCachedBookmarks();
+  // Toggle a bookmark at the current page: remove any that match, otherwise add one.
+  void addBookmark();
+  // Refresh currentPageBookmarked against cachedBookmarks for the current page.
+  void updateBookmarkFlag();
   void displayQr();
   void takeScreenshot();
   void startSync();

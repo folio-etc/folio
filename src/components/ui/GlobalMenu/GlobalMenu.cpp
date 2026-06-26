@@ -93,7 +93,12 @@ bool GlobalMenu::loop() {
     }
     if (current.has_value() && current.value().onPress.has_value()) {
       (current.value().onPress.value())();
-      closeMenu();
+      // keepOpenOnPress entries (e.g. the bookmark toggle) leave the menu open.
+      // The builder callbacks re-read entries on the next render(), so the entry's
+      // state-driven icon reflects the new state; returning true drives that redraw.
+      if (!current.value().keepOpenOnPress) {
+        closeMenu();
+      }
       return true;
     }
     return false;

@@ -12,6 +12,10 @@ struct MenuRegistryEntry {
   std::string name;
   std::optional<std::function<void()>> onPress;
   std::vector<PopupMenuEntry> popupItems;
+  // When true, firing onPress does NOT close the menu: the menu rebuilds its
+  // entries (via the GlobalMenu builder callbacks) and redraws so a state-driven
+  // icon (e.g. a bookmark toggle) reflects the new state on the next frame.
+  bool keepOpenOnPress = false;
 };
 
 // Per-activity GlobalMenu opt-in + config. An activity returns std::nullopt to
