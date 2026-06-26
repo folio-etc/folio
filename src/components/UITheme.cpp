@@ -14,12 +14,19 @@ void UITheme::repointUiFonts(GfxRenderer& renderer) {
   const auto& fontMap = renderer.getFontMap();
   const int bodyLargeId = currentTheme->getFontForRole(FontRole::BodyLarge);
   const int bodyId = currentTheme->getFontForRole(FontRole::Body);
+  // insertFont() ignores an already-registered id, and UI_10/UI_12 are seeded at
+  // boot (main.cpp) — so remove the existing entry before re-inserting the active
+  // theme's family, or the repoint silently no-ops and the seed (serif) sticks.
   // Skip a degenerate theme that points its own BodyLarge/Body back at the UI ids.
   if (auto it = fontMap.find(bodyLargeId); it != fontMap.end() && bodyLargeId != UI_12_FONT_ID) {
-    renderer.insertFont(UI_12_FONT_ID, it->second);
+    const EpdFontFamily fam = it->second;
+    renderer.removeFont(UI_12_FONT_ID);
+    renderer.insertFont(UI_12_FONT_ID, fam);
   }
   if (auto it = fontMap.find(bodyId); it != fontMap.end() && bodyId != UI_10_FONT_ID) {
-    renderer.insertFont(UI_10_FONT_ID, it->second);
+    const EpdFontFamily fam = it->second;
+    renderer.removeFont(UI_10_FONT_ID);
+    renderer.insertFont(UI_10_FONT_ID, fam);
   }
 }
 

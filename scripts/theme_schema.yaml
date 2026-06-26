@@ -41,6 +41,7 @@ external_types:
       - { json: "body-compact",   cpp: "FontRole::BodyCompact" }
       - { json: "caption-compact", cpp: "FontRole::CaptionCompact" }
       - { json: "accent-compact", cpp: "FontRole::AccentCompact" }
+      - { json: "body-large",     cpp: "FontRole::BodyLarge" }
 
 # Folio built-in identity — fields that live outside the schema-driven struct
 # but are needed to generate a complete BuiltinThemes::Folio constant.
