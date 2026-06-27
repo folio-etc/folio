@@ -179,11 +179,11 @@ bool LibraryGridView::isBackTileIndex(int gridIndex) const {
   return hasBackTile_ && gridIndex == 0;
 }
 
-const LibraryBook* LibraryGridView::bookForGridIndex(int gridIndex) const {
-  if (gridIndex < 0) return nullptr;
+int LibraryGridView::bookForGridIndex(int gridIndex) const {
+  if (gridIndex < 0) return -1;
   const int bookIdx = gridIndex - (hasBackTile_ ? 1 : 0);
-  if (bookIdx < 0 || bookIdx >= static_cast<int>(subset_.size())) return nullptr;
-  return subset_[bookIdx];
+  if (bookIdx < 0 || bookIdx >= static_cast<int>(subset_.size())) return -1;
+  return static_cast<int>(subset_[bookIdx]);
 }
 
 // ---- Render -----------------------------------------------------------------
@@ -234,14 +234,14 @@ void LibraryGridView::renderBody(const Rect& content) {
       renderBackTile(cells[slot], slot == currentIndexOnPage);
       continue;
     }
-    const LibraryBook* book = bookForGridIndex(idx);
-    if (book == nullptr) continue;
-    renderTile(cells[slot], *book, slot == currentIndexOnPage);
+    const int entryIdx = bookForGridIndex(idx);
+    if (entryIdx < 0) continue;
+    renderTile(cells[slot], LIBRARY_INDEX.getAt(entryIdx), slot == currentIndexOnPage);
   }
 }
 
 void LibraryGridView::renderTile(
-  const Rect& cell, const LibraryBook& book, bool selected
+  const Rect& cell, const BookView& book, bool selected
 ) {
   const bool invertText = selected && GUI.getData()->selection.textInverted;
   const bool textBlack = !invertText;
@@ -288,7 +288,7 @@ void LibraryGridView::renderTile(
 
   const std::vector<std::string> titleLines = renderer.wrappedText(
     captionFont,
-    book.title.c_str(),
+    book.title.data(),
     textSlot.width - 8,
     maxTitleLines,
     EpdFontFamily::BOLD
@@ -298,7 +298,7 @@ void LibraryGridView::renderTile(
     book.author.empty()
       ? std::string()
       : renderer.truncatedText(
-          captionFont, book.author.c_str(), textSlot.width - 8, EpdFontFamily::ITALIC
+          captionFont, book.author.data(), textSlot.width - 8, EpdFontFamily::ITALIC
         );
 
   const int textH = static_cast<int>(titleLines.size()) * captionLineH +
@@ -323,7 +323,7 @@ void LibraryGridView::renderTile(
     {
       auto g = prefetcher_.lockCache();
       const Cover::Fallback coverFallback{
-        book.title.c_str(), captionFont, EpdFontFamily::BOLD
+        book.title.data(), captionFont, EpdFontFamily::BOLD
       };
       Cover::render(
         renderer,

@@ -121,11 +121,11 @@ void LibraryActivity::onExit() {
 // ---- Collections ------------------------------------------------------------
 
 bool LibraryActivity::openCollectionPicker(bool add) {
-  const LibraryBook* book = gridView_.selectedBook();
-  if (book == nullptr) return true;  // back tile / empty slot — nothing to edit
+  const int idx = gridView_.selectedIndex();
+  if (idx < 0) return true;  // back tile / empty slot — nothing to edit
 
-  // Capture by value: subset pointers may be rebuilt while the picker is up.
-  const uint32_t bookHash = book->pathHash;
+  // Capture by value: the subset may be rebuilt while the picker is up.
+  const uint32_t bookHash = LIBRARY_INDEX.getAt(idx).pathHash;
   const auto mode =
     add ? CollectionPickerActivity::Mode::Add : CollectionPickerActivity::Mode::Remove;
   startActivityForResult(
@@ -160,11 +160,13 @@ void LibraryActivity::doSelect() {
     return;
   }
 
-  const LibraryBook* book = gridView_.selectedBook();
-  if (book == nullptr) return;
+  const int idx = gridView_.selectedIndex();
+  if (idx < 0) return;
 
-  LOG_DBG(LOG_TAG, "Opening book: %s", book->path.c_str());
-  activityManager.goToReader(book->path);
+  const std::string path = LIBRARY_INDEX.getPath(idx);
+  if (path.empty()) return;
+  LOG_DBG(LOG_TAG, "Opening book: %s", path.c_str());
+  activityManager.goToReader(path);
 }
 
 bool LibraryActivity::onSearch() {

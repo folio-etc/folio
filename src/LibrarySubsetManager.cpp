@@ -7,12 +7,12 @@
 std::optional<LibrarySubsetManager::Resolved> LibrarySubsetManager::resolve(
   const Spec& spec
 ) {
-  const auto& books = LIBRARY_INDEX.getBooks();
+  const int count = LIBRARY_INDEX.getBookCount();
   Resolved out;
 
   if (std::get_if<All>(&spec) != nullptr) {
-    out.books.reserve(books.size());
-    for (const auto& b : books) out.books.push_back(&b);
+    out.books.reserve(count);
+    for (int i = 0; i < count; ++i) out.books.push_back(static_cast<uint32_t>(i));
     return out;  // title stays empty — caller substitutes "Library"
   }
 
@@ -24,27 +24,28 @@ std::optional<LibrarySubsetManager::Resolved> LibrarySubsetManager::resolve(
     const std::unordered_set<uint32_t> members(
       coll->members.begin(), coll->members.end()
     );
-    for (const auto& b : books) {
-      if (members.count(b.pathHash)) out.books.push_back(&b);
+    for (int i = 0; i < count; ++i) {
+      if (members.count(LIBRARY_INDEX.getAt(i).pathHash)) out.books.push_back(static_cast<uint32_t>(i));
     }
     out.title = coll->name;  // empty membership is allowed (back-tile-only view)
     return out;
   }
 
   if (const auto* g = std::get_if<MetadataGroup>(&spec)) {
-    for (const auto& b : books) {
+    for (int i = 0; i < count; ++i) {
+      const BookView b = LIBRARY_INDEX.getAt(i);
       // Genre holds multiple newline-joined subjects: a book belongs if any matches.
       if (g->field == MetadataGroup::Genre) {
         bool match = false;
         forEachGenre(b.genre, [&](std::string_view subject) {
           if (subject == g->name) match = true;
         });
-        if (match) out.books.push_back(&b);
+        if (match) out.books.push_back(static_cast<uint32_t>(i));
         continue;
       }
-      const std::string& field =
+      const std::string_view field =
         (g->field == MetadataGroup::Series) ? b.series : b.author;
-      if (field == g->name) out.books.push_back(&b);
+      if (field == g->name) out.books.push_back(static_cast<uint32_t>(i));
     }
     out.title = std::string(g->name);
     return out;

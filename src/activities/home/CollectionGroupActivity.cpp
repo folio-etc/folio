@@ -40,24 +40,26 @@ void CollectionGroupActivity::buildGroups() {
   groups.clear();
 
   std::map<std::string, int> counts;  // ordered by name, dedupes
-  for (const auto& b : LIBRARY_INDEX.getBooks()) {
+  const int count = LIBRARY_INDEX.getBookCount();
+  for (int i = 0; i < count; ++i) {
+    const BookView b = LIBRARY_INDEX.getAt(i);
     // Genre holds multiple newline-joined subjects: count the book once per
     // subject so it lists under every one of its genres.
     if (mode == CrossPointSettings::LIB_VIEW_GENRE) {
       forEachGenre(b.genre, [&counts](std::string_view g) { counts[std::string(g)]++; });
       continue;
     }
-    const std::string* field = nullptr;
+    std::string_view field;
     switch (mode) {
       case CrossPointSettings::LIB_VIEW_SERIES:
-        field = &b.series;
+        field = b.series;
         break;
       case CrossPointSettings::LIB_VIEW_AUTHOR:
-        field = &b.author;
+        field = b.author;
         break;
     }
-    if (field == nullptr || field->empty()) continue;  // skip books without this field
-    counts[*field]++;
+    if (field.empty()) continue;  // skip books without this field
+    counts[std::string(field)]++;
   }
 
   groups.reserve(counts.size());

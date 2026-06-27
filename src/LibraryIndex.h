@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -12,44 +13,54 @@ class GfxRenderer;
 // Invokes fn(std::string_view) once per non-empty subject. Templated on the
 // callback to avoid std::function heap/binary overhead (see CLAUDE.md).
 template <typename Fn>
-inline void forEachGenre(const std::string& genre, Fn&& fn) {
+inline void forEachGenre(std::string_view genre, Fn&& fn) {
   size_t start = 0;
   while (start < genre.size()) {
     size_t nl = genre.find('\n', start);
-    if (nl == std::string::npos) nl = genre.size();
-    if (nl > start) fn(std::string_view(genre).substr(start, nl - start));
+    if (nl == std::string_view::npos) nl = genre.size();
+    if (nl > start) fn(genre.substr(start, nl - start));
     start = nl + 1;
   }
 }
 
-// One indexed book in the library. Persisted to /.crosspoint/library.bin so we
-// don't re-parse every EPUB on every entry into LibraryActivity.
-//
-// Progress is stored as (spineIndex, spineCount). The spine pair is enough to
-// recompute the percentage without re-opening the EPUB, and progress.bin
-// (written by EpubReaderActivity) is already in this format.
-struct LibraryBook {
-  std::string path;
-  std::string title;
-  std::string author;
-  // Series/genre drive the "By Series" / "By Genre" auto-group collections.
-  // Parsed from the EPUB OPF and cached so grouping needs no re-parse.
-  std::string series;
-  std::string genre;
-  // 0 = no/unknown series index. Cached for future Details/series sort.
-  uint16_t seriesIndex = 0;
-  // std::hash<std::string>{}(path), matching Epub's cachePath hash so we can
-  // locate the per-book cache dir as /.crosspoint/epub_<pathHash>/.
+// Resident per-book record. The four display strings live in the RAM arena
+// (the `const char*` below point into it, are null-terminated, and stay valid
+// for the arena's lifetime — i.e. until the next load/refresh/unload). `path`
+// is NOT resident: it lives on SD and is fetched on demand via getPath() (only
+// needed when a book is opened). This keeps ~500 books under the heap ceiling
+// even with a heavy custom theme loaded. See docs and LibraryIndex.cpp.
+struct LibraryEntry {
+  const char* title = "";
+  const char* author = "";
+  const char* series = "";
+  const char* genre = "";
   uint32_t pathHash = 0;
-  // 0 = unread; otherwise 1-based spine position from progress.bin.
-  uint16_t progressSpineIndex = 0;
-  // Total spine entries — needed to compute percentage without re-opening
-  // the EPUB. Zero means "unknown" (treat as unread for display purposes).
-  uint16_t spineCount = 0;
-  // Monotonic open counter, bumped by noteBookOpened() each time the reader
-  // launches this book. 0 = never opened. Used by the Recently Opened sort.
-  // No RTC on the device, so a counter is cheaper than an absolute timestamp.
   uint32_t openSequence = 0;
+  // Absolute byte offset of this book's path record in library.bin (len-prefixed).
+  uint32_t pathOffset = 0;
+  // Byte position of this entry's fixed record in library.bin, assigned on the
+  // last full save. Lets refreshProgress()/noteBookOpened() patch a single field
+  // in place instead of rewriting the whole file (no paths in RAM to rewrite).
+  uint32_t diskSlot = 0;
+  uint16_t progressSpineIndex = 0;
+  uint16_t spineCount = 0;
+  uint16_t seriesIndex = 0;
+};
+
+// Lightweight read accessor returned by getAt(). The string_views point into the
+// arena and are null-terminated, so .data() is safe to pass to C draw APIs.
+// Valid until the next load/refresh/unload (the arena does not move on sort, so
+// views even survive a re-sort).
+struct BookView {
+  std::string_view title;
+  std::string_view author;
+  std::string_view series;
+  std::string_view genre;
+  uint32_t pathHash = 0;
+  uint32_t openSequence = 0;
+  uint16_t progressSpineIndex = 0;
+  uint16_t spineCount = 0;
+  uint16_t seriesIndex = 0;
 
   bool hasProgress() const { return progressSpineIndex > 0 && spineCount > 0; }
   bool hasBeenOpened() const { return openSequence > 0; }
@@ -64,34 +75,30 @@ struct LibraryBook {
 
 class LibraryIndex {
   static LibraryIndex instance;
-  std::vector<LibraryBook> books;
+
+  // Resident records (small + contiguous: ~30 B each). sortBy() reorders these
+  // in place; diskSlot travels with each entry so in-place field patches still
+  // find the right byte on disk.
+  std::vector<LibraryEntry> entries;
+
+  // String arena: title/author/series/genre for all books, packed
+  // null-terminated into a chain of fixed blocks. Blocks never move, so the
+  // const char* in each entry is stable for the arena's lifetime.
+  std::vector<std::unique_ptr<char[]>> arenaBlocks;
+  size_t arenaUsed = 0;  // bytes used in the last (current) block
+  size_t arenaCap = 0;   // capacity of the last (current) block
+
   bool loaded = false;
 
  public:
-  // Max dimensions (in pixels) of the cover thumbnail generated for each book
-  // during indexing. The converter preserves aspect ratio and shrinks to fit
-  // — actual on-disk dims may be smaller along one axis.
-  //
-  // THUMB_HEIGHT matches LibraryActivity's COVER_H, so the on-disk thumb is
-  // already the target draw height — no down-scaling at paint time, and the
-  // pre-rasterized 1-bit cache survives orientation changes (cover-area
-  // width varies between portrait and landscape, but height is fixed).
-  //
-  // THUMB_MAX_WIDTH is sized to fit within the narrower portrait cellW
-  // (~129 px) with a few pixels of visual breathing room. Wider source
-  // covers (square, graphic-novel aspect) get to use most of the cell
-  // instead of being clamped to a fixed 0.6-aspect frame; taller covers are
-  // unaffected since height binds first.
   static constexpr int THUMB_HEIGHT = 120;
   static constexpr int THUMB_MAX_WIDTH = 120;
 
-  // Sort options for the library shelf. Plain enums so this header has no
-  // dependency on CrossPointSettings. LibraryActivity maps from settings.
   enum class SortField : uint8_t {
-    Recent = 0,    // by openSequence (unread sinks to the end)
-    Title = 1,     // alphabetic, leading articles ignored
-    Author = 2,    // surname first, empty author sinks to the end
-    Progress = 3,  // by progressPercent, unread sinks to the end
+    Recent = 0,
+    Title = 1,
+    Author = 2,
+    Progress = 3,
   };
   enum class SortDirection : uint8_t {
     Descending = 0,
@@ -100,70 +107,68 @@ class LibraryIndex {
 
   static LibraryIndex& getInstance() { return instance; }
 
-  // Loads /.crosspoint/library.bin if present. Returns true if anything was loaded.
-  // Safe to call repeatedly — re-reads from disk every time.
+  // Loads /.crosspoint/library.bin if present. Returns true if anything loaded.
   bool loadFromFile();
 
-  // Progress callback for refreshFromSdCard. Invoked only when there is new
-  // work: once per new book with (done, total, label) where `done` is the count
-  // already indexed (0-based at the start of each book), `total` is the number
-  // of NEW books, and `label` is the current book's filename stem. A final call
-  // arrives with done==total and an empty label. Never called when nothing is
-  // new — so the caller can use the first invocation to show its indexing UI.
   using IndexProgressFn = std::function<void(int done, int total, const char* label)>;
 
-  // Walks /Books (recursive, depth-limited) in a single pass to gather EPUB
-  // paths, reuses cached metadata for books already in library.bin, indexes the
-  // rest (reporting via onProgress), refreshes progress for known books, and
-  // persists library.bin if anything changed. Returns true on success (an empty
-  // library is a successful result).
+  // Walks /Books (recursive, depth-limited), reuses cached metadata for known
+  // books, indexes the rest (reporting via onProgress), and persists library.bin
+  // if anything changed. Returns true on success (empty library is a success).
   bool refreshFromSdCard(const IndexProgressFn& onProgress = {});
 
-  // Books whose metadata contains `query` as a case-insensitive substring.
-  // Searches all available text metadata: title, author, series, and genre.
-  // A blank query returns an empty result. Returned pointers index into the
-  // books vector and are valid only until the next sortBy()/load (same
-  // contract as getBooks()).
-  std::vector<const LibraryBook*> search(std::string_view query) const;
+  // Entry indices (in current order) whose title/author/series/genre contains
+  // `query` (case-insensitive substring). A blank query returns empty.
+  std::vector<uint32_t> search(std::string_view query) const;
 
-  const std::vector<LibraryBook>& getBooks() const { return books; }
-  int getBookCount() const { return static_cast<int>(books.size()); }
-  bool isEmpty() const { return books.empty(); }
+  int getBookCount() const { return static_cast<int>(entries.size()); }
+  bool isEmpty() const { return entries.empty(); }
   bool isLoaded() const { return loaded; }
+  bool isValidIndex(int index) const {
+    return index >= 0 && index < static_cast<int>(entries.size());
+  }
 
-  // Pagination helpers (LibraryActivity uses perPage = 9 for the 3×3 grid).
   int totalPages(int perPage) const;
-  // Returns nullptr when (page, slot) is past the end of the index.
-  const LibraryBook* getAt(int page, int slot, int perPage) const;
-  const LibraryBook* getAt(int index) const;
 
-  // Refresh a single book's progress from ProgressStore (updated by the reader)
-  // and update the in-memory entry. No SD read — the store is already resident.
-  // Persists library.bin if changed. Called by LibraryActivity after returning
-  // from the reader.
+  // A BookView for the entry at `index`. Returns an empty view when out of range
+  // (callers that can be OOB should guard with isValidIndex first).
+  BookView getAt(int index) const;
+
+  // Reads the book's path from SD (one seek+read). Empty string on OOB/error.
+  // Only needed when opening a book.
+  std::string getPath(int index) const;
+
+  // Refresh a single book's progress from ProgressStore and patch it in place.
   void refreshProgress(const std::string& path);
 
-  // Bump the matching book's openSequence to (max openSequence across the
-  // index) + 1 and persist library.bin. No-op when the path isn't indexed
-  // (e.g. a book opened directly from the file browser). Cheap: one O(N)
-  // scan + one library.bin rewrite. Called only when the reader is
-  // actually entered, not on page turns.
+  // Bump the matching book's openSequence to max+1 and patch it in place.
   void noteBookOpened(const std::string& path);
 
-  // Reorder `books` in place per the requested field and direction. Pure
-  // function of the books vector + settings inputs — no Settings coupling.
-  // LibraryActivity calls this on entry and after popup-menu changes.
+  // Reorder `entries` in place per the requested field and direction.
   void sortBy(SortField field, SortDirection direction);
 
-  // Drop the in-memory books vector and release its storage. The on-disk
-  // /.crosspoint/library.bin is preserved. The next loadFromFile() call
-  // repopulates the index. Used by LibraryActivity::onExit() to release
-  // ~25 KB of heap to whatever activity comes next.
+  // Drop the in-memory records + arena. The on-disk library.bin is preserved.
   void unload();
 
  private:
   LibraryIndex() = default;
-  bool saveToFile() const;
+  // Writes library.bin (header + entry table + arena blob). Paths are NOT here —
+  // they live in library_paths.bin, streamed during refresh (see refreshFromSdCard).
+  bool saveToFile();
+
+  // Copy `s` + a NUL into the arena; return a stable pointer to the copied
+  // chars (null-terminated). Empty input returns "".
+  const char* arenaPush(std::string_view s);
+  void arenaReset();
+
+  // Overwrite `size` bytes at absolute offset `at` in library.bin (O_RDWR, no
+  // truncate). Used for single-field progress/openSequence patches.
+  bool patchAt(uint32_t at, const void* data, size_t size) const;
+
+  // Index of the entry matching `path`'s hash, or -1. Matches on pathHash only
+  // (path is on SD); collision odds at <=500 books are negligible.
+  // ponytail: hash-only match; add a getPath() verify if collisions ever bite.
+  int findByPath(const std::string& path) const;
 };
 
 #define LIBRARY_INDEX LibraryIndex::getInstance()

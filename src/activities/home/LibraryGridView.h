@@ -27,7 +27,7 @@ class LibraryGridView {
   // The resolved subset the shell hands in. `hasBackTile` inserts a synthetic "back to
   // All Books" affordance at grid slot 0 (filtered views only).
   struct Subset {
-    std::vector<const LibraryBook*> books;
+    std::vector<uint32_t> books;  // entry indices into LIBRARY_INDEX, in display order
     std::string title;
     bool hasBackTile = false;
   };
@@ -71,9 +71,8 @@ class LibraryGridView {
   uint8_t currentPage() { return gridHelper.currentPage(); }
   uint8_t pageCount() { return gridHelper.pageCount(); }
   bool isBackTileSelected() { return isBackTileIndex(gridHelper.currentIndex()); }
-  const LibraryBook* selectedBook() {
-    return bookForGridIndex(gridHelper.currentIndex());
-  }
+  // Entry index of the selected tile, or -1 for the back tile / empty slot.
+  int selectedIndex() { return bookForGridIndex(gridHelper.currentIndex()); }
 
  private:
   // ---- Grid / tile layout ----
@@ -101,9 +100,10 @@ class LibraryGridView {
 
   int viewItemCount() const;
   bool isBackTileIndex(int gridIndex) const;
-  const LibraryBook* bookForGridIndex(int gridIndex) const;
+  // Entry index into LIBRARY_INDEX for a grid slot, or -1 for back tile / OOB.
+  int bookForGridIndex(int gridIndex) const;
 
-  void renderTile(const Rect& cell, const LibraryBook& book, bool selected);
+  void renderTile(const Rect& cell, const BookView& book, bool selected);
   void renderBackTile(const Rect& cell, bool selected);
 
   void moveUp();
@@ -118,9 +118,9 @@ class LibraryGridView {
 
   GridHelper gridHelper = GridHelper(0, 0, 0, 0);
 
-  // The active subset (pointers into LIBRARY_INDEX in sorted order) + its display name.
-  // Pointers are valid only between sorts; setSubset rebuilds them under the cache lock.
-  std::vector<const LibraryBook*> subset_;
+  // The active subset (entry indices into LIBRARY_INDEX in sorted order) + its display
+  // name. Indices are valid only between sorts; setSubset rebuilds them under the cache lock.
+  std::vector<uint32_t> subset_;
   bool hasBackTile_ = false;
   std::string subsetTitle_;
 
@@ -128,8 +128,9 @@ class LibraryGridView {
 
   CoverPrefetcher prefetcher_{
     renderer, PER_PAGE, [this](int itemIndex) -> std::optional<uint32_t> {
-      const LibraryBook* b = bookForGridIndex(itemIndex);  // null = back tile / OOB
-      return b ? std::optional<uint32_t>(b->pathHash) : std::nullopt;
+      const int entryIdx = bookForGridIndex(itemIndex);  // -1 = back tile / OOB
+      return entryIdx >= 0 ? std::optional<uint32_t>(LIBRARY_INDEX.getAt(entryIdx).pathHash)
+                           : std::nullopt;
     }
   };
 

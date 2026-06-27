@@ -7,7 +7,7 @@
 #include <variant>
 #include <vector>
 
-#include "LibraryIndex.h"  // LibraryBook
+#include "LibraryIndex.h"  // LibraryIndex / BookView
 
 // Resolves "which subset of the library does the user want?" into an ordered book list.
 //
@@ -38,9 +38,9 @@ class LibrarySubsetManager {
   using Spec = std::variant<All, CollectionRef, MetadataGroup, Search>;
 
   struct Resolved {
-    // Pointers into LIBRARY_INDEX.getBooks(), in index (sorted) order — same validity
-    // contract as getBooks()/search() (valid until the next sortBy()/load).
-    std::vector<const LibraryBook*> books;
+    // Entry indices into LIBRARY_INDEX, in current (sorted) order. Valid until the
+    // next sortBy()/load (sortBy reorders entries, so indices must be re-resolved).
+    std::vector<uint32_t> books;
     // The subset's own display name (collection name, group/query string); empty for
     // All. The caller decides how to present an empty title (e.g. "Library").
     std::string title;
