@@ -9,6 +9,7 @@
 #include <I18n.h>
 #include <JsonSettingsIO.h>
 #include <Logging.h>
+#include <Memory.h>
 #include <esp_system.h>
 #include <util/BookmarkUtil.h>
 
@@ -1119,93 +1120,128 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
   // against the old prewarm path; tPrewarm stays as a (now ~0) marker.
   const auto tPrewarm = millis();
 
-  // Force special handling for pages with images when anti-aliasing is on
-  bool imagePageWithAA = page->hasImages() && SETTINGS.textAntiAliasing;
+  const int fontId = SETTINGS.getReaderFontId();
+  const bool pageHasImages = page->hasImages();
+  const bool needsTextGrayscale = SETTINGS.textAntiAliasing;
+  const bool needsAnyGrayscale = needsTextGrayscale || pageHasImages;
+  // Grayscale pass renders the whole page when text AA is on, otherwise only the
+  // images — so an image page with AA off still gets 16-level images.
+  auto renderGrayscalePass = [&]() {
+    if (needsTextGrayscale) {
+      page->render(renderer, fontId, orientedMarginLeft, orientedMarginTop);
+    } else {
+      page->renderImages(renderer, fontId, orientedMarginLeft, orientedMarginTop);
+    }
+  };
 
-  page->render(renderer, SETTINGS.getReaderFontId(), orientedMarginLeft, orientedMarginTop);
+  page->render(renderer, fontId, orientedMarginLeft, orientedMarginTop);
   renderStatusBar();
   const auto tBwRender = millis();
 
-  if (imagePageWithAA) {
+  if (pageHasImages) {
     // Double FAST_REFRESH with selective image blanking (pablohc's technique):
-    // HALF_REFRESH sets particles too firmly for the grayscale LUT to adjust.
-    // Instead, blank only the image area and do two fast refreshes.
-    // Step 1: Display page with image area blanked (text appears, image area white)
-    // Step 2: Re-render with images and display again (images appear clean)
+    // HALF_REFRESH sets particles too firmly for the grayscale LUT to adjust, so
+    // blank only the image area and do two fast refreshes. This is also the fast
+    // BW image path used when the nav menu is open (grayscale skipped below).
     int16_t imgX, imgY, imgW, imgH;
     if (page->getImageBoundingBox(imgX, imgY, imgW, imgH)) {
       renderer.fillRect(imgX + orientedMarginLeft, imgY + orientedMarginTop, imgW, imgH, false);
       renderer.displayBuffer(HalDisplay::FAST_REFRESH);
 
-      // Re-render page content to restore images into the blanked area
-      // Status bar is not re-rendered here to avoid reading stale dynamic values (e.g. battery %)
-      page->render(renderer, SETTINGS.getReaderFontId(), orientedMarginLeft, orientedMarginTop);
+      // Re-render to restore images into the blanked area. Status bar is not
+      // re-rendered to avoid reading stale dynamic values (e.g. battery %).
+      page->render(renderer, fontId, orientedMarginLeft, orientedMarginTop);
       renderer.displayBuffer(HalDisplay::FAST_REFRESH);
     } else {
       renderer.displayBuffer(HalDisplay::HALF_REFRESH);
     }
-    // Double FAST_REFRESH handles ghosting for image pages; don't count toward full refresh cadence
+    // The grayscale pass below leaves gray charge in the image region that a
+    // plain fast diff on the next page can't clear (text would ghost gray), so
+    // force the next page onto the HALF ghost-cleanup path.
+    pagesUntilFullRefresh = 1;
   } else {
     ReaderUtils::displayWithRefreshCycle(renderer, pagesUntilFullRefresh);
   }
   const auto tDisplay = millis();
 
-  // While the GlobalMenu overlays the reader, skip the grayscale pass entirely:
-  // its ~48KB storeBwBuffer snapshot competes for RAM with the menu, and
-  // displayGrayBuffer() drives a grayscale waveform that fights the menu's BW
-  // overlay. The BW page already drawn is what the overlay composites onto.
+  // While the GlobalMenu overlays the reader, skip the grayscale pass: it is far
+  // too slow under the overlay and its waveform fights the menu's BW compositing.
+  // The BW frame just drawn (incl. the image double-blank above) is what shows.
   if (activityManager.globalMenu.isOpen()) {
     return;
   }
 
-  // Save bw buffer to reset buffer state after grayscale data sync.
-  // On failure (e.g. heap fragmentation under heavy SD themes), skip the
-  // grayscale pass entirely — rendering grayscale without a BW snapshot
-  // leaves the framebuffer holding the MSB grayscale pattern, and the next
-  // fast refresh's differential calc ghosts the previous page.
-  const bool bwStored = renderer.storeBwBuffer();
-  const auto tBwStore = millis();
+  // Tiled grayscale: render each plane band-by-band into a small scratch streamed
+  // straight to the controller, leaving the BW framebuffer intact (no ~48KB
+  // storeBwBuffer). The page is re-rendered ceil(H/STRIP_ROWS) times per plane,
+  // but renderCharImpl culls out-of-band glyphs before decode so the cost stays
+  // close to one render. Both text and images honor the active strip target.
+  if (needsAnyGrayscale && renderer.supportsStripGrayscale()) {
+    constexpr int STRIP_ROWS = 80;
+    const int gh = renderer.getDisplayHeight();
+    const int gwBytes = renderer.getDisplayWidthBytes();
 
-  // grayscale rendering (requires a successful BW buffer store)
-  // TODO: Only do this if font supports it
-  if (bwStored && SETTINGS.textAntiAliasing) {
+    auto scratch = makeUniqueNoThrow<uint8_t[]>(static_cast<size_t>(gwBytes) * STRIP_ROWS);
+    if (!scratch) {
+      LOG_ERR("ERS", "OOM: grayscale strip scratch (%d bytes); skipping AA this page", gwBytes * STRIP_ROWS);
+    } else {
+      renderer.setRenderMode(GfxRenderer::GRAYSCALE_LSB);
+      for (int y = 0; y < gh; y += STRIP_ROWS) {
+        const int rows = (gh - y < STRIP_ROWS) ? (gh - y) : STRIP_ROWS;
+        renderer.beginStripTarget(scratch.get(), y, rows);
+        renderer.clearScreen(0x00);
+        renderGrayscalePass();
+        renderer.endStripTarget();
+        renderer.writeGrayscalePlaneStrip(true, scratch.get(), y, rows);
+      }
+      const auto tGrayLsb = millis();
+
+      renderer.setRenderMode(GfxRenderer::GRAYSCALE_MSB);
+      for (int y = 0; y < gh; y += STRIP_ROWS) {
+        const int rows = (gh - y < STRIP_ROWS) ? (gh - y) : STRIP_ROWS;
+        renderer.beginStripTarget(scratch.get(), y, rows);
+        renderer.clearScreen(0x00);
+        renderGrayscalePass();
+        renderer.endStripTarget();
+        renderer.writeGrayscalePlaneStrip(false, scratch.get(), y, rows);
+      }
+      const auto tGrayMsb = millis();
+
+      renderer.setRenderMode(GfxRenderer::BW);
+      renderer.displayGrayBuffer();
+      const auto tGrayDisplay = millis();
+
+      // BW framebuffer is intact; re-sync controller RAM for the next
+      // differential page turn directly from it.
+      renderer.cleanupGrayscaleWithFrameBuffer();
+      const auto tEnd = millis();
+      LOG_DBG("ERS",
+              "Page render (tiled): prewarm=%lums bw_render=%lums display=%lums gray_lsb=%lums "
+              "gray_msb=%lums gray_display=%lums cleanup=%lums total=%lums",
+              tPrewarm - t0, tBwRender - tPrewarm, tDisplay - tBwRender, tGrayLsb - tDisplay, tGrayMsb - tGrayLsb,
+              tGrayDisplay - tGrayMsb, tEnd - tGrayDisplay, tEnd - t0);
+    }
+  } else if (needsAnyGrayscale) {
+    // Fallback for a controller without strip support (unreachable on current
+    // hardware — all drivers support strip). Save/restore the BW frame around
+    // the full-buffer grayscale passes.
+    if (!renderer.storeBwBuffer()) {
+      LOG_ERR("ERS", "Failed to store BW buffer for grayscale; skipping AA this page");
+      return;
+    }
     renderer.clearScreen(0x00);
     renderer.setRenderMode(GfxRenderer::GRAYSCALE_LSB);
-    page->render(renderer, SETTINGS.getReaderFontId(), orientedMarginLeft, orientedMarginTop);
+    renderGrayscalePass();
     renderer.copyGrayscaleLsbBuffers();
-    const auto tGrayLsb = millis();
 
-    // Render and copy to MSB buffer
     renderer.clearScreen(0x00);
     renderer.setRenderMode(GfxRenderer::GRAYSCALE_MSB);
-    page->render(renderer, SETTINGS.getReaderFontId(), orientedMarginLeft, orientedMarginTop);
+    renderGrayscalePass();
     renderer.copyGrayscaleMsbBuffers();
-    const auto tGrayMsb = millis();
 
-    // display grayscale part
     renderer.displayGrayBuffer();
-    const auto tGrayDisplay = millis();
     renderer.setRenderMode(GfxRenderer::BW);
-    // restore the bw data
     renderer.restoreBwBuffer();
-    const auto tBwRestore = millis();
-
-    const auto tEnd = millis();
-    LOG_DBG("ERS",
-            "Page render: prewarm=%lums bw_render=%lums display=%lums bw_store=%lums "
-            "gray_lsb=%lums gray_msb=%lums gray_display=%lums bw_restore=%lums total=%lums",
-            tPrewarm - t0, tBwRender - tPrewarm, tDisplay - tBwRender, tBwStore - tDisplay, tGrayLsb - tBwStore,
-            tGrayMsb - tGrayLsb, tGrayDisplay - tGrayMsb, tBwRestore - tGrayDisplay, tEnd - t0);
-  } else {
-    // restore the bw data
-    renderer.restoreBwBuffer();
-    const auto tBwRestore = millis();
-
-    const auto tEnd = millis();
-    LOG_DBG("ERS",
-            "Page render: prewarm=%lums bw_render=%lums display=%lums bw_store=%lums bw_restore=%lums total=%lums",
-            tPrewarm - t0, tBwRender - tPrewarm, tDisplay - tBwRender, tBwStore - tDisplay, tBwRestore - tBwStore,
-            tEnd - t0);
   }
 }
 
