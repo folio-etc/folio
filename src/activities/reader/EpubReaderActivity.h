@@ -1,6 +1,7 @@
 #pragma once
 #include <Epub.h>
 #include <Epub/FootnoteEntry.h>
+#include <Epub/Page.h>
 #include <Epub/Section.h>
 
 #include <optional>
@@ -13,6 +14,13 @@
 class EpubReaderActivity final : public Activity {
   std::shared_ptr<Epub> epub;
   std::unique_ptr<Section> section = nullptr;
+  // Deserialized page held across re-renders of the same page (e.g. every menu
+  // re-render) so we skip the ~100ms SD read. Invalidated on section rebuild.
+  std::unique_ptr<Page> cachedPage;
+  int cachedPageNumber = -1;  // section->currentPage cachedPage was filled for
+  // Consecutive page-load failures. Bounds the rebuild retry so a corrupt
+  // page can't spin render() forever. Reset to 0 on any successful load.
+  int pageLoadRetries = 0;
   int currentSpineIndex = 0;
   int nextPageNumber = 0;
   std::optional<uint16_t> pendingPageJump;
@@ -66,8 +74,8 @@ class EpubReaderActivity final : public Activity {
   // Guards the Confirm long-press bookmark toggle so it fires once per hold.
   bool bookmarkLongPressFired = false;
 
-  void renderContents(std::unique_ptr<Page> page, int orientedMarginTop, int orientedMarginRight,
-                      int orientedMarginBottom, int orientedMarginLeft);
+  void renderContents(const Page& page, int orientedMarginTop, int orientedMarginRight, int orientedMarginBottom,
+                      int orientedMarginLeft);
   void renderStatusBar() const;
   void silentIndexNextChapterIfNeeded(uint16_t viewportWidth, uint16_t viewportHeight);
   bool saveProgress(int spineIndex, int currentPage, int pageCount);

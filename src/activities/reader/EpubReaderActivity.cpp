@@ -933,6 +933,9 @@ void EpubReaderActivity::render(RenderLock&& lock) {
   const uint16_t viewportHeight = renderer.getScreenHeight() - orientedMarginTop - orientedMarginBottom;
 
   if (!section) {
+    // New section = new layout; drop the page cache so we re-read from SD.
+    cachedPage.reset();
+    cachedPageNumber = -1;
     const auto filepath = epub->getSpineItem(currentSpineIndex).href;
     LOG_DBG("ERS", "Loading file: %s, index: %d", filepath.c_str(), currentSpineIndex);
     section = std::unique_ptr<Section>(new Section(epub, currentSpineIndex, renderer));
@@ -1035,32 +1038,54 @@ void EpubReaderActivity::render(RenderLock&& lock) {
   updateBookmarkFlag();
 
   {
-    auto p = section->loadPageFromSectionFile();
-    if (!p) {
-      LOG_ERR("ERS", "Failed to load page from SD - clearing section cache");
-      section->clearCache();
-      section.reset();
-      requestUpdate();  // Try again after clearing cache
-                        // TODO: prevent infinite loop if the page keeps failing to load for some reason
-      automaticPageTurnActive = false;
-      showPendingSyncSaveError();
-      return;
-    }
+    // Re-read from SD only on a cache miss. The same page re-renders many times
+    // while the GlobalMenu overlay is open; the content is identical, so the
+    // ~100ms SD read + deserialize is pure waste on those repeats.
+    if (!cachedPage || cachedPageNumber != section->currentPage) {
+      const auto tSdStart = millis();
+      cachedPage = section->loadPageFromSectionFile();
+      LOG_DBG("ERS", "loadPageFromSectionFile: %lums", millis() - tSdStart);
+      if (!cachedPage) {
+        cachedPageNumber = -1;
+        automaticPageTurnActive = false;
+        if (pageLoadRetries == 0) {
+          // First failure is most likely a corrupt/truncated section cache.
+          // Clear it and rebuild once; the next render retries the load.
+          LOG_ERR("ERS", "Failed to load page from SD - clearing section cache and rebuilding");
+          pageLoadRetries++;
+          section->clearCache();
+          section.reset();
+          requestUpdate();
+        } else {
+          // Rebuild didn't help — the source is bad. Stop retrying (no
+          // requestUpdate => no infinite loop) and show a terminal error; the
+          // user presses Back to leave, handled in loop().
+          // ponytail: single shared counter, reset only on success — a second
+          // distinct corrupt page won't get its own rebuild, which is fine.
+          LOG_ERR("ERS", "Page load still failing after rebuild - giving up");
+          renderer.clearScreen();
+          renderer.drawCenteredText(UI_12_FONT_ID, 300, tr(STR_ERROR_GENERAL_FAILURE), true, EpdFontFamily::BOLD);
+          renderer.displayBuffer();
+        }
+        showPendingSyncSaveError();
+        return;
+      }
+      pageLoadRetries = 0;
+      cachedPageNumber = section->currentPage;
 
-    // Collect footnotes from the loaded page. The footnote menu labels point
-    // into currentPageFootnotes, and render() re-runs while the menu is open —
-    // so only refresh it when the page actually changed, or the label pointers
-    // dangle mid-menu.
-    // ponytail: gates the churn, still re-reads the page from SD each render;
-    // cache the Page to skip the I/O too if that ever shows up in profiling.
-    if (currentSpineIndex != footnotesSpineIndex || section->currentPage != footnotesPage) {
-      currentPageFootnotes = std::move(p->footnotes);
-      footnotesSpineIndex = currentSpineIndex;
-      footnotesPage = section->currentPage;
+      // Collect footnotes from the freshly loaded page. The footnote menu labels
+      // point into currentPageFootnotes, so refresh only when the page actually
+      // changed, or the label pointers dangle mid-menu. Moving footnotes out of
+      // the cached page is safe: they are never read from the page again.
+      if (currentSpineIndex != footnotesSpineIndex || section->currentPage != footnotesPage) {
+        currentPageFootnotes = std::move(cachedPage->footnotes);
+        footnotesSpineIndex = currentSpineIndex;
+        footnotesPage = section->currentPage;
+      }
     }
 
     const auto start = millis();
-    renderContents(std::move(p), orientedMarginTop, orientedMarginRight, orientedMarginBottom, orientedMarginLeft);
+    renderContents(*cachedPage, orientedMarginTop, orientedMarginRight, orientedMarginBottom, orientedMarginLeft);
     LOG_DBG("ERS", "Rendered page in %dms", millis() - start);
   }
   silentIndexNextChapterIfNeeded(viewportWidth, viewportHeight);
@@ -1109,9 +1134,8 @@ void EpubReaderActivity::silentIndexNextChapterIfNeeded(const uint16_t viewportW
 bool EpubReaderActivity::saveProgress(int spineIndex, int currentPage, int pageCount) {
   return EpubReaderUtils::saveProgress(*epub, spineIndex, currentPage, pageCount);
 }
-void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int orientedMarginTop,
-                                        const int orientedMarginRight, const int orientedMarginBottom,
-                                        const int orientedMarginLeft) {
+void EpubReaderActivity::renderContents(const Page& page, const int orientedMarginTop, const int orientedMarginRight,
+                                        const int orientedMarginBottom, const int orientedMarginLeft) {
   const auto t0 = millis();
 
   // Self-warming: no prewarm scan pass — the real render below warms the
@@ -1121,20 +1145,20 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
   const auto tPrewarm = millis();
 
   const int fontId = SETTINGS.getReaderFontId();
-  const bool pageHasImages = page->hasImages();
+  const bool pageHasImages = page.hasImages();
   const bool needsTextGrayscale = SETTINGS.textAntiAliasing;
   const bool needsAnyGrayscale = needsTextGrayscale || pageHasImages;
   // Grayscale pass renders the whole page when text AA is on, otherwise only the
   // images — so an image page with AA off still gets 16-level images.
   auto renderGrayscalePass = [&]() {
     if (needsTextGrayscale) {
-      page->render(renderer, fontId, orientedMarginLeft, orientedMarginTop);
+      page.render(renderer, fontId, orientedMarginLeft, orientedMarginTop);
     } else {
-      page->renderImages(renderer, fontId, orientedMarginLeft, orientedMarginTop);
+      page.renderImages(renderer, fontId, orientedMarginLeft, orientedMarginTop);
     }
   };
 
-  page->render(renderer, fontId, orientedMarginLeft, orientedMarginTop);
+  page.render(renderer, fontId, orientedMarginLeft, orientedMarginTop);
   renderStatusBar();
   const auto tBwRender = millis();
 
@@ -1144,13 +1168,13 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
     // blank only the image area and do two fast refreshes. This is also the fast
     // BW image path used when the nav menu is open (grayscale skipped below).
     int16_t imgX, imgY, imgW, imgH;
-    if (page->getImageBoundingBox(imgX, imgY, imgW, imgH)) {
+    if (page.getImageBoundingBox(imgX, imgY, imgW, imgH)) {
       renderer.fillRect(imgX + orientedMarginLeft, imgY + orientedMarginTop, imgW, imgH, false);
       renderer.displayBuffer(HalDisplay::FAST_REFRESH);
 
       // Re-render to restore images into the blanked area. Status bar is not
       // re-rendered to avoid reading stale dynamic values (e.g. battery %).
-      page->render(renderer, fontId, orientedMarginLeft, orientedMarginTop);
+      page.render(renderer, fontId, orientedMarginLeft, orientedMarginTop);
       renderer.displayBuffer(HalDisplay::FAST_REFRESH);
     } else {
       renderer.displayBuffer(HalDisplay::HALF_REFRESH);
@@ -1168,6 +1192,11 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
   // too slow under the overlay and its waveform fights the menu's BW compositing.
   // The BW frame just drawn (incl. the image double-blank above) is what shows.
   if (activityManager.globalMenu.isOpen()) {
+    // ponytail: page cache kills the SD read on these repeats; the ~70ms BW
+    // re-render stays. Caching that too needs the 48KB framebuffer resident,
+    // which this 380KB MCU can't spare — leave it.
+    LOG_DBG("ERS", "Page render (menu open): prewarm=%lums bw_render=%lums display=%lums total=%lums",
+            tPrewarm - t0, tBwRender - tPrewarm, tDisplay - tBwRender, tDisplay - t0);
     return;
   }
 
