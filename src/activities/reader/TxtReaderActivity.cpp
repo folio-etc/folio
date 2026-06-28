@@ -403,8 +403,7 @@ void TxtReaderActivity::renderPage() {
   // BW rendering. Fast mode dithers the body text straight into the single BW
   // pass (no grayscale planes); status bar stays crisp threshold. Quality keeps
   // the grayscale AA pass below unchanged.
-  const bool fast =
-      SETTINGS.textAntiAliasing && SETTINGS.grayscaleRenderMode == CrossPointSettings::GR_FAST;
+  const bool fast = SETTINGS.textAntiAliasing && SETTINGS.grayscaleRenderMode == CrossPointSettings::GR_FAST;
 
   if (fast) renderer.setDitherBw(true);
   renderLines();
