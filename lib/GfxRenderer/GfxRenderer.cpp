@@ -744,22 +744,21 @@ void GfxRenderer::drawPixelDither<Color::DarkGray>(const int x, const int y) con
   drawPixel(x, y, (x + y) % 2 == 0);  // TODO: maybe find a better pattern?
 }
 
-template <bool transparent>
 void GfxRenderer::fillRectDither(const int x, const int y, const int width, const int height, Color color) const {
   switch (color) {
     case Color::Clear:
       break;
     case Color::Black:
-      fillRectImpl<Color::Black, transparent>(x, y, width, height);
+      fillRectImpl<Color::Black>(x, y, width, height);
       break;
     case Color::White:
-      fillRectImpl<Color::White, transparent>(x, y, width, height);
+      fillRectImpl<Color::White>(x, y, width, height);
       break;
     case Color::LightGray:
-      fillRectImpl<Color::LightGray, transparent>(x, y, width, height);
+      fillRectImpl<Color::LightGray>(x, y, width, height);
       break;
     case Color::DarkGray:
-      fillRectImpl<Color::DarkGray, transparent>(x, y, width, height);
+      fillRectImpl<Color::DarkGray>(x, y, width, height);
       break;
   }
 }
@@ -774,6 +773,11 @@ void GfxRenderer::drawDitheredLine(const int x, const int y, const int length) c
   const int lx0 = std::max(0, x);
   const int lx1 = std::min(screenW, x + length);  // exclusive
   if (lx0 >= lx1) return;
+
+  // Strip mode: redirect writes to the active band's scratch buffer.
+  uint8_t* target = getWriteTarget();
+  const int originY = getWriteOriginY();
+  const int writeRows = getWriteRows();
 
   // Rotate the first logical pixel once and derive the constant per-logical-x
   // physical step (rotation is rigid, so the step is ±1 on a single axis).
@@ -792,20 +796,18 @@ void GfxRenderer::drawDitheredLine(const int x, const int y, const int length) c
   const int stepX = dPhyX * 2;
   const int stepY = dPhyY * 2;
   for (int lx = firstEven; lx < lx1; lx += 2) {
-    const uint32_t byteIndex = static_cast<uint32_t>(phyY) * panelWidthBytes + (phyX / 8);
-    frameBuffer[byteIndex] &= ~(1u << (7 - (phyX % 8)));
+    if (phyY >= originY && phyY < originY + writeRows) {
+      const uint32_t byteIndex = static_cast<uint32_t>(phyY - originY) * panelWidthBytes + (phyX / 8);
+      target[byteIndex] &= ~(1u << (7 - (phyX % 8)));
+    }
     phyX += stepX;
     phyY += stepY;
   }
 }
 
-template <Color C, bool transparent>
+template <Color C>
 void GfxRenderer::fillRectImpl(const int x, const int y, const int width, const int height) const {
   if constexpr (C == Color::Clear) return;
-  // Transparent paints only the dither's black dots, so a solid white fill has
-  // nothing to draw — skip it entirely.
-  if constexpr (transparent && C == Color::White) return;
-
   if (width <= 0 || height <= 0) return;
 
   // Clip in logical space.
@@ -826,8 +828,16 @@ void GfxRenderer::fillRectImpl(const int x, const int y, const int width, const 
 
   const int phyX0 = std::min(paX, pbX);
   const int phyX1 = std::max(paX, pbX);  // inclusive
-  const int phyY0 = std::min(paY, pbY);
-  const int phyY1 = std::max(paY, pbY);
+  int phyY0 = std::min(paY, pbY);
+  int phyY1 = std::max(paY, pbY);
+
+  // Strip mode: clip Y range to the active band and redirect writes.
+  uint8_t* target = getWriteTarget();
+  const int originY = getWriteOriginY();
+  const int writeRows = getWriteRows();
+  phyY0 = std::max(phyY0, originY);
+  phyY1 = std::min(phyY1, originY + writeRows - 1);
+  if (phyY0 > phyY1) return;
 
   // Bit/byte layout: MSB-first within a byte, so phyX → bit (7 - (phyX & 7)).
   // Head and tail masks cover only the in-rect bits of the first/last byte.
@@ -841,7 +851,7 @@ void GfxRenderer::fillRectImpl(const int x, const int y, const int width, const 
     // Solid fill. Framebuffer: 0 = black, 1 = white.
     const uint8_t fillByte = (C == Color::Black) ? 0x00u : 0xFFu;
     for (int py = phyY0; py <= phyY1; ++py) {
-      uint8_t* row = frameBuffer + static_cast<int32_t>(py) * panelStride;
+      uint8_t* row = target + static_cast<int32_t>(py - originY) * panelStride;
       if (byteStart == byteEnd) {
         const uint8_t mask = headMask & tailMask;
         if constexpr (C == Color::Black) {
@@ -893,31 +903,34 @@ void GfxRenderer::fillRectImpl(const int x, const int y, const int width, const 
         break;
     }
 
-    for (int py = phyY0; py <= phyY1; ++py) {
-      // Logical coords at bit 7 of the starting byte (phyX = byteStart * 8).
+    // The dither pattern has period 2 in logical space, and each orientation
+    // maps py to logical coords with a fixed parity relationship. The
+    // blackMask byte therefore repeats with period 2 in py. Precompute both
+    // variants outside the row loop to eliminate the per-row switch + 8-bit
+    // construction loop.
+    uint8_t blackMasks[2];
+    for (int parityIdx = 0; parityIdx < 2; ++parityIdx) {
+      const int samplePy = phyY0 + parityIdx;
       int lxBase = 0, lyBase = 0;
       switch (orientation) {
         case Portrait:
-          lxBase = panelHeight - 1 - py;
+          lxBase = panelHeight - 1 - samplePy;
           lyBase = byteStart * 8;
           break;
         case PortraitInverted:
-          lxBase = py;
+          lxBase = samplePy;
           lyBase = panelWidth - 1 - byteStart * 8;
           break;
         case LandscapeClockwise:
           lxBase = panelWidth - 1 - byteStart * 8;
-          lyBase = panelHeight - 1 - py;
+          lyBase = panelHeight - 1 - samplePy;
           break;
         case LandscapeCounterClockwise:
           lxBase = byteStart * 8;
-          lyBase = py;
+          lyBase = samplePy;
           break;
       }
-
-      // Build the row's "black bitmask" by walking the 8 bit positions and
-      // applying the dither rule on the inverse-rotated logical coords.
-      uint8_t blackMask = 0;
+      uint8_t mask = 0;
       for (int b = 0; b < 8; ++b) {
         const int lx = lxBase + b * dlxPerPhyX;
         const int ly = lyBase + b * dlyPerPhyX;
@@ -927,31 +940,21 @@ void GfxRenderer::fillRectImpl(const int x, const int y, const int width, const 
         } else {  // DarkGray
           isBlack = (((lx + ly) & 1) == 0);
         }
-        if (isBlack) blackMask |= static_cast<uint8_t>(1u << (7 - b));
+        if (isBlack) mask |= static_cast<uint8_t>(1u << (7 - b));
       }
-      [[maybe_unused]] const uint8_t whiteMask = static_cast<uint8_t>(~blackMask);
+      blackMasks[samplePy & 1] = mask;
+    }
+
+    for (int py = phyY0; py <= phyY1; ++py) {
+      const uint8_t blackMask = blackMasks[py & 1];
+      const uint8_t whiteMask = static_cast<uint8_t>(~blackMask);
 
       // Dither writes BOTH inks (the slow path called drawPixel for every
       // pixel — setting or clearing — so we must do the same). Inside the
       // rect mask: write whiteMask (1s where white, 0s where black). Outside
       // the rect mask: leave the framebuffer untouched.
-      uint8_t* row = frameBuffer + static_cast<int32_t>(py) * panelStride;
-      if constexpr (transparent) {
-        // Transparent: paint only the pattern's black dots (clear bits to
-        // 0 = black ink) within the rect; white-pattern pixels leave the
-        // background untouched.
-        if (byteStart == byteEnd) {
-          const uint8_t rectMask = headMask & tailMask;
-          row[byteStart] &= static_cast<uint8_t>(~(rectMask & blackMask));
-        } else {
-          row[byteStart] &= static_cast<uint8_t>(~(headMask & blackMask));
-          // Period 2, so blackMask is the same for every full byte in this row.
-          for (int i = byteStart + 1; i < byteEnd; ++i) {
-            row[i] &= static_cast<uint8_t>(~blackMask);
-          }
-          row[byteEnd] &= static_cast<uint8_t>(~(tailMask & blackMask));
-        }
-      } else if (byteStart == byteEnd) {
+      uint8_t* row = target + static_cast<int32_t>(py - originY) * panelStride;
+      if (byteStart == byteEnd) {
         const uint8_t rectMask = headMask & tailMask;
         row[byteStart] = static_cast<uint8_t>((row[byteStart] & ~rectMask) | (rectMask & whiteMask));
       } else {
@@ -965,12 +968,6 @@ void GfxRenderer::fillRectImpl(const int x, const int y, const int width, const 
     }
   }
 }
-
-// fillRectImpl is private and only invoked from fillRect / fillRectDither in
-// this translation unit, so it is instantiated implicitly. fillRectDither is
-// called from other TUs, so its two specializations are instantiated here.
-template void GfxRenderer::fillRectDither<false>(int, int, int, int, Color) const;
-template void GfxRenderer::fillRectDither<true>(int, int, int, int, Color) const;
 
 void GfxRenderer::drawCircle(const int cx, const int cy, const int radius, const Color color) const {
   if (radius <= 0 || color == Color::Clear) return;
@@ -1017,6 +1014,11 @@ void GfxRenderer::fillCircle(const int cx, const int cy, const int radius, const
     }
   }
 }
+
+template void GfxRenderer::fillRectImpl<Color::Black>(int, int, int, int) const;
+template void GfxRenderer::fillRectImpl<Color::White>(int, int, int, int) const;
+template void GfxRenderer::fillRectImpl<Color::LightGray>(int, int, int, int) const;
+template void GfxRenderer::fillRectImpl<Color::DarkGray>(int, int, int, int) const;
 
 void GfxRenderer::maskRoundedRectOutsideCorners(const int x, const int y, const int width, const int height,
                                                 const int radius, const Color color) const {

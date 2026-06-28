@@ -1083,13 +1083,7 @@ void BaseTheme::drawStatusBar(GfxRenderer& renderer, const float bookProgress, c
     renderer.fillRect(barMarginLeft, progressBarY, barWidth, barHeight, true);
   }
 
-  // Draw Bookmark
-  if (showStatusBarTextLane && isPageBookmarked) {
-    const int bookmarkY = textY + 5;
-    drawBookmarkStatusIcon(renderer, leftClusterX, bookmarkY);
-    leftClusterWidth += bookmarkStatusIconWidth + bookmarkStatusIconGap;
-  }
-
+  // Draw Battery
   const bool showBatteryPercentage =
       SETTINGS.hideBatteryPercentage == CrossPointSettings::HIDE_BATTERY_PERCENTAGE::HIDE_NEVER;
   if (SETTINGS.statusBarBattery) {
@@ -1120,6 +1114,16 @@ void BaseTheme::drawStatusBar(GfxRenderer& renderer, const float bookProgress, c
     }
   }
 
+  // Draw Bookmark
+  if (showStatusBarTextLane && isPageBookmarked) {
+    const int bookmarkGap = leftClusterWidth > 0 ? bookmarkStatusIconGap : 0;
+    const int bookmarkX = leftClusterX + leftClusterWidth + bookmarkGap;
+    const int bookmarkY = textY + 5;
+    drawBookmarkStatusIcon(renderer, bookmarkX, bookmarkY);
+    leftClusterWidth += bookmarkStatusIconWidth + bookmarkGap;
+  }
+
+  // Draw Title
   if (!title.empty()) {
     textY -= textYOffset;
     const int rendererableScreenWidth =

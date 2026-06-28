@@ -162,7 +162,8 @@ class GfxRenderer {
   // two opposing corners into physical-framebuffer space once, then walks each
   // physical row with head-mask / middle memset / tail-mask byte writes — no
   // per-pixel rotation, no per-pixel RMW.
-  template <Color color, bool transparent = false>
+
+  template <Color color>
   void fillRectImpl(int x, int y, int width, int height) const;
 
  public:
@@ -269,7 +270,6 @@ class GfxRenderer {
   void maskRoundedRectOutsideCorners(int x, int y, int width, int height, int radius, Color color = Color::White) const;
   void fillRect(int x, int y, int width, int height, bool state = true) const;
 
-  template <bool transparent = false>
   void fillRectDither(int x, int y, int width, int height, Color color) const;
 
 
