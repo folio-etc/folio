@@ -22,7 +22,7 @@ namespace {
 constexpr char LOG_TAG[] = "LIB";
 
 constexpr char CACHE_DIR[] = "/.crosspoint";
-constexpr char BOOKS_ROOT[] = "/Books";
+constexpr char BOOKS_ROOT[] = "/";
 constexpr char LIBRARY_FILE[] = "/.crosspoint/library.bin";
 constexpr char LIBRARY_FILE_TMP[] = "/.crosspoint/library.bin.tmp";
 // Paths live in their own append-only file so they never accumulate in RAM
@@ -277,16 +277,12 @@ bool LibraryIndex::patchAt(uint32_t at, const void* data, size_t size) const {
 // ---- Refresh ----------------------------------------------------------------
 
 bool LibraryIndex::refreshFromSdCard(const IndexProgressFn& onProgress) {
-  if (!Storage.exists(BOOKS_ROOT)) {
-    LOG_DBG(LOG_TAG, "%s not present — empty library", BOOKS_ROOT);
-    const bool changed = !entries.empty();
+  if (!Storage.ensureDirectoryExists(CACHE_DIR)) {
+    LOG_ERR(LOG_TAG, "failed to create %s", CACHE_DIR);
+
     entries.clear();
     arenaReset();
     loaded = true;
-    if (changed) {
-      saveToFile();
-      Storage.remove(LIBRARY_PATHS_FILE);
-    }
     return true;
   }
 
