@@ -9,6 +9,7 @@
 
 #include <Xtc.h>
 
+#include <memory>
 #include <string>
 #include <utility>
 
@@ -19,6 +20,12 @@ class XtcReaderActivity final : public Activity {
 
   uint32_t currentPage = 0;
   int pagesUntilFullRefresh = 0;
+
+  // Cached raw page data, reused across re-renders of the same page (e.g. GlobalMenu
+  // re-composites) so we don't re-read from SD or re-allocate every frame.
+  std::unique_ptr<uint8_t[]> pageBuffer_;
+  size_t pageBufferCap_ = 0;  // allocated capacity of pageBuffer_
+  int loadedPageFor_ = -1;    // page index currently held in pageBuffer_ (-1 = none)
 
   enum class StatusBarOverlayPosition { Bottom, Top };
   struct StatusBarInfo {

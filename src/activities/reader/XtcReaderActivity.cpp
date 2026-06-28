@@ -11,6 +11,7 @@
 #include <GfxRenderer.h>
 #include <HalStorage.h>
 #include <I18n.h>
+#include <Memory.h>
 
 #include <algorithm>
 
@@ -143,8 +144,13 @@ void XtcReaderActivity::render(RenderLock&&) {
     return;
   }
 
+  // Only persist progress when the page actually changed. Menu re-composites redraw
+  // the same page every frame; skipping the save avoids an SD write per keypress.
+  const bool pageChanged = loadedPageFor_ != static_cast<int>(currentPage);
   renderPage();
-  saveProgress();
+  if (pageChanged && loadedPageFor_ == static_cast<int>(currentPage)) {
+    saveProgress();
+  }
 }
 
 XtcReaderActivity::StatusBarInfo XtcReaderActivity::getStatusBarInfo() const {
@@ -254,45 +260,49 @@ void XtcReaderActivity::renderPage() {
     pageBufferSize = ((pageWidth + 7) / 8) * pageHeight;
   }
 
-  // Allocate page buffer
-  uint8_t* pageBuffer = static_cast<uint8_t*>(malloc(pageBufferSize));
-  if (!pageBuffer) {
-    LOG_ERR("XTR", "Failed to allocate page buffer (%lu bytes)", pageBufferSize);
-    renderer.clearScreen();
-    renderer.drawCenteredText(
-      UI_12_FONT_ID, 300, tr(STR_MEMORY_ERROR), true, EpdFontFamily::BOLD
-    );
-    renderer.displayBuffer();
-    return;
+  // Load the page into the cache only when it changed — re-composites under the
+  // GlobalMenu redraw the same page, so this avoids an SD read + realloc per frame.
+  if (loadedPageFor_ != static_cast<int>(currentPage)) {
+    if (pageBufferCap_ < pageBufferSize) {
+      pageBuffer_ = makeUniqueNoThrow<uint8_t[]>(pageBufferSize);
+      pageBufferCap_ = pageBuffer_ ? pageBufferSize : 0;
+    }
+    if (!pageBuffer_) {
+      LOG_ERR("XTR", "Failed to allocate page buffer (%lu bytes)", pageBufferSize);
+      renderer.clearScreen();
+      renderer.drawCenteredText(
+        UI_12_FONT_ID, 300, tr(STR_MEMORY_ERROR), true, EpdFontFamily::BOLD
+      );
+      renderer.displayBuffer();
+      return;
+    }
+
+    const size_t bytesRead = xtc->loadPage(currentPage, pageBuffer_.get(), pageBufferCap_);
+    if (bytesRead == 0) {
+      LOG_ERR(
+        "XTR",
+        "Failed to load page %lu: bufferSize=%lu bitDepth=%u error=%s",
+        currentPage,
+        pageBufferSize,
+        bitDepth,
+        xtc::errorToString(xtc->getLastError())
+      );
+      renderer.clearScreen();
+      renderer.drawCenteredText(
+        UI_12_FONT_ID, 300, tr(STR_PAGE_LOAD_ERROR), true, EpdFontFamily::BOLD
+      );
+      renderer.displayBuffer();
+      return;
+    }
+    loadedPageFor_ = static_cast<int>(currentPage);
   }
 
-  // Load page data
-  size_t bytesRead = xtc->loadPage(currentPage, pageBuffer, pageBufferSize);
-  if (bytesRead == 0) {
-    LOG_ERR(
-      "XTR",
-      "Failed to load page %lu: bufferSize=%lu bitDepth=%u error=%s",
-      currentPage,
-      pageBufferSize,
-      bitDepth,
-      xtc::errorToString(xtc->getLastError())
-    );
-    free(pageBuffer);
-    renderer.clearScreen();
-    renderer.drawCenteredText(
-      UI_12_FONT_ID, 300, tr(STR_PAGE_LOAD_ERROR), true, EpdFontFamily::BOLD
-    );
-    renderer.displayBuffer();
-    return;
-  }
+  uint8_t* pageBuffer = pageBuffer_.get();
 
   // Clear screen first
   renderer.clearScreen();
 
-  // Copy page bitmap using GfxRenderer's drawPixel
-  // XTC/XTCH pages are pre-rendered with status bar included, so render full page
-  const uint16_t maxSrcY = pageHeight;
-
+  // XTC/XTCH pages are pre-rendered with status bar included, so render the full page.
   if (bitDepth == 2) {
     // XTH 2-bit mode: Two bit planes, column-major order
     // - Columns scanned right to left (x = width-1 down to 0)
@@ -402,8 +412,6 @@ void XtcReaderActivity::renderPage() {
     // Cleanup grayscale buffers with current frame buffer
     renderer.cleanupGrayscaleWithFrameBuffer();
 
-    free(pageBuffer);
-
     LOG_DBG(
       "XTR",
       "Rendered page %lu/%lu (2-bit grayscale)",
@@ -412,28 +420,12 @@ void XtcReaderActivity::renderPage() {
     );
     return;
   } else {
-    // 1-bit mode: 8 pixels per byte, MSB first
+    // 1-bit mode: row-major, 8px/byte, MSB-first, 0=black/1=white — exactly the
+    // blitImage1Bit source convention, so blit the whole page in one fast,
+    // orientation-aware pass instead of a per-pixel loop.
     const size_t srcRowBytes = (pageWidth + 7) / 8;  // 60 bytes for 480 width
-
-    for (uint16_t srcY = 0; srcY < maxSrcY; srcY++) {
-      const size_t srcRowStart = srcY * srcRowBytes;
-
-      for (uint16_t srcX = 0; srcX < pageWidth; srcX++) {
-        // Read source pixel (MSB first, bit 7 = leftmost pixel)
-        const size_t srcByte = srcRowStart + srcX / 8;
-        const size_t srcBit = 7 - (srcX % 8);
-        const bool isBlack =
-          !((pageBuffer[srcByte] >> srcBit) & 1);  // XTC: 0 = black, 1 = white
-
-        if (isBlack) {
-          renderer.drawPixel(srcX, srcY, true);
-        }
-      }
-    }
+    renderer.blitImage1Bit(pageBuffer, srcRowBytes, pageWidth, pageHeight, 0, 0);
   }
-  // White pixels are already cleared by clearScreen()
-
-  free(pageBuffer);
 
   if (
     SETTINGS.xtcStatusBarMode ==
