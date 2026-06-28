@@ -19,8 +19,8 @@ class GlobalMenu {
     // when the user presses Confirm. Navigation routes here while entered.
     CascadingPopupMenu popup_;
 
-    void renderNavBody(Rect area);
-    void renderNavItems(Rect area);
+    void renderNavBody(Rect area, const std::vector<MenuRegistryEntry>& top, const std::vector<MenuRegistryEntry>& btm);
+    void renderNavItems(Rect area, const std::vector<MenuRegistryEntry>& top, const std::vector<MenuRegistryEntry>& btm);
     // Draw a single nav slot: the selection indicator (when selected) and the icon.
     void renderSlot(const MenuRegistryEntry& entry, Rect slot, bool selected);
 
@@ -33,7 +33,7 @@ class GlobalMenu {
     // selection has no popup items. Call on open and on every selection change.
     void syncPopupToSelection();
     // The screen rect of the currently-selected nav slot within `nav`.
-    Rect selectedSlotRect(Rect nav);
+    Rect selectedSlotRect(Rect nav, const std::vector<MenuRegistryEntry>& top, const std::vector<MenuRegistryEntry>& btm);
     // Close the whole menu (and its popup), resetting selection.
     void closeMenu();
 

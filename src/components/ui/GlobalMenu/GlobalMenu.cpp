@@ -188,11 +188,14 @@ void GlobalMenu::render() {
   const auto nav = flex::inset(sections[0], flex::xy(td.globalMenu.paddingX, 0));
   const auto popupArea = sections[1];
 
-  renderNavBody(nav);
-  renderNavItems(nav);
+  const auto topEntries = getTopEntries();
+  const auto bottomEntries = getBottomEntries();
+
+  renderNavBody(nav, topEntries, bottomEntries);
+  renderNavItems(nav, topEntries, bottomEntries);
 
   if (popup_.isOpen()) {
-    const Rect slot = selectedSlotRect(nav);
+    const Rect slot = selectedSlotRect(nav, topEntries, bottomEntries);
     const bool isBottom = selectedIndex >= getTopEntries().size();
 
     const CascadingPopupMenu::Anchor anchor{ 
@@ -210,9 +213,11 @@ void GlobalMenu::render() {
   renderer.displayBuffer();
 }
 
-Rect GlobalMenu::selectedSlotRect(Rect nav) {
-  const auto top = getTopEntries();
-  const auto bottom = getBottomEntries();
+Rect GlobalMenu::selectedSlotRect(
+  Rect nav,
+  const std::vector<MenuRegistryEntry>& top, 
+  const std::vector<MenuRegistryEntry>& btm
+) {
   const int slotSize = nav.width;
 
   if (selectedIndex < top.size()) {
@@ -221,14 +226,31 @@ Rect GlobalMenu::selectedSlotRect(Rect nav) {
 
   // Bottom entries are anchored to the bottom of the nav, index 0 highest.
   const int bi = static_cast<int>(selectedIndex - top.size());
-  const int totalBottomHeight = static_cast<int>(bottom.size()) * slotSize;
+  const int totalBottomHeight = static_cast<int>(btm.size()) * slotSize;
   const int bottomBaseY = nav.y + nav.height - totalBottomHeight;
   return Rect{nav.x, bottomBaseY + bi * slotSize, slotSize, slotSize};
 }
 
-void GlobalMenu::renderNavBody(Rect nav) {
+void GlobalMenu::renderNavBody(  
+  Rect nav, 
+  const std::vector<MenuRegistryEntry>& top, 
+  const std::vector<MenuRegistryEntry>& btm
+) {
   const auto& td = *GUI.getData();
   const int radius = td.globalMenu.cornerRadius;
+
+  // restrict to the size of the bottom entries if we don't have any top ones
+  if(top.empty()) {
+    size_t btmCount = btm.size();
+    int height = btmCount * nav.width;
+
+    nav = {
+      .x = nav.x,
+      .y = (nav.y + nav.height - height),
+      .width = nav.width,
+      .height = height
+    };
+  }
 
   if (td.globalMenu.shadowOffsetX != 0 || td.globalMenu.shadowOffsetY != 0) {
     const Rect sh = flex::offset(nav, td.globalMenu.shadowOffsetX, td.globalMenu.shadowOffsetY);
@@ -241,30 +263,31 @@ void GlobalMenu::renderNavBody(Rect nav) {
   }
 }
 
-void GlobalMenu::renderNavItems(Rect body) {
-  const auto entries = getTopEntries();
-  const auto bottomEntries = getBottomEntries();
-
+void GlobalMenu::renderNavItems(
+  Rect body, 
+  const std::vector<MenuRegistryEntry>& top, 
+  const std::vector<MenuRegistryEntry>& btm
+) {
   const uint16_t slotSize = body.width;
 
-  // --- Main entries (stacked from top) ---
-  for (uint8_t i = 0; i < entries.size(); ++i) {
+  // --- Top entries (stacked from top) ---
+  for (uint8_t i = 0; i < top.size(); ++i) {
     const Rect slot = { .x = body.x, .y = body.y + i * slotSize, .width = slotSize, .height = slotSize };
-    renderSlot(entries[i], slot, i == selectedIndex);
+    renderSlot(top[i], slot, i == selectedIndex);
   }
 
   // --- Bottom entries (anchored to bottom, top-to-bottom: index 0 highest) ---
-  const uint16_t totalBottomHeight = bottomEntries.size() * slotSize;
+  const uint16_t totalBottomHeight = btm.size() * slotSize;
   const uint16_t bottomBaseY = body.y + body.height - totalBottomHeight;
 
-  for (size_t i = 0; i < bottomEntries.size(); ++i) {
+  for (size_t i = 0; i < btm.size(); ++i) {
     const Rect slot = {
       .x = body.x,
       .y = static_cast<int>(bottomBaseY + i * slotSize),
       .width = slotSize,
       .height = slotSize
     };
-    renderSlot(bottomEntries[i], slot, (i + entries.size()) == selectedIndex);
+    renderSlot(btm[i], slot, (i + top.size()) == selectedIndex);
   }
 }
 
