@@ -3,19 +3,16 @@
 #include <GfxRenderer.h>
 #include <I18n.h>
 
-#include <algorithm>
 #include <cstring>
 #include <map>
+#include <string>
+#include <vector>
 
 #include "CrossPointSettings.h"
 #include "LibraryIndex.h"
 #include "MappedInputManager.h"
-#include "activities/ActivityManager.h"
-#include "components/UITheme.h"
-#include "components/ui/ButtonHints/ButtonHints.h"
+#include "components/ui/List/List.h"
 #include "components/ui/UIPage/UIPage.h"
-#include "fontIds.h"
-#include "util/Flex.h"
 
 namespace {
 // "1 book" / "N books" — matches the prototype's right-aligned row-meta count.
@@ -37,8 +34,6 @@ const char* CollectionGroupActivity::headerTitle() const {
 }
 
 void CollectionGroupActivity::buildGroups() {
-  groups.clear();
-
   std::map<std::string, int> counts;  // ordered by name, dedupes
   const int count = LIBRARY_INDEX.getBookCount();
   for (int i = 0; i < count; ++i) {
@@ -62,10 +57,28 @@ void CollectionGroupActivity::buildGroups() {
     counts[std::string(field)]++;
   }
 
-  groups.reserve(counts.size());
+  std::vector<ListItem> items;
+  items.reserve(counts.size());
   for (auto& kv : counts) {
-    groups.emplace_back(kv.first, kv.second);
+    ListItem item;
+    item.title = kv.first;
+    item.value = bookCountLabel(kv.second);
+    // Selecting a group filters the library to it and returns to the Library.
+    item.onSelect = [this, name = kv.first] {
+      SETTINGS.libraryViewKind = mode;
+      SETTINGS.libraryViewCollectionId = 0;
+      strncpy(SETTINGS.libraryViewName, name.c_str(), sizeof(SETTINGS.libraryViewName) - 1);
+      SETTINGS.libraryViewName[sizeof(SETTINGS.libraryViewName) - 1] = '\0';
+      SETTINGS.saveToFile();
+      // Default (not-cancelled) result tells the parent a group was chosen, so
+      // the return propagates through CollectionsActivity back to the Library.
+      finish();
+    };
+    items.push_back(std::move(item));
   }
+
+  list.valueMetaStyle = true;  // smaller italic meta column (count)
+  list.setItems(std::move(items));
 }
 
 void CollectionGroupActivity::onEnter() {
@@ -74,7 +87,6 @@ void CollectionGroupActivity::onEnter() {
     LIBRARY_INDEX.loadFromFile();
   }
   buildGroups();
-  selectedIndex = 0;
   requestUpdate();
 }
 
@@ -91,27 +103,17 @@ void CollectionGroupActivity::loop() {
   }
 
   if (mappedInput.wasPressed(MappedInputManager::Button::Confirm)) {
-    if (selectedIndex >= 0 && selectedIndex < static_cast<int>(groups.size())) {
-      SETTINGS.libraryViewKind = mode;
-      SETTINGS.libraryViewCollectionId = 0;
-      strncpy(SETTINGS.libraryViewName, groups[selectedIndex].first.c_str(), sizeof(SETTINGS.libraryViewName) - 1);
-      SETTINGS.libraryViewName[sizeof(SETTINGS.libraryViewName) - 1] = '\0';
-      SETTINGS.saveToFile();
-      // Default (not-cancelled) result tells the parent a group was chosen, so
-      // the return propagates through CollectionsActivity back to the Library.
-      finish();
-    }
+    list.triggerSelected();
     return;
   }
 
-  const int itemCount = static_cast<int>(groups.size());
-  if (itemCount > 0) {
-    buttonNavigator.onNext([this, itemCount] {
-      selectedIndex = ButtonNavigator::nextIndex(selectedIndex, itemCount);
+  if (list.size() > 0) {
+    buttonNavigator.onNext([this] {
+      list.down();
       requestUpdate();
     });
-    buttonNavigator.onPrevious([this, itemCount] {
-      selectedIndex = ButtonNavigator::previousIndex(selectedIndex, itemCount);
+    buttonNavigator.onPrevious([this] {
+      list.up();
       requestUpdate();
     });
   }
@@ -120,26 +122,10 @@ void CollectionGroupActivity::loop() {
 void CollectionGroupActivity::render(RenderLock&&) {
   renderer.clearScreen();
 
-  const auto& td = *GUI.getData();
-  const Rect screen{0, 0, renderer.getScreenWidth(), renderer.getScreenHeight()};
   const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_SELECT), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
+  const Rect body = UIPage::render(renderer, headerTitle(), nullptr, labels);
 
-  const auto body = UIPage::render(
-      renderer,
-      headerTitle(),
-      nullptr,
-      labels
-  );
-
-  if (groups.empty()) {
-    const int y = body.y + (body.height - renderer.getLineHeight(UI_10_FONT_ID)) / 2;
-  } else {
-    GUI.drawList(
-        renderer, body, static_cast<int>(groups.size()), selectedIndex,
-        [this](int index) { return groups[index].first; }, nullptr, nullptr,
-        [this](int index) { return bookCountLabel(groups[index].second); }, false, nullptr, nullptr, nullptr,
-        /*valueMetaStyle=*/true);
-  }
+  list.render(renderer, body);
 
   renderer.displayBuffer();
 }

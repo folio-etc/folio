@@ -1,11 +1,9 @@
 #pragma once
 
 #include <cstdint>
-#include <string>
-#include <utility>
-#include <vector>
 
 #include "activities/Activity.h"
+#include "components/ui/List/List.h"
 #include "util/ButtonNavigator.h"
 
 // Group list for one auto-group axis (series / author / genre). Computes the
@@ -23,10 +21,9 @@ class CollectionGroupActivity final : public Activity {
   void render(RenderLock&&) override;
 
  private:
+  List list;
   ButtonNavigator buttonNavigator;
-  int selectedIndex = 0;
   uint8_t mode;
-  std::vector<std::pair<std::string, int>> groups;  // name, count (sorted by name)
 
   void buildGroups();
   const char* headerTitle() const;
