@@ -615,7 +615,7 @@ std::vector<MenuRegistryEntry> LibraryActivity::getGlobalMenuEntries() {
     }
   };
 
-  if (!gridView_.isBackTileSelected()) {
+  if (!gridView_.isBackTileSelected() && !gridView_.isEmpty()) {
     entries.insert(
       entries.begin(),
       MenuRegistryEntry{
