@@ -19,13 +19,28 @@ bool List::isSelectable(int index) const {
   return index >= 0 && index < static_cast<int>(items_.size()) && !items_[index].header;
 }
 
+size_t List::selectFirstValid() {
+  for(size_t i = 0; const auto& item : items_) {
+    if(!item.header) { 
+      selected_ = i; 
+      return i;
+    }
+
+    ++i;
+  }
+
+  selected_ = 0;
+  return 0;
+}
+
 void List::setSelectedIndex(int index) {
-  if (items_.empty()) {
-    selected_ = 0;
+  size_t toSelect;
+  if(!isSelectable(index)) {
+    selectFirstValid();
     return;
   }
-  const int last = static_cast<int>(items_.size()) - 1;
-  selected_ = std::min(std::max(index, 0), last);
+
+  selected_ = index;
 }
 
 void List::up() {

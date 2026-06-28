@@ -55,6 +55,9 @@ class List {
   bool highlightValue = false;
   bool valueMetaStyle = false;
 
+  // Select the first selectable field. Returns the selected index.
+  size_t selectFirstValid();
+
  private:
   std::vector<ListItem> items_;
   int selected_ = 0;

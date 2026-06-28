@@ -7,6 +7,8 @@
 
 #include "stores/util/JsonStore.h"
 
+class LibraryIndex;
+
 // A user-created manual collection: a named set of books, referenced by the
 // same path hash the rest of the cache uses (std::hash<path>) so moving a file
 // keeps it in its collections. Persisted to /.crosspoint/collections.json.
@@ -56,6 +58,18 @@ class CollectionStore : public JsonStore<CollectionsFile> {
 
   void addBookToCollection(uint32_t bookHash, uint32_t collectionId);
   void removeBookFromCollection(uint32_t bookHash, uint32_t collectionId);
+
+  // Which auto-group axes have any backing metadata in the library.
+  struct LibraryAxes {
+    bool hasSeries = false;
+    bool hasAuthor = false;
+    bool hasGenre = false;
+  };
+
+  // Drop member hashes that no longer exist in the library (books the user
+  // removed), so counts and views don't report ghosts. Persists if anything
+  // was pruned. The same index pass reports which auto-group axes are populated.
+  LibraryAxes pruneMissing(const LibraryIndex& index);
 };
 
 #define COLLECTION_STORE CollectionStore::getInstance()

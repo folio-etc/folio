@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "CrossPointSettings.h"
+#include "LibraryIndex.h"
 #include "MappedInputManager.h"
 #include "activities/home/CollectionGroupActivity.h"
 #include "activities/util/KeyboardEntryActivity.h"
@@ -35,9 +36,11 @@ void CollectionsActivity::buildList() {
     };
     return item;
   };
-  items.push_back(groupItem(tr(STR_BY_SERIES), CrossPointSettings::LIB_VIEW_SERIES));
-  items.push_back(groupItem(tr(STR_BY_AUTHOR), CrossPointSettings::LIB_VIEW_AUTHOR));
-  items.push_back(groupItem(tr(STR_BY_GENRE), CrossPointSettings::LIB_VIEW_GENRE));
+  // Only offer an auto-group axis if at least one book carries that metadata
+  // (computed by pruneMissing's index pass in onEnter).
+  if (axes.hasSeries) items.push_back(groupItem(tr(STR_BY_SERIES), CrossPointSettings::LIB_VIEW_SERIES));
+  if (axes.hasAuthor) items.push_back(groupItem(tr(STR_BY_AUTHOR), CrossPointSettings::LIB_VIEW_AUTHOR));
+  if (axes.hasGenre) items.push_back(groupItem(tr(STR_BY_GENRE), CrossPointSettings::LIB_VIEW_GENRE));
 
   ListItem header;
   header.title = tr(STR_YOUR_COLLECTIONS);
@@ -95,6 +98,7 @@ void CollectionsActivity::onGroupPicked(const ActivityResult& res) {
 void CollectionsActivity::onEnter() {
   Activity::onEnter();
   COLLECTION_STORE.loadFromFile();
+  axes = COLLECTION_STORE.pruneMissing(LIBRARY_INDEX);
   buildList();
   requestUpdate();
 }

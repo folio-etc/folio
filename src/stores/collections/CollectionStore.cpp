@@ -3,6 +3,9 @@
 #include <Logging.h>
 
 #include <algorithm>
+#include <unordered_set>
+
+#include "LibraryIndex.h"
 
 namespace {
 constexpr char LOG_TAG[] = "COL";
@@ -87,4 +90,28 @@ void CollectionStore::removeBookFromCollection(uint32_t bookHash, uint32_t colle
   if (removed != 0) {
     saveToFile();
   }
+}
+
+CollectionStore::LibraryAxes CollectionStore::pruneMissing(const LibraryIndex& index) {
+  LibraryAxes axes;
+  std::unordered_set<uint32_t> live;
+  const int count = index.getBookCount();
+  live.reserve(count);
+  for (int i = 0; i < count; ++i) {
+    const BookView b = index.getAt(i);
+    live.insert(b.pathHash);
+    axes.hasSeries = axes.hasSeries || !b.series.empty();
+    axes.hasAuthor = axes.hasAuthor || !b.author.empty();
+    axes.hasGenre = axes.hasGenre || !b.genre.empty();
+  }
+
+  size_t pruned = 0;
+  for (auto& c : data_.collections) {
+    pruned += std::erase_if(c.members, [&live](uint32_t h) { return live.count(h) == 0; });
+  }
+  if (pruned != 0) {
+    LOG_DBG(LOG_TAG, "pruned %d stale member(s)", static_cast<int>(pruned));
+    saveToFile();
+  }
+  return axes;
 }

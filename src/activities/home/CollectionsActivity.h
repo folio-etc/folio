@@ -2,6 +2,7 @@
 
 #include "activities/Activity.h"
 #include "components/ui/List/List.h"
+#include "stores/collections/CollectionStore.h"
 #include "util/ButtonNavigator.h"
 
 // Full-screen Collections list: auto groups (By Series / By Author / By Genre)
@@ -21,6 +22,7 @@ class CollectionsActivity final : public Activity {
  private:
   List list;
   ButtonNavigator buttonNavigator;
+  CollectionStore::LibraryAxes axes;  // populated in onEnter, read by buildList
 
   void buildList();
   void promptNewCollection();
