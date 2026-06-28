@@ -16,8 +16,9 @@ struct BookProgress {
   uint16_t pageCount = 0;
 };
 
-// On-disk payload: field name is the JSON key (PFR-reflected).
-struct ProgressFile {
+// On-disk payload: field name is the JSON key (PFR-reflected). Named distinctly from
+// the per-book `ProgressFile.h` namespace so both can coexist in one translation unit.
+struct ProgressStoreData {
   std::vector<BookProgress> entries;
 };
 
@@ -25,7 +26,7 @@ struct ProgressFile {
 // file read serves the whole library shelf, replacing the old per-book
 // progress.bin open during indexing. Lookup is a linear scan: trivial against
 // the 500-book cap and dwarfed by the SD I/O it removed.
-class ProgressStore : public JsonStore<ProgressFile> {
+class ProgressStore : public JsonStore<ProgressStoreData> {
   static ProgressStore instance;
   ProgressStore() : JsonStore("/.crosspoint/progress.json", "PRG") {}
 
@@ -37,7 +38,9 @@ class ProgressStore : public JsonStore<ProgressFile> {
 
   // Upsert the book's position and persist. No-op (no write) when unchanged,
   // honoring the SD/SPIFFS write-throttling rule.
-  void put(uint32_t pathHash, uint16_t spineIndex, uint16_t pageNumber, uint16_t pageCount);
+  void put(
+    uint32_t pathHash, uint16_t spineIndex, uint16_t pageNumber, uint16_t pageCount
+  );
 };
 
 #define PROGRESS_STORE ProgressStore::getInstance()

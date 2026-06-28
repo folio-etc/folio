@@ -12,11 +12,31 @@ namespace {
 constexpr char LOG_TAG[] = "COVP";
 }  // namespace
 
-void CoverPrefetcher::thumbPath(uint32_t pathHash, char* out, std::size_t outSize) {
+void CoverPrefetcher::thumbPath(
+  uint32_t pathHash, uint8_t format, char* out, std::size_t outSize
+) {
+  // Cache dir prefix per format (Epub/Xtc share the thumb_<h>.bmp convention; the hash
+  // is the same std::hash<path> all three subsystems agree on — see util/PathHash.h).
+  const char* prefix = nullptr;
+  switch (static_cast<BookFormat>(format)) {
+    case BookFormat::Epub:
+      prefix = "epub";
+      break;
+    case BookFormat::Xtc:
+      prefix = "xtc";
+      break;
+    case BookFormat::Txt:
+      break;  // no thumbnail — placeholder
+  }
+  if (prefix == nullptr) {
+    if (outSize > 0) out[0] = '\0';
+    return;
+  }
   snprintf(
     out,
     outSize,
-    "/.crosspoint/epub_%lu/thumb_%d.bmp",
+    "/.crosspoint/%s_%lu/thumb_%d.bmp",
+    prefix,
     static_cast<unsigned long>(pathHash),
     LibraryIndex::THUMB_HEIGHT
   );
@@ -27,13 +47,13 @@ bool CoverPrefetcher::buildThumbPath(
 ) const {
   if (out == nullptr || outSize < 64) return false;
   const int idx = static_cast<int>(page) * perPage_ + static_cast<int>(slot);
-  const std::optional<uint32_t> hash = resolver_(idx);
-  if (!hash) {
+  const std::optional<CoverRef> ref = resolver_(idx);
+  if (!ref) {
     out[0] = '\0';
     return false;
   }
-  thumbPath(*hash, out, outSize);
-  return true;
+  thumbPath(ref->hash, ref->format, out, outSize);
+  return out[0] != '\0';  // empty path (e.g. txt has no thumb) → no cover to fetch
 }
 
 void CoverPrefetcher::start(int coverBoxW, int coverBoxH) {

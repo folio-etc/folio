@@ -8,6 +8,8 @@
 #include <Logging.h>
 #include <Memory.h>
 #include <Serialization.h>
+#include <Txt.h>
+#include <Xtc.h>
 
 #include <algorithm>
 #include <cctype>
@@ -35,7 +37,8 @@ constexpr uint32_t LIBRARY_FILE_MAGIC = 0x424C5058u;
 // v6: compact records + a RAM string arena for title/author/series/genre, with
 // `path` moved to a separate on-SD file (read via getPath). Old caches (<=v5)
 // fail the version check and trigger a clean rescan.
-constexpr uint8_t LIBRARY_FILE_VERSION = 6;
+// v7: per-entry `format` byte (BookFormat) so non-EPUB books (txt/xtc) index too.
+constexpr uint8_t LIBRARY_FILE_VERSION = 7;
 
 // library.bin layout: [header][fixed entry table][arena blob].
 // Header: magic u32, version u8, reserved[3], bookCount u32.
@@ -43,9 +46,10 @@ constexpr uint32_t HEADER_SIZE = 12;
 // Fixed record (so a single field can be patched in place by byte offset):
 //   pathHash u32 @0, openSequence u32 @4, pathOffset u32 @8,
 //   progressSpineIndex u16 @12, spineCount u16 @14, seriesIndex u16 @16,
-//   titleLen u16 @18, authorLen u16 @20, seriesLen u16 @22, genreLen u16 @24.
+//   format u8 @18, titleLen u16 @19, authorLen u16 @21, seriesLen u16 @23,
+//   genreLen u16 @25.
 //   pathOffset addresses library_paths.bin, not library.bin.
-constexpr uint32_t ENTRY_RECORD_SIZE = 26;
+constexpr uint32_t ENTRY_RECORD_SIZE = 27;
 constexpr uint32_t REC_OPENSEQ_OFFSET = 4;
 constexpr uint32_t REC_PROGRESS_OFFSET = 12;
 
@@ -65,12 +69,15 @@ struct DirFrame {
   std::string path;
 };
 
-std::string epubLabel(const std::string& path) {
+// Filename without directory or a recognized book extension. Used for progress
+// labels and as the TXT/MD display title (those formats carry no metadata title).
+std::string bookLabel(const std::string& path) {
   const size_t slash = path.find_last_of('/');
   const size_t start = (slash == std::string::npos) ? 0 : slash + 1;
-  size_t end = path.size();
-  if (end - start >= 5 && path.compare(end - 5, 5, ".epub") == 0) end -= 5;
-  return path.substr(start, end - start);
+  std::string name = path.substr(start);
+  const size_t dot = name.find_last_of('.');
+  if (dot != std::string::npos) name.erase(dot);
+  return name;
 }
 
 // const char* -> string_view (the arena guarantees null-termination).
@@ -143,7 +150,9 @@ bool LibraryIndex::loadFromFile() {
     return false;
   }
   if (bookCount > static_cast<uint32_t>(MAX_LIBRARY_BOOKS)) {
-    LOG_ERR(LOG_TAG, "library.bin: bookCount %u exceeds cap %d", bookCount, MAX_LIBRARY_BOOKS);
+    LOG_ERR(
+      LOG_TAG, "library.bin: bookCount %u exceeds cap %d", bookCount, MAX_LIBRARY_BOOKS
+    );
     return false;
   }
 
@@ -164,6 +173,7 @@ bool LibraryIndex::loadFromFile() {
     serialization::readPod(f, e.progressSpineIndex);
     serialization::readPod(f, e.spineCount);
     serialization::readPod(f, e.seriesIndex);
+    serialization::readPod(f, e.format);
     serialization::readPod(f, l.title);
     serialization::readPod(f, l.author);
     serialization::readPod(f, l.series);
@@ -233,6 +243,7 @@ bool LibraryIndex::saveToFile() {
     serialization::writePod(f, e.progressSpineIndex);
     serialization::writePod(f, e.spineCount);
     serialization::writePod(f, e.seriesIndex);
+    serialization::writePod(f, e.format);
     serialization::writePod(f, titleLen);
     serialization::writePod(f, authorLen);
     serialization::writePod(f, seriesLen);
@@ -310,9 +321,9 @@ bool LibraryIndex::refreshFromSdCard(const IndexProgressFn& onProgress) {
   stack.reserve(MAX_TRAVERSAL_DEPTH);
   stack.push_back({std::move(root), BOOKS_ROOT});
 
-  // --- Pass 1: gather candidate EPUB paths in one cheap directory walk. ---
-  std::vector<std::string> epubPaths;
-  epubPaths.reserve(previousCount + 16);
+  // --- Pass 1: gather candidate book paths in one cheap directory walk. ---
+  std::vector<std::string> bookPaths;
+  bookPaths.reserve(previousCount + 16);
 
   while (!stack.empty()) {
     DirFrame& frame = stack.back();
@@ -339,37 +350,49 @@ bool LibraryIndex::refreshFromSdCard(const IndexProgressFn& onProgress) {
       continue;
     }
 
-    if (!FsHelpers::hasEpubExtension(std::string_view{nameBuf})) {
+    const std::string_view nameView{nameBuf};
+    if (
+      !FsHelpers::hasEpubExtension(nameView) && !FsHelpers::hasTxtExtension(nameView) &&
+      !FsHelpers::hasMarkdownExtension(nameView) && !FsHelpers::hasXtcExtension(nameView)
+    ) {
       continue;
     }
 
-    if (epubPaths.size() >= static_cast<size_t>(MAX_LIBRARY_BOOKS)) {
-      LOG_ERR(LOG_TAG, "Hit MAX_LIBRARY_BOOKS=%d; skipping remaining EPUBs", MAX_LIBRARY_BOOKS);
+    if (bookPaths.size() >= static_cast<size_t>(MAX_LIBRARY_BOOKS)) {
+      LOG_ERR(
+        LOG_TAG, "Hit MAX_LIBRARY_BOOKS=%d; skipping remaining books", MAX_LIBRARY_BOOKS
+      );
       break;
     }
 
-    epubPaths.push_back(frame.path + "/" + nameBuf);
+    bookPaths.push_back(frame.path + "/" + nameBuf);
   }
 
-  // Now the exact count is known: size the entry vector once (the small 18 B
-  // records are contiguous, but reserve avoids geometric-growth reallocations).
-  entries.reserve(epubPaths.size());
+  // Now the exact count is known: size the entry vector once (the small records
+  // are contiguous, but reserve avoids geometric-growth reallocations).
+  entries.reserve(bookPaths.size());
 
   // --- Partition: reuse cached entries for known books, collect the rest.
   // Reused entries keep their existing pathOffset (into library_paths.bin), so
   // they cost no path I/O here. ---
   std::vector<std::string> newPaths;
   bool changed = false;
-  for (auto& path : epubPaths) {
+  for (auto& path : bookPaths) {
     const uint32_t h = hashPath(path);
     auto it = existingByHash.find(h);
     if (it != existingByHash.end()) {
       LibraryEntry e = std::move(it->second);
       existingByHash.erase(it);
       const uint16_t oldProgress = e.progressSpineIndex;
+      const uint16_t oldSpineCount = e.spineCount;
       const BookProgress* prog = PROGRESS_STORE.find(h);
       e.progressSpineIndex = prog ? prog->spineIndex : 0;
-      if (e.progressSpineIndex != oldProgress) {
+      // TXT has no intrinsic page count: it's only known once the reader paginates
+      // and writes it to the store, so refresh it here too (EPUB/XTC keep theirs).
+      if (e.format == static_cast<uint8_t>(BookFormat::Txt)) {
+        e.spineCount = prog ? prog->pageCount : 0;
+      }
+      if (e.progressSpineIndex != oldProgress || e.spineCount != oldSpineCount) {
         changed = true;
       }
       entries.push_back(e);
@@ -404,25 +427,51 @@ bool LibraryIndex::refreshFromSdCard(const IndexProgressFn& onProgress) {
   // --- Pass 2: index the new books, reporting progress. ---
   for (int i = 0; i < total; ++i) {
     std::string& path = newPaths[i];
-    if (onProgress) onProgress(i, total, epubLabel(path).c_str());
+    if (onProgress) onProgress(i, total, bookLabel(path).c_str());
 
     const uint32_t h = hashPath(path);
-    Epub epub(path, CACHE_DIR);
-    if (!epub.load(true, true, /*metadataOnly=*/true)) {
-      LOG_ERR(LOG_TAG, "Epub load failed: %s", path.c_str());
-      continue;
-    }
+    const BookProgress* prog = PROGRESS_STORE.find(h);
+    const std::string_view nameView{path};
 
     LibraryEntry e;
     e.pathHash = h;
-    e.title = arenaPush(epub.getTitle());
-    e.author = arenaPush(epub.getAuthor());
-    e.series = arenaPush(epub.getSeries());
-    e.genre = arenaPush(epub.getGenre());
-    e.seriesIndex = epub.getSeriesIndex();
-    e.spineCount = static_cast<uint16_t>(epub.getSpineItemsCount());
-    const BookProgress* prog = PROGRESS_STORE.find(h);
     e.progressSpineIndex = prog ? prog->spineIndex : 0;
+
+    if (FsHelpers::hasXtcExtension(nameView)) {
+      Xtc xtc(path, CACHE_DIR);
+      if (!xtc.load()) {
+        LOG_ERR(LOG_TAG, "Xtc load failed: %s", path.c_str());
+        continue;
+      }
+      e.format = static_cast<uint8_t>(BookFormat::Xtc);
+      e.title = arenaPush(xtc.getTitle());
+      e.author = arenaPush(xtc.getAuthor());
+      e.spineCount = static_cast<uint16_t>(xtc.getPageCount());
+      xtc.generateThumbBmp(LibraryIndex::THUMB_MAX_WIDTH, THUMB_HEIGHT);
+    } else if (
+      FsHelpers::hasTxtExtension(nameView) || FsHelpers::hasMarkdownExtension(nameView)
+    ) {
+      // No metadata title/author and no thumbnail — title is the filename. spineCount
+      // comes from the store (the reader writes pageCount after paginating); it stays
+      // 0, hiding the shelf bar, until the book has been opened at least once.
+      e.format = static_cast<uint8_t>(BookFormat::Txt);
+      e.title = arenaPush(bookLabel(path));
+      e.spineCount = prog ? prog->pageCount : 0;
+    } else {
+      Epub epub(path, CACHE_DIR);
+      if (!epub.load(true, true, /*metadataOnly=*/true)) {
+        LOG_ERR(LOG_TAG, "Epub load failed: %s", path.c_str());
+        continue;
+      }
+      e.format = static_cast<uint8_t>(BookFormat::Epub);
+      e.title = arenaPush(epub.getTitle());
+      e.author = arenaPush(epub.getAuthor());
+      e.series = arenaPush(epub.getSeries());
+      e.genre = arenaPush(epub.getGenre());
+      e.seriesIndex = epub.getSeriesIndex();
+      e.spineCount = static_cast<uint16_t>(epub.getSpineItemsCount());
+      epub.generateThumbBmp(LibraryIndex::THUMB_MAX_WIDTH, THUMB_HEIGHT);
+    }
 
     // Stream the path to SD, then free its RAM immediately — path is not resident.
     const uint32_t len = static_cast<uint32_t>(path.size());
@@ -431,8 +480,6 @@ bool LibraryIndex::refreshFromSdCard(const IndexProgressFn& onProgress) {
     pathsFile.write(reinterpret_cast<const uint8_t*>(path.data()), len);
     pathFilePos += 4 + len;
     std::string().swap(path);  // release the path buffer now, not at function exit
-
-    epub.generateThumbBmp(LibraryIndex::THUMB_MAX_WIDTH, THUMB_HEIGHT);
 
     entries.push_back(e);
     changed = true;
@@ -450,7 +497,9 @@ bool LibraryIndex::refreshFromSdCard(const IndexProgressFn& onProgress) {
     saveToFile();
   }
 
-  LOG_DBG(LOG_TAG, "Library refresh: %d books (%d new)", static_cast<int>(entries.size()), total);
+  LOG_DBG(
+    LOG_TAG, "Library refresh: %d books (%d new)", static_cast<int>(entries.size()), total
+  );
   return true;
 }
 
@@ -475,6 +524,7 @@ BookView LibraryIndex::getAt(int index) const {
   v.progressSpineIndex = e.progressSpineIndex;
   v.spineCount = e.spineCount;
   v.seriesIndex = e.seriesIndex;
+  v.format = e.format;
   return v;
 }
 
@@ -512,10 +562,12 @@ int LibraryIndex::findByPath(const std::string& path) const {
 namespace {
 bool containsCI(std::string_view haystack, std::string_view needle) {
   const auto eq = [](char a, char b) {
-    return std::tolower(static_cast<unsigned char>(a)) == std::tolower(static_cast<unsigned char>(b));
+    return std::tolower(static_cast<unsigned char>(a)) ==
+           std::tolower(static_cast<unsigned char>(b));
   };
-  return std::search(haystack.begin(), haystack.end(), needle.begin(), needle.end(), eq) !=
-         haystack.end();
+  return std::search(
+           haystack.begin(), haystack.end(), needle.begin(), needle.end(), eq
+         ) != haystack.end();
 }
 }  // namespace
 
@@ -528,8 +580,10 @@ std::vector<uint32_t> LibraryIndex::search(std::string_view query) const {
   std::vector<uint32_t> matches;
   for (size_t i = 0; i < entries.size(); ++i) {
     const LibraryEntry& e = entries[i];
-    if (containsCI(sv(e.title), query) || containsCI(sv(e.author), query) ||
-        containsCI(sv(e.series), query) || containsCI(sv(e.genre), query)) {
+    if (
+      containsCI(sv(e.title), query) || containsCI(sv(e.author), query) ||
+      containsCI(sv(e.series), query) || containsCI(sv(e.genre), query)
+    ) {
       matches.push_back(static_cast<uint32_t>(i));
     }
   }
@@ -542,12 +596,26 @@ void LibraryIndex::refreshProgress(const std::string& path) {
   const int idx = findByPath(path);
   if (idx < 0) return;
 
-  const uint16_t old = entries[idx].progressSpineIndex;
-  const BookProgress* prog = PROGRESS_STORE.find(entries[idx].pathHash);
+  LibraryEntry& e = entries[idx];
+  const BookProgress* prog = PROGRESS_STORE.find(e.pathHash);
   const uint16_t next = prog ? prog->spineIndex : 0;
-  if (next == old) return;
-  entries[idx].progressSpineIndex = next;
-  patchAt(entries[idx].diskSlot + REC_PROGRESS_OFFSET, &next, sizeof(next));
+
+  // TXT has no intrinsic page count, so refresh spineCount from the store too — it's
+  // only known after the reader paginates. progressSpineIndex @REC_PROGRESS_OFFSET is
+  // immediately followed by spineCount, so both patch in one contiguous write.
+  if (e.format == static_cast<uint8_t>(BookFormat::Txt)) {
+    const uint16_t nextCount = prog ? prog->pageCount : 0;
+    if (next == e.progressSpineIndex && nextCount == e.spineCount) return;
+    e.progressSpineIndex = next;
+    e.spineCount = nextCount;
+    const uint16_t patch[2] = {next, nextCount};
+    patchAt(e.diskSlot + REC_PROGRESS_OFFSET, patch, sizeof(patch));
+    return;
+  }
+
+  if (next == e.progressSpineIndex) return;
+  e.progressSpineIndex = next;
+  patchAt(e.diskSlot + REC_PROGRESS_OFFSET, &next, sizeof(next));
 }
 
 void LibraryIndex::noteBookOpened(const std::string& path) {
@@ -613,51 +681,57 @@ void LibraryIndex::sortBy(SortField field, SortDirection direction) {
   // Books with no usable key (unread / no author / never opened) always sort to
   // the END regardless of direction. Tiebreak on title then pathHash (path is
   // not resident); pathHash gives a stable, deterministic final order.
-  std::sort(entries.begin(), entries.end(), [&](const LibraryEntry& a, const LibraryEntry& b) {
-    auto tiebreak = [&]() {
-      const int t = ciCompare(titleSortKey(sv(a.title)), titleSortKey(sv(b.title)));
-      if (t != 0) return t < 0;
-      return a.pathHash < b.pathHash;
-    };
-
-    switch (field) {
-      case SortField::Recent: {
-        const bool aHas = a.openSequence > 0;
-        const bool bHas = b.openSequence > 0;
-        if (aHas != bHas) return aHas;
-        if (!aHas) return tiebreak();
-        if (a.openSequence != b.openSequence) {
-          return asc ? (a.openSequence < b.openSequence) : (a.openSequence > b.openSequence);
-        }
-        return tiebreak();
-      }
-      case SortField::Title: {
-        const int c = ciCompare(titleSortKey(sv(a.title)), titleSortKey(sv(b.title)));
-        if (c != 0) return asc ? (c < 0) : (c > 0);
+  std::sort(
+    entries.begin(), entries.end(), [&](const LibraryEntry& a, const LibraryEntry& b) {
+      auto tiebreak = [&]() {
+        const int t = ciCompare(titleSortKey(sv(a.title)), titleSortKey(sv(b.title)));
+        if (t != 0) return t < 0;
         return a.pathHash < b.pathHash;
+      };
+
+      switch (field) {
+        case SortField::Recent: {
+          const bool aHas = a.openSequence > 0;
+          const bool bHas = b.openSequence > 0;
+          if (aHas != bHas) return aHas;
+          if (!aHas) return tiebreak();
+          if (a.openSequence != b.openSequence) {
+            return asc ? (a.openSequence < b.openSequence)
+                       : (a.openSequence > b.openSequence);
+          }
+          return tiebreak();
+        }
+        case SortField::Title: {
+          const int c = ciCompare(titleSortKey(sv(a.title)), titleSortKey(sv(b.title)));
+          if (c != 0) return asc ? (c < 0) : (c > 0);
+          return a.pathHash < b.pathHash;
+        }
+        case SortField::Author: {
+          const bool aHas = sv(a.author).size() > 0;
+          const bool bHas = sv(b.author).size() > 0;
+          if (aHas != bHas) return aHas;
+          if (!aHas) return tiebreak();
+          const int c =
+            ciCompare(authorSurname(sv(a.author)), authorSurname(sv(b.author)));
+          if (c != 0) return asc ? (c < 0) : (c > 0);
+          const int c2 = ciCompare(sv(a.author), sv(b.author));
+          if (c2 != 0) return asc ? (c2 < 0) : (c2 > 0);
+          return tiebreak();
+        }
+        case SortField::Progress: {
+          const bool aHas = a.progressSpineIndex > 0 && a.spineCount > 0;
+          const bool bHas = b.progressSpineIndex > 0 && b.spineCount > 0;
+          if (aHas != bHas) return aHas;
+          if (!aHas) return tiebreak();
+          const uint32_t pa =
+            static_cast<uint32_t>(a.progressSpineIndex) * 100u / a.spineCount;
+          const uint32_t pb =
+            static_cast<uint32_t>(b.progressSpineIndex) * 100u / b.spineCount;
+          if (pa != pb) return asc ? (pa < pb) : (pa > pb);
+          return tiebreak();
+        }
       }
-      case SortField::Author: {
-        const bool aHas = sv(a.author).size() > 0;
-        const bool bHas = sv(b.author).size() > 0;
-        if (aHas != bHas) return aHas;
-        if (!aHas) return tiebreak();
-        const int c = ciCompare(authorSurname(sv(a.author)), authorSurname(sv(b.author)));
-        if (c != 0) return asc ? (c < 0) : (c > 0);
-        const int c2 = ciCompare(sv(a.author), sv(b.author));
-        if (c2 != 0) return asc ? (c2 < 0) : (c2 > 0);
-        return tiebreak();
-      }
-      case SortField::Progress: {
-        const bool aHas = a.progressSpineIndex > 0 && a.spineCount > 0;
-        const bool bHas = b.progressSpineIndex > 0 && b.spineCount > 0;
-        if (aHas != bHas) return aHas;
-        if (!aHas) return tiebreak();
-        const uint32_t pa = static_cast<uint32_t>(a.progressSpineIndex) * 100u / a.spineCount;
-        const uint32_t pb = static_cast<uint32_t>(b.progressSpineIndex) * 100u / b.spineCount;
-        if (pa != pb) return asc ? (pa < pb) : (pa > pb);
-        return tiebreak();
-      }
+      return tiebreak();
     }
-    return tiebreak();
-  });
+  );
 }

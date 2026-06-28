@@ -34,12 +34,21 @@ class XtcReaderActivity final : public Activity {
   void loadProgress();
 
  public:
-  explicit XtcReaderActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, std::unique_ptr<Xtc> xtc)
+  explicit XtcReaderActivity(
+    GfxRenderer& renderer, MappedInputManager& mappedInput, std::unique_ptr<Xtc> xtc
+  )
       : Activity("XtcReader", renderer, mappedInput), xtc(std::move(xtc)) {}
   void onEnter() override;
   void onExit() override;
   void loop() override;
   void render(RenderLock&&) override;
   bool isReaderActivity() const override { return true; }
+  std::optional<GlobalMenuConfig> getGlobalMenuConfig() override {
+    return GlobalMenuConfig{};
+  }
+  std::vector<MenuRegistryEntry> getGlobalMenuEntries() override;
   ScreenshotInfo getScreenshotInfo() const override;
+
+ private:
+  void openChapterSelection();
 };

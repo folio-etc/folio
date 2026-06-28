@@ -34,7 +34,9 @@ class TxtReaderActivity final : public Activity {
   void renderStatusBar() const;
 
   void initializeReader();
-  bool loadPageAtOffset(size_t offset, std::vector<std::string>& outLines, size_t& nextOffset);
+  bool loadPageAtOffset(
+    size_t offset, std::vector<std::string>& outLines, size_t& nextOffset
+  );
   void buildPageIndex();
   bool loadPageIndexCache();
   void savePageIndexCache() const;
@@ -42,12 +44,19 @@ class TxtReaderActivity final : public Activity {
   void loadProgress();
 
  public:
-  explicit TxtReaderActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, std::unique_ptr<Txt> txt)
+  explicit TxtReaderActivity(
+    GfxRenderer& renderer, MappedInputManager& mappedInput, std::unique_ptr<Txt> txt
+  )
       : Activity("TxtReader", renderer, mappedInput), txt(std::move(txt)) {}
   void onEnter() override;
   void onExit() override;
   void loop() override;
   void render(RenderLock&&) override;
   bool isReaderActivity() const override { return true; }
+  // TXT has no reader-specific menu actions; the shared bottom row (home / file browser /
+  // settings) is enough. Opting in just enables the GlobalMenu on Back.
+  std::optional<GlobalMenuConfig> getGlobalMenuConfig() override {
+    return GlobalMenuConfig{};
+  }
   ScreenshotInfo getScreenshotInfo() const override;
 };

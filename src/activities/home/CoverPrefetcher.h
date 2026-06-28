@@ -19,7 +19,7 @@ class GfxRenderer;
 // View-type-agnostic: it knows nothing about grids, rows, or LibraryBook. It owns
 // a fixed-capacity, arena-backed cache sized to ONE page of `perPage` thumbnails and
 // a FreeRTOS worker that decodes + pre-scales each cover off the render path. The
-// owner supplies a CoverResolver mapping a flat item index to a cover pathHash; any
+// owner supplies a CoverResolver mapping a flat item index to a cover key; any
 // paginated view (cover grid, future list view) reuses this by supplying its own
 // resolver, perPage, and cover-box dimensions.
 //
@@ -30,10 +30,18 @@ class GfxRenderer;
 // under this same lock.
 class CoverPrefetcher {
  public:
-  // Cover pathHash for a flat item index, or nullopt for slots with no cover
-  // (back affordance / past end of the view). Invoked ONLY under cacheLock_
-  // (inside buildThumbPath), so the supplied closure may safely read view state.
-  using CoverResolver = std::function<std::optional<uint32_t>(int itemIndex)>;
+  // Cover key for one item: the book's path hash plus its format (BookFormat), which
+  // selects the cache-dir prefix (epub_/xtc_). Formats with no thumbnail (txt) resolve
+  // to an empty path and paint the placeholder.
+  struct CoverRef {
+    uint32_t hash;
+    uint8_t format;
+  };
+
+  // CoverRef for a flat item index, or nullopt for slots with no cover (back
+  // affordance / past end of the view). Invoked ONLY under cacheLock_ (inside
+  // buildThumbPath), so the supplied closure may safely read view state.
+  using CoverResolver = std::function<std::optional<CoverRef>(int itemIndex)>;
 
   CoverPrefetcher(GfxRenderer& renderer, uint8_t perPage, CoverResolver resolver)
       : renderer_(renderer),
@@ -85,9 +93,12 @@ class CoverPrefetcher {
     return pageCache_;
   }  // valid only while a CacheGuard is held
 
-  // The per-book cover thumb path. Shared with the render path so the key it looks
-  // up matches the key the worker stores. `out` must be at least 64 bytes.
-  static void thumbPath(uint32_t pathHash, char* out, std::size_t outSize);
+  // The per-book cover thumb path, format-selected (epub_/xtc_ cache dir). Shared with
+  // the render path so the key it looks up matches the key the worker stores. Writes an
+  // empty string for formats without a thumbnail (txt). `out` must be at least 64 bytes.
+  static void thumbPath(
+    uint32_t pathHash, uint8_t format, char* out, std::size_t outSize
+  );
 
  private:
   // Worst-case 2bpp source for one thumbnail (THUMB_MAX_WIDTH × THUMB_HEIGHT,

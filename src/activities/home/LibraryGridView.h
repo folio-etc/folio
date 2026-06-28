@@ -119,7 +119,8 @@ class LibraryGridView {
   GridHelper gridHelper = GridHelper(0, 0, 0, 0);
 
   // The active subset (entry indices into LIBRARY_INDEX in sorted order) + its display
-  // name. Indices are valid only between sorts; setSubset rebuilds them under the cache lock.
+  // name. Indices are valid only between sorts; setSubset rebuilds them under the cache
+  // lock.
   std::vector<uint32_t> subset_;
   bool hasBackTile_ = false;
   std::string subsetTitle_;
@@ -127,10 +128,13 @@ class LibraryGridView {
   ButtonNavigator buttonNavigator;
 
   CoverPrefetcher prefetcher_{
-    renderer, PER_PAGE, [this](int itemIndex) -> std::optional<uint32_t> {
+    renderer,
+    PER_PAGE,
+    [this](int itemIndex) -> std::optional<CoverPrefetcher::CoverRef> {
       const int entryIdx = bookForGridIndex(itemIndex);  // -1 = back tile / OOB
-      return entryIdx >= 0 ? std::optional<uint32_t>(LIBRARY_INDEX.getAt(entryIdx).pathHash)
-                           : std::nullopt;
+      if (entryIdx < 0) return std::nullopt;
+      const BookView b = LIBRARY_INDEX.getAt(entryIdx);
+      return CoverPrefetcher::CoverRef{b.pathHash, b.format};
     }
   };
 

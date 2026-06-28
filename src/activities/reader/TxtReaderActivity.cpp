@@ -16,6 +16,8 @@
 #include "RecentBooksStore.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
+#include "stores/progress/ProgressStore.h"
+#include "util/PathHash.h"
 
 namespace {
 constexpr size_t CHUNK_SIZE = 8 * 1024;  // 8KB chunk for reading
@@ -60,20 +62,10 @@ void TxtReaderActivity::onExit() {
 }
 
 void TxtReaderActivity::loop() {
-  // Long press BACK (1s+) goes to file selection
-  if (mappedInput.isPressed(MappedInputManager::Button::Back) && mappedInput.getHeldTime() >= ReaderUtils::GO_HOME_MS) {
-    activityManager.goToFileBrowser(txt ? txt->getPath() : "");
-    return;
-  }
-
-  // Short press BACK goes directly to home
-  if (mappedInput.wasReleased(MappedInputManager::Button::Back) &&
-      mappedInput.getHeldTime() < ReaderUtils::GO_HOME_MS) {
-    onGoHome();
-    return;
-  }
-
-  const auto [prevTriggered, nextTriggered, fromTilt] = ReaderUtils::detectPageTurn(mappedInput);
+  // File browser, home and settings now live in the GlobalMenu (opened with Back,
+  // handled by ActivityManager). This loop only turns pages.
+  const auto [prevTriggered, nextTriggered, fromTilt] =
+    ReaderUtils::detectPageTurn(mappedInput);
   if (!prevTriggered && !nextTriggered) {
     return;
   }
@@ -102,22 +94,35 @@ void TxtReaderActivity::initializeReader() {
   cachedParagraphAlignment = SETTINGS.paragraphAlignment;
 
   // Calculate viewport dimensions
-  renderer.getOrientedViewableTRBL(&cachedOrientedMarginTop, &cachedOrientedMarginRight, &cachedOrientedMarginBottom,
-                                   &cachedOrientedMarginLeft);
+  renderer.getOrientedViewableTRBL(
+    &cachedOrientedMarginTop,
+    &cachedOrientedMarginRight,
+    &cachedOrientedMarginBottom,
+    &cachedOrientedMarginLeft
+  );
   cachedOrientedMarginTop += cachedScreenMargin;
   cachedOrientedMarginLeft += cachedScreenMargin;
   cachedOrientedMarginRight += cachedScreenMargin;
-  cachedOrientedMarginBottom +=
-      std::max(cachedScreenMargin, static_cast<uint8_t>(UITheme::getInstance().getStatusBarHeight()));
+  cachedOrientedMarginBottom += std::max(
+    cachedScreenMargin, static_cast<uint8_t>(UITheme::getInstance().getStatusBarHeight())
+  );
 
-  viewportWidth = renderer.getScreenWidth() - cachedOrientedMarginLeft - cachedOrientedMarginRight;
-  const int viewportHeight = renderer.getScreenHeight() - cachedOrientedMarginTop - cachedOrientedMarginBottom;
+  viewportWidth =
+    renderer.getScreenWidth() - cachedOrientedMarginLeft - cachedOrientedMarginRight;
+  const int viewportHeight =
+    renderer.getScreenHeight() - cachedOrientedMarginTop - cachedOrientedMarginBottom;
   const int lineHeight = renderer.getLineHeight(cachedFontId);
 
   linesPerPage = viewportHeight / lineHeight;
   if (linesPerPage < 1) linesPerPage = 1;
 
-  LOG_DBG("TRS", "Viewport: %dx%d, lines per page: %d", viewportWidth, viewportHeight, linesPerPage);
+  LOG_DBG(
+    "TRS",
+    "Viewport: %dx%d, lines per page: %d",
+    viewportWidth,
+    viewportHeight,
+    linesPerPage
+  );
 
   // Try to load cached page index first
   if (!loadPageIndexCache()) {
@@ -172,7 +177,9 @@ void TxtReaderActivity::buildPageIndex() {
   LOG_DBG("TRS", "Built page index: %d pages", totalPages);
 }
 
-bool TxtReaderActivity::loadPageAtOffset(size_t offset, std::vector<std::string>& outLines, size_t& nextOffset) {
+bool TxtReaderActivity::loadPageAtOffset(
+  size_t offset, std::vector<std::string>& outLines, size_t& nextOffset
+) {
   outLines.clear();
   const size_t fileSize = txt->getFileSize();
 
@@ -202,7 +209,9 @@ bool TxtReaderActivity::loadPageAtOffset(size_t offset, std::vector<std::string>
   // corrupts FreeRTOS state. The advance table persists across calls per
   // font, so the cost amortizes to ~ASCII-size after the first chunk.
   if (renderer.isSdCardFont(cachedFontId)) {
-    renderer.ensureSdCardFontReady(cachedFontId, reinterpret_cast<const char*>(buffer), /*styleMask=*/0x01);
+    renderer.ensureSdCardFontReady(
+      cachedFontId, reinterpret_cast<const char*>(buffer), /*styleMask=*/0x01
+    );
   }
 
   // Parse lines from buffer
@@ -244,7 +253,8 @@ bool TxtReaderActivity::loadPageAtOffset(size_t offset, std::vector<std::string>
         break;
       }
 
-      int lineWidth = renderer.getTextAdvanceX(cachedFontId, line.c_str(), EpdFontFamily::REGULAR);
+      int lineWidth =
+        renderer.getTextAdvanceX(cachedFontId, line.c_str(), EpdFontFamily::REGULAR);
 
       if (lineWidth <= viewportWidth) {
         outLines.push_back(line);
@@ -255,8 +265,10 @@ bool TxtReaderActivity::loadPageAtOffset(size_t offset, std::vector<std::string>
 
       // Find break point
       size_t breakPos = line.length();
-      while (breakPos > 0 && renderer.getTextAdvanceX(cachedFontId, line.substr(0, breakPos).c_str(),
-                                                      EpdFontFamily::REGULAR) > viewportWidth) {
+      while (breakPos > 0 &&
+             renderer.getTextAdvanceX(
+               cachedFontId, line.substr(0, breakPos).c_str(), EpdFontFamily::REGULAR
+             ) > viewportWidth) {
         // Try to break at space
         size_t spacePos = line.rfind(' ', breakPos - 1);
         if (spacePos != std::string::npos && spacePos > 0) {
@@ -328,7 +340,9 @@ void TxtReaderActivity::render(RenderLock&&) {
 
   if (pageOffsets.empty()) {
     renderer.clearScreen();
-    renderer.drawCenteredText(UI_12_FONT_ID, 300, tr(STR_EMPTY_FILE), true, EpdFontFamily::BOLD);
+    renderer.drawCenteredText(
+      UI_12_FONT_ID, 300, tr(STR_EMPTY_FILE), true, EpdFontFamily::BOLD
+    );
     renderer.displayBuffer();
     return;
   }
@@ -360,13 +374,17 @@ void TxtReaderActivity::renderPage() {
     for (const auto& line : currentPageLines) {
       if (!line.empty()) {
         int x = cachedOrientedMarginLeft;
-        const bool lineIsRtl = BidiUtils::startsWithRtl(line.c_str(), BidiUtils::RTL_PARAGRAPH_PROBE_DEPTH);
+        const bool lineIsRtl =
+          BidiUtils::startsWithRtl(line.c_str(), BidiUtils::RTL_PARAGRAPH_PROBE_DEPTH);
         uint8_t effectiveAlignment = cachedParagraphAlignment;
-        if (lineIsRtl && (effectiveAlignment == CrossPointSettings::LEFT_ALIGN ||
-                          effectiveAlignment == CrossPointSettings::JUSTIFIED)) {
+        if (
+          lineIsRtl && (effectiveAlignment == CrossPointSettings::LEFT_ALIGN ||
+                        effectiveAlignment == CrossPointSettings::JUSTIFIED)
+        ) {
           effectiveAlignment = CrossPointSettings::RIGHT_ALIGN;
         }
-        const int textWidth = renderer.getTextAdvanceX(cachedFontId, line.c_str(), EpdFontFamily::REGULAR);
+        const int textWidth =
+          renderer.getTextAdvanceX(cachedFontId, line.c_str(), EpdFontFamily::REGULAR);
 
         // Apply text alignment
         switch (effectiveAlignment) {
@@ -426,6 +444,15 @@ void TxtReaderActivity::saveProgress() const {
   if (!ProgressFile::writeAtomic(txt->getCachePath(), data, sizeof(data))) {
     LOG_ERR("TRS", "Failed to save progress: page %d", currentPage);
   }
+
+  // Mirror into the library-wide store so the shelf shows a progress bar. TXT has no
+  // intrinsic page count, so this also feeds the index its spineCount (= totalPages).
+  PROGRESS_STORE.put(
+    hashPath(txt->getPath()),
+    static_cast<uint16_t>(currentPage),
+    static_cast<uint16_t>(currentPage),
+    static_cast<uint16_t>(totalPages)
+  );
 }
 
 void TxtReaderActivity::loadProgress() {
@@ -476,7 +503,9 @@ bool TxtReaderActivity::loadPageIndexCache() {
   uint8_t version;
   serialization::readPod(f, version);
   if (version != CACHE_VERSION) {
-    LOG_DBG("TRS", "Cache version mismatch (%d != %d), rebuilding", version, CACHE_VERSION);
+    LOG_DBG(
+      "TRS", "Cache version mismatch (%d != %d), rebuilding", version, CACHE_VERSION
+    );
     return false;
   }
 
@@ -576,7 +605,8 @@ ScreenshotInfo TxtReaderActivity::getScreenshotInfo() const {
   }
   info.currentPage = currentPage + 1;
   info.totalPages = totalPages;
-  info.progressPercent = totalPages > 0 ? static_cast<int>((currentPage + 1) * 100.0f / totalPages + 0.5f) : 0;
+  info.progressPercent =
+    totalPages > 0 ? static_cast<int>((currentPage + 1) * 100.0f / totalPages + 0.5f) : 0;
   if (info.progressPercent > 100) info.progressPercent = 100;
   return info;
 }

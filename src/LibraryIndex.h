@@ -9,6 +9,14 @@
 
 class GfxRenderer;
 
+// Book file format, stored per entry so cover lookup picks the right cache dir
+// (epub_/xtc_) and the reader/UI can branch without re-reading the path.
+enum class BookFormat : uint8_t {
+  Epub = 0,
+  Txt = 1,  // also .md
+  Xtc = 2,  // also .xtch
+};
+
 // A book's genre is stored as its EPUB <dc:subject> tags joined by '\n'.
 // Invokes fn(std::string_view) once per non-empty subject. Templated on the
 // callback to avoid std::function heap/binary overhead (see CLAUDE.md).
@@ -45,6 +53,7 @@ struct LibraryEntry {
   uint16_t progressSpineIndex = 0;
   uint16_t spineCount = 0;
   uint16_t seriesIndex = 0;
+  uint8_t format = 0;  // BookFormat
 };
 
 // Lightweight read accessor returned by getAt(). The string_views point into the
@@ -61,6 +70,7 @@ struct BookView {
   uint16_t progressSpineIndex = 0;
   uint16_t spineCount = 0;
   uint16_t seriesIndex = 0;
+  uint8_t format = 0;  // BookFormat
 
   bool hasProgress() const { return progressSpineIndex > 0 && spineCount > 0; }
   bool hasBeenOpened() const { return openSequence > 0; }

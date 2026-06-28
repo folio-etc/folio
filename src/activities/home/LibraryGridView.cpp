@@ -240,9 +240,7 @@ void LibraryGridView::renderBody(const Rect& content) {
   }
 }
 
-void LibraryGridView::renderTile(
-  const Rect& cell, const BookView& book, bool selected
-) {
+void LibraryGridView::renderTile(const Rect& cell, const BookView& book, bool selected) {
   const bool invertText = selected && GUI.getData()->selection.textInverted;
   const bool textBlack = !invertText;
 
@@ -287,11 +285,7 @@ void LibraryGridView::renderTile(
   const int maxTitleLines = std::min(2, std::max(1, titleBudget / captionLineH));
 
   const std::vector<std::string> titleLines = renderer.wrappedText(
-    captionFont,
-    book.title.data(),
-    textSlot.width - 8,
-    maxTitleLines,
-    EpdFontFamily::BOLD
+    captionFont, book.title.data(), textSlot.width - 8, maxTitleLines, EpdFontFamily::BOLD
   );
 
   const std::string authorTrunc =
@@ -318,7 +312,7 @@ void LibraryGridView::renderTile(
 
   {
     char thumbPath[64];
-    CoverPrefetcher::thumbPath(book.pathHash, thumbPath, sizeof(thumbPath));
+    CoverPrefetcher::thumbPath(book.pathHash, book.format, thumbPath, sizeof(thumbPath));
 
     {
       auto g = prefetcher_.lockCache();
