@@ -107,6 +107,13 @@ bool CrossPointSettings::loadFromFile() {
     if (!json.isEmpty()) {
       bool resave = false;
       bool result = JsonSettingsIO::loadSettings(*this, json.c_str(), &resave);
+      // fontSize is now a real point size. Migrate any legacy 0..3 bucket that a
+      // pre-pt settings.json still carries (SMALL/MEDIUM/LARGE/EXTRA_LARGE ->
+      // 12/14/16/18) and re-save so it sticks as a point size.
+      if (fontSize < MIN_POINT_SIZE) {
+        fontSize = (fontSize == SMALL) ? 12 : (fontSize == LARGE) ? 16 : (fontSize == EXTRA_LARGE) ? 18 : DEFAULT_POINT_SIZE;
+        resave = true;
+      }
       if (result && resave) {
         if (saveToFile()) {
           LOG_DBG("CPS", "Resaved settings to update format");

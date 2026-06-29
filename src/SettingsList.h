@@ -237,9 +237,13 @@ inline std::vector<SettingInfo> getSettingsList(const ReaderFontRegistry* regist
         SettingInfo::Enum(StrId::STR_FONT_FAMILY, &CrossPointSettings::fontFamily,
                           {StrId::STR_LITERATA, StrId::STR_NOTO_SANS}, "fontFamily",
                           StrId::STR_CAT_READER),
-        SettingInfo::Enum(StrId::STR_FONT_SIZE, &CrossPointSettings::fontSize,
-                          {StrId::STR_SMALL, StrId::STR_MEDIUM, StrId::STR_LARGE, StrId::STR_X_LARGE}, "fontSize",
-                          StrId::STR_CAT_READER),
+        // Persisted as a raw point size (VALUE, not bucket enum). The reader
+        // settings UI swaps this for the dynamic per-font picker
+        // (buildFontSizeSetting) when a registry is present; this base entry is
+        // what the JSON settings path round-trips. The wide range lets legacy
+        // 0..3 buckets survive load so loadFromFile() can migrate them to pt.
+        SettingInfo::Value(StrId::STR_FONT_SIZE, &CrossPointSettings::fontSize, {0, 72, 2}, "fontSize",
+                           StrId::STR_CAT_READER),
         SettingInfo::Enum(StrId::STR_LINE_SPACING, &CrossPointSettings::lineSpacing,
                           {StrId::STR_TIGHT, StrId::STR_NORMAL, StrId::STR_WIDE}, "lineSpacing", StrId::STR_CAT_READER),
         SettingInfo::Value(StrId::STR_SCREEN_MARGIN, &CrossPointSettings::screenMargin, {5, 40, 5}, "screenMargin",
@@ -396,9 +400,10 @@ inline std::vector<SettingInfo> getSettingsList(const ReaderFontRegistry* regist
       *it = buildFontFamilySetting(registry);
     }
   }
-  // Always replace the static Small/Medium/Large font-size enum with the dynamic
-  // per-font point-size picker (built-in fonts have point-size lists too).
-  {
+  // In the UI path (registry present) swap the persisted VALUE entry for the
+  // dynamic per-font point-size picker. The JSON path passes no registry and
+  // keeps the VALUE entry so fontSize round-trips as a raw point size.
+  if (registry) {
     auto it = std::find_if(v.begin(), v.end(), [](const SettingInfo& s) { return s.nameId == StrId::STR_FONT_SIZE; });
     if (it != v.end()) {
       *it = buildFontSizeSetting(registry);
