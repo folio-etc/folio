@@ -398,7 +398,8 @@ std::vector<MenuRegistryEntry> ActivityManager::getGlobalMenuBottomEntries() {
           .name = tr(STR_APPS),
           .popupItems = {
               appItem(tr(STR_FILE_BROWSER), AppId::FileBrowser, [this]() { goToFileBrowser(); }),
-              appItem(tr(STR_FILE_TRANSFER), AppId::FileTransfer, [this]() { goToFileTransfer(); })}},
+              appItem(tr(STR_FILE_TRANSFER), AppId::FileTransfer, [this]() { goToFileTransfer(); }),
+              appItem(tr(STR_OPDS_BROWSER), AppId::OpdsBrowser, [this]() { goToBrowser(); })}},
       MenuRegistryEntry{
           .icon = Bitmap1Bit{40, 40, Settingsalt40Icon},
           .name = tr(STR_SETTINGS_TITLE),

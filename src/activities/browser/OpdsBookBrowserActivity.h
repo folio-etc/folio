@@ -24,6 +24,7 @@ class OpdsBookBrowserActivity final : public Activity {
   void onExit() override;
   void loop() override;
   void render(RenderLock&&) override;
+  AppId appId() const override { return AppId::OpdsBrowser; }
 
  private:
   ButtonNavigator buttonNavigator;

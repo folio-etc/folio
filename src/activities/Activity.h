@@ -16,7 +16,7 @@
 
 // Identifies an entry in the GlobalMenu Apps submenu, so the menu can mark the
 // running app and no-op when it's re-selected. None = not an Apps target.
-enum class AppId { None, Library, FileBrowser, FileTransfer };
+enum class AppId { None, Library, FileBrowser, FileTransfer, OpdsBrowser };
 
 class Activity {
   friend class ActivityManager;
