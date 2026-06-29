@@ -5,23 +5,13 @@
 
 #include "CrossPointSettings.h"
 
-namespace {
-
-static uint8_t fontSizeEnumFromSettings() {
-  uint8_t e = SETTINGS.fontSize;
-  if (e >= CrossPointSettings::FONT_SIZE_COUNT) e = 1;  // default to MEDIUM
-  return e;
-}
-
-}  // namespace
-
 void ReaderFontSystem::begin(GfxRenderer& renderer) {
   registry_.discover();
 
   // Register this system as the SD font ID resolver in settings.
   // Uses a static trampoline since CrossPointSettings stores a plain function pointer.
-  SETTINGS.sdFontIdResolver = [](void* ctx, const char* familyName, uint8_t fontSizeEnum) -> int {
-    return static_cast<ReaderFontSystem*>(ctx)->resolveFontId(familyName, fontSizeEnum);
+  SETTINGS.sdFontIdResolver = [](void* ctx, const char* familyName, uint8_t pointSize) -> int {
+    return static_cast<ReaderFontSystem*>(ctx)->resolveFontId(familyName, pointSize);
   };
   SETTINGS.sdFontResolverCtx = this;
 
@@ -29,7 +19,7 @@ void ReaderFontSystem::begin(GfxRenderer& renderer) {
   if (SETTINGS.sdFontFamilyName[0] != '\0') {
     const auto* family = registry_.findFamily(SETTINGS.sdFontFamilyName);
     if (family) {
-      if (manager_.loadFamily(*family, renderer, fontSizeEnumFromSettings())) {
+      if (manager_.loadFamily(*family, renderer, SETTINGS.fontSize)) {
         LOG_DBG("RDRFS", "Loaded SD card font family: %s", SETTINGS.sdFontFamilyName);
       } else {
         LOG_ERR("RDRFS", "Failed to load SD font family: %s (clearing)", SETTINGS.sdFontFamilyName);
@@ -57,7 +47,7 @@ void ReaderFontSystem::ensureLoaded(GfxRenderer& renderer) {
 
   const char* wantedFamily = SETTINGS.sdFontFamilyName;
   const std::string& currentFamily = manager_.currentFamilyName();
-  const uint8_t sizeEnum = fontSizeEnumFromSettings();
+  const uint8_t pointSize = SETTINGS.fontSize;
 
   if (wantedFamily[0] == '\0') {
     if (!currentFamily.empty()) {
@@ -78,11 +68,11 @@ void ReaderFontSystem::ensureLoaded(GfxRenderer& renderer) {
       SETTINGS.sdFontFamilyName[0] = '\0';
       return;
     }
-    const auto* selected = family->findClosestReaderSize(sizeEnum);
+    const auto* selected = family->findClosestByPoint(pointSize);
     const uint8_t wantedPt = selected ? selected->pointSize : 0;
     if (!registryWasDirty && wantedPt == manager_.currentPointSize()) return;
-    LOG_DBG("RDRFS", "Reloading %s: size %u -> %u (enum %u)%s", wantedFamily, manager_.currentPointSize(), wantedPt,
-            sizeEnum, registryWasDirty ? " [registry dirty]" : "");
+    LOG_DBG("RDRFS", "Reloading %s: size %u -> %u (req pt %u)%s", wantedFamily, manager_.currentPointSize(), wantedPt,
+            pointSize, registryWasDirty ? " [registry dirty]" : "");
   }
 
   if (!currentFamily.empty()) {
@@ -91,7 +81,7 @@ void ReaderFontSystem::ensureLoaded(GfxRenderer& renderer) {
 
   const auto* family = registry_.findFamily(wantedFamily);
   if (family) {
-    if (manager_.loadFamily(*family, renderer, sizeEnum)) {
+    if (manager_.loadFamily(*family, renderer, pointSize)) {
       LOG_DBG("RDRFS", "Loaded SD font family: %s", wantedFamily);
     } else {
       LOG_ERR("RDRFS", "Failed to load SD font family: %s (clearing)", wantedFamily);
@@ -103,7 +93,7 @@ void ReaderFontSystem::ensureLoaded(GfxRenderer& renderer) {
   }
 }
 
-int ReaderFontSystem::resolveFontId(const char* familyName, uint8_t /*fontSizeEnum*/) const {
+int ReaderFontSystem::resolveFontId(const char* familyName, uint8_t /*pointSize*/) const {
   // The manager loads exactly one size (closest to SETTINGS.fontSize), so the
   // enum is implicit — always return the single loaded font ID for this family.
   // ensureLoaded() must have been called with the current settings before this.

@@ -143,6 +143,15 @@ void FontSelectionActivity::handleSelection() {
       SETTINGS.sdFontFamilyName[sizeof(SETTINGS.sdFontFamilyName) - 1] = '\0';
     }
   }
+
+  // Snap the point size to the closest the newly-selected font actually ships.
+  std::vector<uint8_t> sizes;
+  if (SETTINGS.sdFontFamilyName[0] != '\0' && registry_) {
+    if (const auto* fam = registry_->findFamily(SETTINGS.sdFontFamilyName)) sizes = fam->availableSizes();
+  }
+  if (sizes.empty()) sizes = CrossPointSettings::builtinAvailableSizes(SETTINGS.fontFamily);
+  SETTINGS.fontSize = CrossPointSettings::closestSize(sizes, SETTINGS.fontSize);
+
   finish();
 }
 

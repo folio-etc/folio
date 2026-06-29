@@ -206,7 +206,18 @@ bool CrossPointSettings::loadFromBinaryFile() {
       }
     }
     if (++settingsRead >= fileSettingsCount) break;
-    readAndValidate(inputFile, fontSize, FONT_SIZE_COUNT);
+    {
+      // fontSize is now an actual point size. Legacy files stored a 0..3 bucket
+      // (SMALL/MEDIUM/LARGE/EXTRA_LARGE) — map those to 12/14/16/18. Any value
+      // >= MIN_POINT_SIZE is already a real point size.
+      uint8_t storedSize;
+      serialization::readPod(inputFile, storedSize);
+      fontSize = (storedSize >= MIN_POINT_SIZE) ? storedSize
+                 : (storedSize == SMALL)        ? 12
+                 : (storedSize == LARGE)        ? 16
+                 : (storedSize == EXTRA_LARGE)  ? 18
+                                                : DEFAULT_POINT_SIZE;  // MEDIUM / unknown
+    }
     if (++settingsRead >= fileSettingsCount) break;
     readAndValidate(inputFile, lineSpacing, LINE_COMPRESSION_COUNT);
     if (++settingsRead >= fileSettingsCount) break;
@@ -345,39 +356,78 @@ int CrossPointSettings::getRefreshFrequency() const {
   }
 }
 
+namespace {
+// Built-in reader faces by point size. Literata is the serif (and exposes the
+// small 8/10 sizes); NotoSans is the sans (ships 12-18 only).
+struct BuiltinSizeId {
+  uint8_t pt;
+  int id;
+};
+constexpr BuiltinSizeId LITERATA_SIZES[] = {
+    {8, LITERATA_8_FONT_ID},   {10, LITERATA_10_FONT_ID}, {12, LITERATA_12_FONT_ID},
+    {14, LITERATA_14_FONT_ID}, {16, LITERATA_16_FONT_ID}, {18, LITERATA_18_FONT_ID},
+};
+constexpr BuiltinSizeId NOTOSANS_SIZES[] = {
+    {12, NOTOSANS_12_FONT_ID},
+    {14, NOTOSANS_14_FONT_ID},
+    {16, NOTOSANS_16_FONT_ID},
+    {18, NOTOSANS_18_FONT_ID},
+};
+
+void builtinTable(uint8_t family, const BuiltinSizeId*& table, size_t& count) {
+  if (family == CrossPointSettings::NOTOSANS) {
+    table = NOTOSANS_SIZES;
+    count = sizeof(NOTOSANS_SIZES) / sizeof(NOTOSANS_SIZES[0]);
+  } else {
+    table = LITERATA_SIZES;
+    count = sizeof(LITERATA_SIZES) / sizeof(LITERATA_SIZES[0]);
+  }
+}
+}  // namespace
+
+std::vector<uint8_t> CrossPointSettings::builtinAvailableSizes(uint8_t family) {
+  const BuiltinSizeId* table;
+  size_t count;
+  builtinTable(family, table, count);
+  std::vector<uint8_t> out;
+  out.reserve(count);
+  for (size_t i = 0; i < count; i++) out.push_back(table[i].pt);
+  return out;
+}
+
+uint8_t CrossPointSettings::closestSize(const std::vector<uint8_t>& sizes, uint8_t target) {
+  if (sizes.empty()) return target;
+  uint8_t best = sizes[0];
+  int bestDelta = (best > target) ? (best - target) : (target - best);
+  for (uint8_t s : sizes) {
+    const int d = (s > target) ? (s - target) : (target - s);
+    if (d < bestDelta || (d == bestDelta && s > best)) {
+      best = s;
+      bestDelta = d;
+    }
+  }
+  return best;
+}
+
+int CrossPointSettings::builtinFontId(uint8_t family, uint8_t pt) {
+  const BuiltinSizeId* table;
+  size_t count;
+  builtinTable(family, table, count);
+  if (count == 0) return 0;
+  const uint8_t want = closestSize(builtinAvailableSizes(family), pt);
+  for (size_t i = 0; i < count; i++) {
+    if (table[i].pt == want) return table[i].id;
+  }
+  return table[0].id;
+}
+
 int CrossPointSettings::getReaderFontId() const {
-  // Check SD card font first
+  // Check SD card font first. The resolver returns the single size the reader
+  // font manager has loaded (closest to fontSize); 0 if unavailable.
   if (sdFontFamilyName[0] != '\0' && sdFontIdResolver) {
     int id = sdFontIdResolver(sdFontResolverCtx, sdFontFamilyName, fontSize);
     if (id != 0) return id;
     // Fall through to built-in if SD font not found
   }
-
-  switch (fontFamily) {
-    case LITERATA:
-    default:
-      switch (fontSize) {
-        case SMALL:
-          return LITERATA_12_FONT_ID;
-        case MEDIUM:
-        default:
-          return LITERATA_14_FONT_ID;
-        case LARGE:
-          return LITERATA_16_FONT_ID;
-        case EXTRA_LARGE:
-          return LITERATA_18_FONT_ID;
-      }
-    case NOTOSANS:
-      switch (fontSize) {
-        case SMALL:
-          return NOTOSANS_12_FONT_ID;
-        case MEDIUM:
-        default:
-          return NOTOSANS_14_FONT_ID;
-        case LARGE:
-          return NOTOSANS_16_FONT_ID;
-        case EXTRA_LARGE:
-          return NOTOSANS_18_FONT_ID;
-      }
-  }
+  return builtinFontId(fontFamily, fontSize);
 }

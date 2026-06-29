@@ -69,6 +69,20 @@ const ReaderFontFileInfo* ReaderFontFamilyInfo::findClosestReaderSize(const uint
   return best;
 }
 
+const ReaderFontFileInfo* ReaderFontFamilyInfo::findClosestByPoint(const uint8_t pt, const uint8_t style) const {
+  const ReaderFontFileInfo* best = nullptr;
+  int bestDelta = 0;
+  for (const auto& f : files) {
+    if (f.style != style) continue;
+    const int d = (f.pointSize > pt) ? (f.pointSize - pt) : (pt - f.pointSize);
+    if (!best || d < bestDelta || (d == bestDelta && f.pointSize > best->pointSize)) {
+      best = &f;
+      bestDelta = d;
+    }
+  }
+  return best;
+}
+
 bool ReaderFontFamilyInfo::hasSize(uint8_t size) const {
   for (const auto& f : files) {
     if (f.pointSize == size) return true;

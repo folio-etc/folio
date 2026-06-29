@@ -29,9 +29,11 @@ class ReaderFontSystem {
   /// Also re-discovers if the registry has been marked dirty (e.g. by web upload).
   void ensureLoaded(GfxRenderer& renderer);
 
-  /// Resolve an SD card font ID from family name + fontSize enum.
-  /// Returns 0 if not found. Used by CrossPointSettings::getReaderFontId().
-  int resolveFontId(const char* familyName, uint8_t fontSizeEnum) const;
+  /// Resolve an SD card font ID for a family. The point size is implicit: the
+  /// manager has already loaded the size closest to SETTINGS.fontSize, so this
+  /// returns that single loaded id. Returns 0 if not found. Used by
+  /// CrossPointSettings::getReaderFontId().
+  int resolveFontId(const char* familyName, uint8_t pointSize) const;
 
   /// Access the registry (e.g. for settings UI to enumerate available fonts).
   const ReaderFontRegistry& registry() const { return registry_; }

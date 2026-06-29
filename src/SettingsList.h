@@ -15,6 +15,52 @@
 #include "UiThemeLoader.h"
 #include "activities/settings/SettingsActivity.h"
 
+// Available reader point sizes for the *currently selected* font — an active SD
+// family's bundled sizes, else the built-in family's set.
+inline std::vector<uint8_t> currentFontAvailableSizes(const ReaderFontRegistry* registry) {
+  if (SETTINGS.sdFontFamilyName[0] != '\0' && registry) {
+    if (const auto* fam = registry->findFamily(SETTINGS.sdFontFamilyName)) {
+      auto sizes = fam->availableSizes();
+      if (!sizes.empty()) return sizes;
+    }
+  }
+  return CrossPointSettings::builtinAvailableSizes(SETTINGS.fontFamily);
+}
+
+// Dynamic reader font-size setting: lists the current font's available point
+// sizes (labelled "<n>pt") instead of fixed Small/Medium/Large/X-Large buckets.
+inline SettingInfo buildFontSizeSetting(const ReaderFontRegistry* registry) {
+  const std::vector<uint8_t> sizes = currentFontAvailableSizes(registry);
+
+  std::vector<std::string> labels;
+  labels.reserve(sizes.size());
+  for (uint8_t pt : sizes) labels.push_back(std::to_string(pt) + "pt");
+
+  SettingInfo s;
+  s.nameId = StrId::STR_FONT_SIZE;
+  s.type = SettingType::ENUM;
+  s.enumStringValues = std::move(labels);
+  s.key = "fontSize";
+  s.category = StrId::STR_CAT_READER;
+
+  s.valueGetter = [sizes]() -> uint8_t {
+    const uint8_t cur = SETTINGS.fontSize;
+    for (size_t i = 0; i < sizes.size(); i++) {
+      if (sizes[i] == cur) return static_cast<uint8_t>(i);
+    }
+    // fontSize isn't exactly in the list (e.g. just after a font switch) — show closest.
+    const uint8_t cp = CrossPointSettings::closestSize(sizes, cur);
+    for (size_t i = 0; i < sizes.size(); i++) {
+      if (sizes[i] == cp) return static_cast<uint8_t>(i);
+    }
+    return 0;
+  };
+  s.valueSetter = [sizes](uint8_t idx) {
+    if (idx < sizes.size()) SETTINGS.fontSize = sizes[idx];
+  };
+  return s;
+}
+
 // Build the font family setting dynamically. When registry is non-null, SD card fonts
 // are appended after the built-in fonts. Otherwise only built-in fonts are listed.
 inline SettingInfo buildFontFamilySetting(const ReaderFontRegistry* registry) {
@@ -75,7 +121,7 @@ inline SettingInfo buildFontFamilySetting(const ReaderFontRegistry* registry) {
     return SETTINGS.fontFamily < CrossPointSettings::FONT_FAMILY_COUNT ? SETTINGS.fontFamily : 0;
   };
 
-  s.valueSetter = [sdFamilyNames](uint8_t v) {
+  s.valueSetter = [sdFamilyNames, registry](uint8_t v) {
     if (v < CrossPointSettings::FONT_FAMILY_COUNT) {
       SETTINGS.fontFamily = v;
       SETTINGS.sdFontFamilyName[0] = '\0';
@@ -86,6 +132,8 @@ inline SettingInfo buildFontFamilySetting(const ReaderFontRegistry* registry) {
         SETTINGS.sdFontFamilyName[sizeof(SETTINGS.sdFontFamilyName) - 1] = '\0';
       }
     }
+    // The new font may not ship the current point size — snap to its closest.
+    SETTINGS.fontSize = CrossPointSettings::closestSize(currentFontAvailableSizes(registry), SETTINGS.fontSize);
   };
 
   return s;
@@ -346,6 +394,14 @@ inline std::vector<SettingInfo> getSettingsList(const ReaderFontRegistry* regist
     auto it = std::find_if(v.begin(), v.end(), [](const SettingInfo& s) { return s.nameId == StrId::STR_FONT_FAMILY; });
     if (it != v.end()) {
       *it = buildFontFamilySetting(registry);
+    }
+  }
+  // Always replace the static Small/Medium/Large font-size enum with the dynamic
+  // per-font point-size picker (built-in fonts have point-size lists too).
+  {
+    auto it = std::find_if(v.begin(), v.end(), [](const SettingInfo& s) { return s.nameId == StrId::STR_FONT_SIZE; });
+    if (it != v.end()) {
+      *it = buildFontSizeSetting(registry);
     }
   }
   if (themeLoader && !themeLoader->getDiscoveredThemes().empty()) {

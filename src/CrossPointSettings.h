@@ -2,6 +2,7 @@
 #include <HalStorage.h>
 
 #include <cstdint>
+#include <vector>
 #include <iosfwd>
 
 class CrossPointSettings {
@@ -105,8 +106,13 @@ class CrossPointSettings {
   enum FONT_FAMILY { LITERATA = 0, NOTOSANS = 1, FONT_FAMILY_COUNT };
   static constexpr uint8_t LEGACY_OPENDYSLEXIC = 2;
   static constexpr uint8_t BUILTIN_FONT_COUNT = FONT_FAMILY_COUNT;
-  // Font size options
+  // Legacy font-size buckets. `fontSize` now stores an actual point size (see
+  // below); these survive only to migrate pre-pt settings files/JSON. Legacy
+  // values 0..3 mapped to 12/14/16/18 pt.
   enum FONT_SIZE { SMALL = 0, MEDIUM = 1, LARGE = 2, EXTRA_LARGE = 3, FONT_SIZE_COUNT };
+  // Smallest real point size; any persisted fontSize below this is a legacy bucket.
+  static constexpr uint8_t MIN_POINT_SIZE = 8;
+  static constexpr uint8_t DEFAULT_POINT_SIZE = 14;
   enum LINE_COMPRESSION { TIGHT = 0, NORMAL = 1, WIDE = 2, LINE_COMPRESSION_COUNT };
   enum PARAGRAPH_ALIGNMENT {
     JUSTIFIED = 0,
@@ -259,7 +265,9 @@ class CrossPointSettings {
   uint8_t frontButtonRight = FRONT_HW_RIGHT;
   // Reader font settings
   uint8_t fontFamily = LITERATA;
-  uint8_t fontSize = MEDIUM;
+  // Actual reader point size (e.g. 12, 14). Selected from the current font's
+  // available sizes; snaps to the closest available when the font changes.
+  uint8_t fontSize = DEFAULT_POINT_SIZE;
   uint8_t lineSpacing = NORMAL;
   uint8_t paragraphAlignment = JUSTIFIED;
   // Auto-sleep timeout setting (default 10 minutes). Legacy sleepTimeout enum values are migration-only.
@@ -334,7 +342,7 @@ class CrossPointSettings {
 
   // Callback to resolve SD card font IDs. Set by ReaderFontSystem::begin().
   // Returns font ID or 0 if not found.
-  using SdFontIdResolver = int (*)(void* ctx, const char* familyName, uint8_t fontSize);
+  using SdFontIdResolver = int (*)(void* ctx, const char* familyName, uint8_t pointSize);
   SdFontIdResolver sdFontIdResolver = nullptr;
   void* sdFontResolverCtx = nullptr;
 
@@ -342,6 +350,16 @@ class CrossPointSettings {
     return (shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::SLEEP) ? 10 : 400;
   }
   int getReaderFontId() const;
+
+  // Available built-in reader point sizes for a FONT_FAMILY value
+  // (LITERATA: 8/10/12/14/16/18; NOTOSANS: 12/14/16/18). Sorted ascending.
+  static std::vector<uint8_t> builtinAvailableSizes(uint8_t family);
+  // Built-in font id for (family, point size); falls back to the closest
+  // available size when `pt` isn't built. Returns 0 if the family has none.
+  static int builtinFontId(uint8_t family, uint8_t pt);
+  // Nearest entry in `sizes` to `target`; ties resolve to the larger size
+  // (more legible). Returns `target` if `sizes` is empty.
+  static uint8_t closestSize(const std::vector<uint8_t>& sizes, uint8_t target);
 
   // If count_only is true, returns the number of settings items that would be written.
   uint8_t writeSettings(HalFile& file, bool count_only = false) const;
