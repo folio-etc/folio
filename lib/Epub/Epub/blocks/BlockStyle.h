@@ -39,6 +39,14 @@ struct BlockStyle {
   [[nodiscard]] int16_t topInset() const { return marginTop + paddingTop; }
   [[nodiscard]] int16_t bottomInset() const { return marginBottom + paddingBottom; }
 
+  // Return a copy with top margins/padding zeroed out.
+  [[nodiscard]] BlockStyle withoutTop() const {
+    BlockStyle result = *this;
+    result.marginTop = 0;
+    result.paddingTop = 0;
+    return result;
+  }
+
   // Return a copy with bottom margins/padding zeroed out.
   [[nodiscard]] BlockStyle withoutBottom() const {
     BlockStyle result = *this;

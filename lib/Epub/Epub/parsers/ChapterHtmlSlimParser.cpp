@@ -858,7 +858,10 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
         // flush word preceding <br/> to currentTextBlock before calling startNewTextBlock
         self->flushPartWordBuffer();
       }
-      self->startNewTextBlock(self->blockStyleStack.back().withoutBottom());
+      // <br/> is an inline line break inside a paragraph — strip both top and bottom
+      // margins so the paragraph's vertical spacing applies once to the whole element,
+      // not to each fragment (which would render a blank line at the <br/>).
+      self->startNewTextBlock(self->blockStyleStack.back().withoutTop().withoutBottom());
     } else {
       self->currentCssStyle = cssStyle;
       const auto accumulated = self->blockStyleStack.back().getCombinedBlockStyle(userAlignmentBlockStyle,
